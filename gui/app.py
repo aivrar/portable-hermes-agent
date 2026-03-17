@@ -753,9 +753,14 @@ class StatusBar(tk.Frame):
         self.dot.configure(fg=C["success"])
         self.status_lbl.configure(text="Ready")
 
-    def set_thinking(self):
+    def set_thinking(self, text=""):
         self.dot.configure(fg=C["info"])
-        self.status_lbl.configure(text="Thinking...")
+        if text:
+            # Truncate to fit status bar width
+            display = text[:120] if len(text) > 120 else text
+            self.status_lbl.configure(text=display)
+        else:
+            self.status_lbl.configure(text="Thinking...")
 
     def set_tool(self, name):
         self.dot.configure(fg=C["warning_dark"])
@@ -1136,7 +1141,9 @@ class HermesGUI:
 
     def _on_thinking(self, text):
         if text:
-            self.status_bar.set_thinking()
+            self.status_bar.set_thinking(text)
+        else:
+            self.status_bar.set_ready()
 
     def _on_step(self, n, _):
         self.status_bar.set_iter(n)
