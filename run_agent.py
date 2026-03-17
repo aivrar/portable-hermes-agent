@@ -2839,21 +2839,33 @@ class AIAgent:
             import httpx as _httpx
 
             try:
-                # Build the HTTP request from api_kwargs
+                # Build the HTTP request manually from the OpenAI client config
                 base_url = str(self.client.base_url).rstrip("/")
                 url = f"{base_url}/chat/completions"
                 headers = {
                     "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
                     "Authorization": f"Bearer {self.client.api_key}",
                 }
-                # Forward extra headers (OpenRouter site URL, referer, etc.)
-                if hasattr(self.client, "_custom_headers"):
-                    headers.update(self.client._custom_headers)
-                default_hdrs = getattr(self.client, "default_headers", {})
-                if default_hdrs:
-                    headers.update(default_hdrs)
+                # Forward provider-specific headers (OpenRouter referer, etc.)
+                stored_kwargs = getattr(self, "_client_kwargs", {})
+                for k, v in stored_kwargs.get("default_headers", {}).items():
+                    if isinstance(v, str):
+                        headers[k] = v
 
-                body = {**api_kwargs, "stream": True}
+                # Build body from api_kwargs; merge extra_body to top level
+                # (OpenRouter expects provider/reasoning at root, not nested)
+                # Drop non-serializable keys that are OpenAI SDK-only.
+                _skip_keys = {"timeout", "stream"}
+                body = {}
+                for k, v in api_kwargs.items():
+                    if k in _skip_keys:
+                        continue
+                    if k == "extra_body" and isinstance(v, dict):
+                        body.update(v)
+                    else:
+                        body[k] = v
+                body["stream"] = True
 
                 content_parts: list[str] = []
                 reasoning_parts: list[str] = []
@@ -2861,20 +2873,30 @@ class AIAgent:
                 finish_reason = None
                 model_name = None
 
-                with _httpx.Client(timeout=300) as http:
+                logger.debug("stream_thinking: POST %s (model=%s)", url, body.get("model"))
+                with _httpx.Client(timeout=_httpx.Timeout(connect=30, read=600, write=30, pool=30)) as http:
                     with http.stream("POST", url, json=body, headers=headers) as resp:
                         resp.raise_for_status()
+                        logger.debug("stream_thinking: connected, status=%s", resp.status_code)
+                        if self.thinking_callback:
+                            self.thinking_callback("connected, waiting for tokens...")
                         buf = ""
-                        for raw_line in resp.iter_lines():
-                            line = raw_line.strip()
-                            if not line or line == "data: [DONE]":
-                                continue
-                            if line.startswith("data: "):
-                                line = line[6:]
-                            try:
-                                chunk = json.loads(line)
-                            except (json.JSONDecodeError, ValueError):
-                                continue
+                        sse_buf = ""
+                        for raw_bytes in resp.iter_bytes():
+                            sse_buf += raw_bytes.decode("utf-8", errors="replace")
+                            while "\n" in sse_buf:
+                                sse_line, sse_buf = sse_buf.split("\n", 1)
+                                line = sse_line.strip()
+                                if not line or line.startswith(": "):
+                                    continue
+                                if line == "data: [DONE]":
+                                    break
+                                if line.startswith("data: "):
+                                    line = line[6:]
+                                try:
+                                    chunk = json.loads(line)
+                                except (json.JSONDecodeError, ValueError):
+                                    continue
 
                             if chunk.get("model"):
                                 model_name = chunk["model"]
