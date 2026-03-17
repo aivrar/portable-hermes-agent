@@ -2855,11 +2855,11 @@ class AIAgent:
 
                 # Build body from api_kwargs; merge extra_body to top level
                 # (OpenRouter expects provider/reasoning at root, not nested)
-                # Drop non-serializable keys that are OpenAI SDK-only.
+                # Drop non-serializable keys and None values.
                 _skip_keys = {"timeout", "stream"}
                 body = {}
                 for k, v in api_kwargs.items():
-                    if k in _skip_keys:
+                    if k in _skip_keys or v is None:
                         continue
                     if k == "extra_body" and isinstance(v, dict):
                         body.update(v)
@@ -5028,6 +5028,8 @@ class AIAgent:
                     if cb is not None and self.api_mode == "chat_completions":
                         response = self._streaming_api_call(api_kwargs, cb)
                     elif self.stream_thinking and cb is None:
+                        if self.thinking_callback:
+                            self.thinking_callback("connecting to model...")
                         response = self._streaming_thinking_api_call(api_kwargs)
                     else:
                         response = self._interruptible_api_call(api_kwargs)

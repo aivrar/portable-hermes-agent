@@ -1140,6 +1140,12 @@ class HermesGUI:
         self._scroll_bottom()
 
     def _on_thinking(self, text):
+        # Debug: log thinking callbacks to file
+        try:
+            with open("thinking_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"{text[:100] if text else '(empty)'}\n")
+        except Exception:
+            pass
         if text:
             self.status_bar.set_thinking(text)
         else:
