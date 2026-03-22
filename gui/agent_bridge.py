@@ -793,8 +793,13 @@ You are running on **{os_name} {os_release}**.
         import logging as _log
         _dbg = _log.getLogger("hermes.bridge")
         if not _dbg.handlers:
-            _fh = _log.FileHandler("bridge_debug.log", encoding="utf-8")
-            _fh.setFormatter(_log.Formatter("%(asctime)s %(message)s"))
+            # Use ~/.hermes/logs/ instead of project root for bridge debug log
+            import os as _os
+            from pathlib import Path as _Path
+            _log_dir = _Path(_os.getenv("HERMES_HOME", _Path.home() / ".hermes")) / "logs"
+            _log_dir.mkdir(parents=True, exist_ok=True)
+            _fh = _log.FileHandler(str(_log_dir / "bridge.log"), encoding="utf-8")
+            _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
             _dbg.addHandler(_fh)
             _dbg.setLevel(_log.DEBUG)
 

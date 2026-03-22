@@ -3479,9 +3479,13 @@ class HermesCLI:
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
                 logging.getLogger(noisy).setLevel(logging.WARNING)
         else:
+            # Keep root logger at INFO so file handlers capture everything.
+            # Only suppress console output for noisy internal loggers by
+            # raising the level on StreamHandlers, not the loggers themselves.
             logging.getLogger().setLevel(logging.INFO)
-            for quiet_logger in ('tools', 'minisweagent', 'run_agent', 'trajectory_compressor', 'cron', 'hermes_cli'):
-                logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+            for handler in logging.getLogger().handlers:
+                if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                    handler.setLevel(logging.WARNING)
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

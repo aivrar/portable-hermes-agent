@@ -149,17 +149,42 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * Every call is logged with args preview and result preview.
         """
+        import time as _time
         entry = self._tools.get(name)
         if not entry:
+            logger.warning("TOOL_DISPATCH unknown tool=%s", name)
             return json.dumps({"error": f"Unknown tool: {name}"})
+
+        # Log tool call with truncated args
+        args_preview = json.dumps(args, ensure_ascii=False, default=str)
+        if len(args_preview) > 500:
+            args_preview = args_preview[:500] + "..."
+        logger.info("TOOL_CALL tool=%s args=%s", name, args_preview)
+
+        t0 = _time.monotonic()
         try:
             if entry.is_async:
                 from model_tools import _run_async
-                return _run_async(entry.handler(args, **kwargs))
-            return entry.handler(args, **kwargs)
+                result = _run_async(entry.handler(args, **kwargs))
+            else:
+                result = entry.handler(args, **kwargs)
+
+            elapsed = _time.monotonic() - t0
+            # Log result preview
+            result_preview = result if isinstance(result, str) else json.dumps(result, default=str)
+            if len(result_preview) > 500:
+                result_preview = result_preview[:500] + "..."
+            has_error = '"error"' in result_preview[:200] if result_preview else False
+            level = logging.WARNING if has_error else logging.INFO
+            logger.log(level, "TOOL_RESULT tool=%s duration=%.2fs error=%s result=%s",
+                       name, elapsed, has_error, result_preview)
+            return result
+
         except Exception as e:
-            logger.exception("Tool %s dispatch error: %s", name, e)
+            elapsed = _time.monotonic() - t0
+            logger.exception("TOOL_CRASH tool=%s duration=%.2fs error=%s", name, elapsed, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 
     # ------------------------------------------------------------------

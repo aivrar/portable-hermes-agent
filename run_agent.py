@@ -413,14 +413,16 @@ class AIAgent:
         self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
         self._budget_pressure_enabled = True
 
-        # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
-        # so tool failures, API errors, etc. are inspectable after the fact.
-        # In gateway mode, each incoming message creates a new AIAgent instance,
-        # while the root logger is process-global. Re-adding the same errors.log
-        # handler would cause each warning/error line to be written multiple times.
+        # =================================================================
+        # Persistent file logging — always-on, captures everything
+        # =================================================================
         from logging.handlers import RotatingFileHandler
+        from agent.redact import RedactingFormatter
         root_logger = logging.getLogger()
         error_log_dir = _hermes_home / "logs"
+        error_log_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1) errors.log — WARNING+ only (legacy, compact)
         error_log_path = error_log_dir / "errors.log"
         resolved_error_log_path = error_log_path.resolve()
         has_errors_log_handler = any(
@@ -429,8 +431,6 @@ class AIAgent:
             for handler in root_logger.handlers
         )
         if not has_errors_log_handler:
-            from agent.redact import RedactingFormatter
-            error_log_dir.mkdir(parents=True, exist_ok=True)
             error_file_handler = RotatingFileHandler(
                 error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
             )
@@ -439,6 +439,30 @@ class AIAgent:
                 '%(asctime)s %(levelname)s %(name)s: %(message)s',
             ))
             root_logger.addHandler(error_file_handler)
+
+        # 2) hermes.log — ALL events at INFO+ (tool calls, API calls, errors)
+        #    This is the main diagnostic log. 10 MB rotating, 3 backups.
+        event_log_path = error_log_dir / "hermes.log"
+        resolved_event_log_path = event_log_path.resolve()
+        has_event_log_handler = any(
+            isinstance(handler, RotatingFileHandler)
+            and Path(getattr(handler, "baseFilename", "")).resolve() == resolved_event_log_path
+            for handler in root_logger.handlers
+        )
+        if not has_event_log_handler:
+            event_file_handler = RotatingFileHandler(
+                event_log_path, maxBytes=10 * 1024 * 1024, backupCount=3,
+            )
+            event_file_handler.setLevel(logging.INFO)
+            event_file_handler.setFormatter(RedactingFormatter(
+                '%(asctime)s %(levelname)s [%(name)s] %(message)s',
+            ))
+            root_logger.addHandler(event_file_handler)
+
+        # Ensure root logger level is INFO so the event log actually receives messages.
+        # Individual noisy loggers are silenced below.
+        if root_logger.level > logging.INFO or root_logger.level == logging.NOTSET:
+            root_logger.setLevel(logging.INFO)
 
         if self.verbose_logging:
             logging.basicConfig(
@@ -478,18 +502,13 @@ class AIAgent:
             logging.getLogger('httpx').setLevel(logging.ERROR)
             logging.getLogger('httpcore').setLevel(logging.ERROR)
             if self.quiet_mode:
-                # In quiet mode (CLI default), suppress all tool/infra log
-                # noise. The TUI has its own rich display for status; logger
-                # INFO/WARNING messages just clutter it.
-                for quiet_logger in [
-                    'tools',               # all tools.* (terminal, browser, web, file, etc.)
-                    'minisweagent',         # mini-swe-agent execution backend
-                    'run_agent',            # agent runner internals
-                    'trajectory_compressor',
-                    'cron',                 # scheduler (only relevant in daemon mode)
-                    'hermes_cli',           # CLI helpers
-                ]:
-                    logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+                # In quiet mode (CLI default), suppress console output from
+                # internal loggers. We do NOT set logger levels to ERROR here
+                # because that would also silence the hermes.log file handler.
+                # Instead, raise the level on StreamHandlers only.
+                for handler in logging.getLogger().handlers:
+                    if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                        handler.setLevel(logging.WARNING)
         
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
@@ -1030,6 +1049,8 @@ class AIAgent:
 
         Ensures conversations are never lost, even on errors or early returns.
         """
+        logger.info("SESSION_PERSIST session=%s messages=%d platform=%s model=%s",
+                     self.session_id, len(messages), self.platform, self.model)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
@@ -2755,6 +2776,12 @@ class AIAgent:
         close that worker-local client, so retries and other requests never
         inherit a closed transport.
         """
+        _api_t0 = time.monotonic()
+        _msg_count = len(api_kwargs.get("messages", []))
+        _tool_count = len(api_kwargs.get("tools", []))
+        logger.info("API_CALL model=%s mode=%s messages=%d tools=%d",
+                     api_kwargs.get("model", self.model), self.api_mode, _msg_count, _tool_count)
+
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
 
@@ -2803,7 +2830,13 @@ class AIAgent:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
+            _api_elapsed = time.monotonic() - _api_t0
+            logger.warning("API_ERROR model=%s duration=%.2fs error=%s",
+                           api_kwargs.get("model", self.model), _api_elapsed,
+                           str(result["error"])[:300])
             raise result["error"]
+        _api_elapsed = time.monotonic() - _api_t0
+        logger.info("API_RESULT model=%s duration=%.2fs", api_kwargs.get("model", self.model), _api_elapsed)
         return result["response"]
 
     def _streaming_thinking_api_call(self, api_kwargs: dict):
@@ -2817,6 +2850,12 @@ class AIAgent:
         Supports both chat_completions (OpenAI-format reasoning deltas) and
         anthropic_messages (thinking block deltas).
         """
+        _api_t0 = time.monotonic()
+        _msg_count = len(api_kwargs.get("messages", []))
+        _tool_count = len(api_kwargs.get("tools", []))
+        logger.info("API_CALL_STREAM model=%s mode=%s messages=%d tools=%d",
+                     api_kwargs.get("model", self.model), self.api_mode, _msg_count, _tool_count)
+
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
         thinking_buf = []
@@ -3060,7 +3099,13 @@ class AIAgent:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
         if result["error"] is not None:
+            _api_elapsed = time.monotonic() - _api_t0
+            logger.warning("API_STREAM_ERROR model=%s duration=%.2fs error=%s",
+                           api_kwargs.get("model", self.model), _api_elapsed,
+                           str(result["error"])[:300])
             raise result["error"]
+        _api_elapsed = time.monotonic() - _api_t0
+        logger.info("API_STREAM_RESULT model=%s duration=%.2fs", api_kwargs.get("model", self.model), _api_elapsed)
         return result["response"]
 
     def _streaming_api_call(self, api_kwargs: dict, stream_callback):
@@ -4669,6 +4714,11 @@ class AIAgent:
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
+
+        # Log the incoming user message
+        _user_preview = user_message[:200] + "..." if len(user_message) > 200 else user_message
+        logger.info("USER_MESSAGE session=%s platform=%s length=%d preview=%s",
+                     self.session_id, self.platform, len(user_message), repr(_user_preview))
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
