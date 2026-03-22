@@ -2920,6 +2920,7 @@ class AIAgent:
                 tool_calls_acc: dict[int, dict] = {}
                 finish_reason = None
                 model_name = None
+                chunk = None  # ensure bound even if no valid SSE chunks arrive
 
                 logger.debug("stream_thinking: POST %s (model=%s)", url, body.get("model"))
                 with _httpx.Client(timeout=_httpx.Timeout(connect=30, read=600, write=30, pool=30)) as http:
@@ -2944,6 +2945,9 @@ class AIAgent:
                                 try:
                                     chunk = json.loads(line)
                                 except (json.JSONDecodeError, ValueError):
+                                    continue
+
+                                if not isinstance(chunk, dict):
                                     continue
 
                                 if chunk.get("model"):
