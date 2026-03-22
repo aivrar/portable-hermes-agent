@@ -129,6 +129,15 @@ class _SafeWriter:
             return self._inner.write(data)
         except OSError:
             return len(data) if isinstance(data, str) else 0
+        except UnicodeEncodeError:
+            # Windows cp1252 console can't render emojis/unicode — strip them
+            if isinstance(data, str):
+                safe = data.encode("ascii", errors="replace").decode("ascii")
+                try:
+                    return self._inner.write(safe)
+                except OSError:
+                    pass
+            return len(data) if isinstance(data, str) else 0
 
     def flush(self):
         try:

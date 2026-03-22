@@ -1230,7 +1230,6 @@ SKILLS_LIST_SCHEMA = {
                 "description": "Optional category filter to narrow results",
             }
         },
-        "required": [],
     },
 }
 

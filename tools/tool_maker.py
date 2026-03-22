@@ -257,7 +257,7 @@ def create_tool_handler(args: dict, **kwargs) -> str:
             return json.dumps({"error": "code is required for custom code tools"})
 
         parameters = args.get("parameters") or {
-            "type": "object", "properties": {}, "required": [],
+            "type": "object", "properties": {},
         }
 
         source = _generate_custom_tool(name, description, parameters, code)

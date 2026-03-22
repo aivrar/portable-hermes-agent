@@ -353,7 +353,6 @@ HA_LIST_ENTITIES_SCHEMA = {
                 ),
             },
         },
-        "required": [],
     },
 }
 
@@ -397,7 +396,6 @@ HA_LIST_SERVICES_SCHEMA = {
                 ),
             },
         },
-        "required": [],
     },
 }
 

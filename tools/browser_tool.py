@@ -308,7 +308,6 @@ BROWSER_TOOL_SCHEMAS = [
                     "default": False
                 }
             },
-            "required": []
         }
     },
     {
@@ -364,7 +363,6 @@ BROWSER_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {},
-            "required": []
         }
     },
     {
@@ -387,7 +385,6 @@ BROWSER_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {},
-            "required": []
         }
     },
     {
@@ -396,7 +393,6 @@ BROWSER_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {},
-            "required": []
         }
     },
     {
@@ -430,7 +426,6 @@ BROWSER_TOOL_SCHEMAS = [
                     "description": "If true, clear the message buffers after reading"
                 }
             },
-            "required": []
         }
     },
 ]

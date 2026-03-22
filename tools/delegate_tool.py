@@ -738,7 +738,6 @@ DELEGATE_TASK_SCHEMA = {
                 ),
             },
         },
-        "required": [],
     },
 }
 

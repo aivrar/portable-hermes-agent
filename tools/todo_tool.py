@@ -249,7 +249,6 @@ TODO_SCHEMA = {
                 "default": False
             }
         },
-        "required": []
     }
 }
 

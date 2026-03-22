@@ -48,7 +48,6 @@ SEND_MESSAGE_SCHEMA = {
                 "description": "The message text to send"
             }
         },
-        "required": []
     }
 }
 

@@ -63,7 +63,6 @@ _PROFILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {},
-        "required": [],
     },
 }
 
