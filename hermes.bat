@@ -52,6 +52,36 @@ if not exist "%PYTHON_EXE%" (
     goto :eof
 )
 
+:: Auto-create .env from template if missing
+if not exist "%SCRIPT_DIR%.env" (
+    if exist "%SCRIPT_DIR%.env.example" (
+        copy "%SCRIPT_DIR%.env.example" "%SCRIPT_DIR%.env" >nul
+    )
+)
+
+:: Auto-create cli-config.yaml from template if missing
+if not exist "%SCRIPT_DIR%cli-config.yaml" (
+    if exist "%SCRIPT_DIR%cli-config.yaml.example" (
+        copy "%SCRIPT_DIR%cli-config.yaml.example" "%SCRIPT_DIR%cli-config.yaml" >nul
+    )
+)
+
+:: Create ~/.hermes and copy default personality if missing
+if not exist "%USERPROFILE%\.hermes" mkdir "%USERPROFILE%\.hermes"
+if not exist "%USERPROFILE%\.hermes\SOUL.md" (
+    if exist "%SCRIPT_DIR%assets\SOUL.md" (
+        copy "%SCRIPT_DIR%assets\SOUL.md" "%USERPROFILE%\.hermes\SOUL.md" >nul
+    )
+)
+
+:: Clear stray API keys from other tools (LM Studio, OpenAI CLI, etc.)
+:: Hermes manages its own credentials via ~/.hermes/.env — external keys
+:: from the user's shell cause auth mismatches and silent failures.
+set "OPENAI_API_KEY="
+set "OPENAI_BASE_URL="
+set "ANTHROPIC_API_KEY="
+set "ANTHROPIC_TOKEN="
+
 :: Set up PATH for embedded Python + node tools (must be FIRST to override system)
 set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%SCRIPT_DIR%node_modules\.bin;%PATH%"
 
@@ -59,6 +89,10 @@ set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%SCRIPT_DIR%node_modules\.bin;%PATH%
 set "PIP_TARGET=%PYTHON_DIR%\Lib\site-packages"
 set "PIP_PREFIX=%PYTHON_DIR%"
 set "PYTHONPATH=%PYTHON_DIR%\Lib\site-packages"
+
+:: Expose portable Python path so tools and the agent can find it
+set "HERMES_PYTHON=%PYTHON_EXE%"
+set "HERMES_ROOT=%SCRIPT_DIR%"
 
 :: Set terminal working directory
 if not defined TERMINAL_CWD set "TERMINAL_CWD=%SCRIPT_DIR%"
@@ -69,6 +103,7 @@ chcp 65001 >nul 2>&1
 
 :: Launch Hermes
 cd /d "%SCRIPT_DIR%"
+echo   Loading Hermes Agent...
 "%PYTHON_EXE%" -m hermes_cli.main %*
 
 endlocal

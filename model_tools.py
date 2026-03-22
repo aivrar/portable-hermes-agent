@@ -105,6 +105,7 @@ def _discover_tools():
         "tools.workflow_tool",
         "tools.serper_search_tool",
         "tools.guide_tool",
+        "tools.browse_tools_tool",
     ]
     import importlib
     for mod_name in _modules:

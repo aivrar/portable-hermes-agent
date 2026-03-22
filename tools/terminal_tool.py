@@ -987,6 +987,25 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+        # Rewrite bare pip/python to use portable Python when available
+        hermes_python = os.environ.get("HERMES_PYTHON", "")
+        if hermes_python and env_type == "local":
+            import re as _re
+            # Replace bare "pip install ..." with portable python -m pip
+            command = _re.sub(
+                r'^pip\s+', f'"{hermes_python}" -m pip ', command
+            )
+            command = _re.sub(
+                r'^pip3\s+', f'"{hermes_python}" -m pip ', command
+            )
+            # Replace bare "python ..." or "python.exe ..." with portable path
+            command = _re.sub(
+                r'^python(?:\.exe)?\s+', f'"{hermes_python}" ', command
+            )
+            command = _re.sub(
+                r'^python3\s+', f'"{hermes_python}" ', command
+            )
+
         # Prepare command for execution
         if background:
             # Spawn a tracked background process via the process registry.

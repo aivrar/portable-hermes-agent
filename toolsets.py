@@ -138,6 +138,12 @@ TOOLSETS = {
         "tools": ["mixture_of_agents"],
         "includes": []
     },
+
+    "core": {
+        "description": "Core agent utilities (tool discovery)",
+        "tools": ["browse_tools"],
+        "includes": []
+    },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

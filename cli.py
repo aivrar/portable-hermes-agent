@@ -437,9 +437,21 @@ from rich.text import Text as _RichText
 
 import fire
 
-# Import the agent and tool systems
-from run_agent import AIAgent
-from model_tools import get_tool_definitions, get_toolset_for_tool
+# Lazy imports for agent and tool systems — deferred to speed up startup.
+# These modules load 99 tools and heavy libraries (firecrawl, pydantic, etc.)
+# Accessing them triggers the actual import on first use.
+AIAgent = None
+get_tool_definitions = None
+get_toolset_for_tool = None
+
+def _ensure_agent_imports():
+    global AIAgent, get_tool_definitions, get_toolset_for_tool
+    if AIAgent is None:
+        from run_agent import AIAgent as _A
+        from model_tools import get_tool_definitions as _G, get_toolset_for_tool as _T
+        AIAgent = _A
+        get_tool_definitions = _G
+        get_toolset_for_tool = _T
 
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import (
@@ -1351,12 +1363,16 @@ class HermesCLI:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
+
+        Triggers lazy import of agent and tool modules on first call.
         
         Returns:
             bool: True if successful, False otherwise
         """
         if self.agent is not None:
             return True
+
+        _ensure_agent_imports()
 
         if not self._ensure_runtime_credentials():
             return False
@@ -1456,6 +1472,7 @@ class HermesCLI:
     
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
+        _ensure_agent_imports()
         self.console.clear()
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)

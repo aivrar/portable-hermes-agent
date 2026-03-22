@@ -142,6 +142,91 @@ def _has_any_provider_configured() -> bool:
     return False
 
 
+def _run_quick_first_setup() -> bool:
+    """Friendly first-run setup. Just get an API key and go.
+
+    Returns True if a key was saved, False if the user cancelled.
+    """
+    from hermes_cli.config import save_env_value, ensure_hermes_home, load_config, save_config
+
+    print()
+    print("  +" + "-" * 50 + "+")
+    print("  |                                                  |")
+    print("  |        Welcome to Hermes Agent!                  |")
+    print("  |                                                  |")
+    print("  |   Your portable AI assistant with 99 tools.      |")
+    print("  |   Let's get you connected to an AI model.        |")
+    print("  |                                                  |")
+    print("  +" + "-" * 50 + "+")
+    print()
+    print()
+    print("  Hermes needs an API key to talk to AI models.")
+    print("  The easiest option is OpenRouter -- one key")
+    print("  gives you access to 100+ models (ChatGPT,")
+    print("  Claude, Gemini, Llama, and more).")
+    print()
+    print("  1.  Go to:  https://openrouter.ai/keys")
+    print("  2.  Sign up (free, no credit card needed)")
+    print("  3.  Create an API key and paste it below")
+    print()
+    print("  If you already have a key, just paste it now.")
+    print()
+    print("  ... or type 'other' for more connection options.")
+    print()
+
+    try:
+        api_key = input("  Paste your OpenRouter API key here: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+    if api_key.lower() == "other":
+        # Hand off to the full setup wizard
+        print()
+        cmd_setup(type("Args", (), {"section": None})())
+        return _has_any_provider_configured()
+
+    if not api_key:
+        print()
+        print("  No key entered.")
+        return False
+
+    # Save the key
+    ensure_hermes_home()
+    save_env_value("OPENROUTER_API_KEY", api_key)
+    os.environ["OPENROUTER_API_KEY"] = api_key
+
+    # Set sensible defaults in config.yaml
+    config = load_config()
+    if not isinstance(config.get("model"), dict):
+        config["model"] = {}
+    config["model"]["default"] = "google/gemini-2.5-flash"
+    config["model"]["provider"] = "openrouter"
+    config["model"]["base_url"] = "https://openrouter.ai/api/v1"
+    if "agent" not in config:
+        config["agent"] = {}
+    config["agent"]["max_turns"] = 60
+    if "terminal" not in config:
+        config["terminal"] = {}
+    config["terminal"]["backend"] = "local"
+    config["terminal"]["cwd"] = "."
+    config["terminal"]["timeout"] = 180
+    # Lean toolset — only tools that work out of the box, no extension servers
+    config["toolsets"] = ["web", "terminal", "file", "skills", "todo", "memory", "tts", "vision", "clarify", "core"]
+    config["platform_toolsets"] = {"cli": ["web", "terminal", "file", "skills", "todo", "memory", "tts", "vision", "clarify", "core"]}
+    save_config(config)
+
+    print()
+    print("  Key saved! Starting Hermes Agent...")
+    print()
+    print("  Tip: You can change models anytime by typing")
+    print("       /model in the chat, or ask the agent to")
+    print("       switch models for you.")
+    print()
+
+    return True
+
+
 def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
@@ -450,29 +535,26 @@ def cmd_chat(args):
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
-        print()
-        print("It looks like Hermes isn't configured yet -- no API keys or providers found.")
-        print()
-        print("  Run:  hermes setup")
-        print()
-
-        from hermes_cli.setup import is_interactive_stdin, print_noninteractive_setup_guidance
+        from hermes_cli.setup import is_interactive_stdin
 
         if not is_interactive_stdin():
-            print_noninteractive_setup_guidance(
-                "No interactive TTY detected for the first-run setup prompt."
-            )
+            print()
+            print("No API key configured. Run 'hermes setup' in a terminal window.")
             sys.exit(1)
 
-        try:
-            reply = input("Run setup now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            reply = "n"
-        if reply in ("", "y", "yes"):
-            cmd_setup(args)
-            return
+        _did_setup = _run_quick_first_setup()
+        if _did_setup:
+            # Reload env and launch chat
+            from hermes_cli.env_loader import load_hermes_dotenv
+            _hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+            load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
+            if _has_any_provider_configured():
+                cmd_chat(args)
+                return
         print()
-        print("You can run 'hermes setup' at any time to configure.")
+        print("You can run this again anytime to set up.")
+        print()
+        input("Press Enter to exit...")
         sys.exit(1)
 
     # Start update check in background (runs while other init happens)
@@ -2102,215 +2184,8 @@ def _restore_stashed_changes(
 
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
-    import shutil
-    
-    print("⚕ Updating Hermes Agent...")
-    print()
-    
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
-    use_zip_update = False
-    git_dir = PROJECT_ROOT / '.git'
-    
-    if not git_dir.exists():
-        if sys.platform == "win32":
-            use_zip_update = True
-        else:
-            print("✗ Not a git repository. Please reinstall:")
-            print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash")
-            sys.exit(1)
-    
-    # On Windows, git can fail with "unable to write loose object file: Invalid argument"
-    # due to filesystem atomicity issues. Set the recommended workaround.
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
-            cwd=PROJECT_ROOT, check=False, capture_output=True
-        )
-
-    if use_zip_update:
-        # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
-        return
-
-    # Fetch and pull
-    try:
-        print("→ Fetching updates...")
-        git_cmd = ["git"]
-        if sys.platform == "win32":
-            git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-        
-        subprocess.run(git_cmd + ["fetch", "origin"], cwd=PROJECT_ROOT, check=True)
-        
-        # Get current branch
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        branch = result.stdout.strip()
-
-        # Fall back to main if the current branch doesn't exist on the remote
-        verify = subprocess.run(
-            git_cmd + ["rev-parse", "--verify", f"origin/{branch}"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True,
-        )
-        if verify.returncode != 0:
-            branch = "main"
-
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        commit_count = int(result.stdout.strip())
-        
-        if commit_count == 0:
-            print("✓ Already up to date!")
-            return
-        
-        print(f"→ Found {commit_count} new commit(s)")
-
-        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-        prompt_for_restore = auto_stash_ref is not None and sys.stdin.isatty() and sys.stdout.isatty()
-
-        print("→ Pulling updates...")
-        try:
-            subprocess.run(git_cmd + ["pull", "origin", branch], cwd=PROJECT_ROOT, check=True)
-        finally:
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                )
-        
-        # Reinstall Python dependencies (prefer uv for speed, fall back to pip)
-        print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
-        if uv_bin:
-            subprocess.run(
-                [uv_bin, "pip", "install", "-e", ".", "--quiet"],
-                cwd=PROJECT_ROOT, check=True,
-                env={**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            )
-        else:
-            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            if venv_pip.exists():
-                subprocess.run([str(venv_pip), "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-            else:
-                subprocess.run(["pip", "install", "-e", ".", "--quiet"], cwd=PROJECT_ROOT, check=True)
-        
-        # Check for Node.js deps
-        if (PROJECT_ROOT / "package.json").exists():
-            import shutil
-            if shutil.which("npm"):
-                print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
-        
-        print()
-        print("✓ Code updated!")
-        
-        # Sync bundled skills (copies new, updates changed, respects user deletions)
-        try:
-            from tools.skills_sync import sync_skills
-            print()
-            print("→ Syncing bundled skills...")
-            result = sync_skills(quiet=True)
-            if result["copied"]:
-                print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-            if result.get("updated"):
-                print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
-            if result.get("user_modified"):
-                print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-            if result.get("cleaned"):
-                print(f"  − {len(result['cleaned'])} removed from manifest")
-            if not result["copied"] and not result.get("updated"):
-                print("  ✓ Skills are up to date")
-        except Exception as e:
-            logger.debug("Skills sync during update failed: %s", e)
-        
-        # Check for config migrations
-        print()
-        print("→ Checking configuration for new options...")
-        
-        from hermes_cli.config import (
-            get_missing_env_vars, get_missing_config_fields, 
-            check_config_version, migrate_config
-        )
-        
-        missing_env = get_missing_env_vars(required_only=True)
-        missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
-        
-        needs_migration = missing_env or missing_config or current_ver < latest_ver
-        
-        if needs_migration:
-            print()
-            if missing_env:
-                print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
-            if missing_config:
-                print(f"  ℹ️  {len(missing_config)} new config option(s) available")
-            
-            print()
-            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
-            
-            if response in ('', 'y', 'yes'):
-                print()
-                results = migrate_config(interactive=True, quiet=False)
-                
-                if results["env_added"] or results["config_added"]:
-                    print()
-                    print("✓ Configuration updated!")
-            else:
-                print()
-                print("Skipped. Run 'hermes config migrate' later to configure.")
-        else:
-            print("  ✓ Configuration is up to date")
-        
-        print()
-        print("✓ Update complete!")
-        
-        # Auto-restart gateway if it's running as a systemd service
-        try:
-            check = subprocess.run(
-                ["systemctl", "--user", "is-active", "hermes-gateway"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if check.stdout.strip() == "active":
-                print()
-                print("→ Gateway service is running — restarting to pick up changes...")
-                restart = subprocess.run(
-                    ["systemctl", "--user", "restart", "hermes-gateway"],
-                    capture_output=True, text=True, timeout=15,
-                )
-                if restart.returncode == 0:
-                    print("✓ Gateway restarted.")
-                else:
-                    print(f"⚠ Gateway restart failed: {restart.stderr.strip()}")
-                    print("  Try manually: hermes gateway restart")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass  # No systemd (macOS, WSL1, etc.) — skip silently
-        
-        print()
-        print("Tip: You can now select a provider and model:")
-        print("  hermes model              # Select provider and model")
-        
-    except subprocess.CalledProcessError as e:
-        if sys.platform == "win32":
-            print(f"⚠ Git update failed: {e}")
-            print("→ Falling back to ZIP download...")
-            print()
-            _update_via_zip(args)
-        else:
-            print(f"✗ Update failed: {e}")
-            sys.exit(1)
+    print("This is a standalone build. Updates are managed manually.")
+    return
 
 
 def _coalesce_session_name_args(argv: list) -> list:

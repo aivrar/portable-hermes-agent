@@ -4020,6 +4020,9 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "browse_tools":
+            from tools.browse_tools_tool import browse_tools_handler
+            return browse_tools_handler(function_args, agent=self)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
