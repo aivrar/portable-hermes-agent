@@ -96,19 +96,9 @@ hermes_gui.bat      :: GUI mode
 
 ## Documentation
 
-Full documentation available in the **[Wiki](../../wiki)**.
+A searchable user guide is built into the agent — ask it anything or use the `search_guide` tool. The [PDF manual](https://github.com/rookiemann/portable-hermes-agent/releases/latest) is included in every release.
 
-| Page | Content |
-|------|---------|
-| [Getting Started](../../wiki/Getting-Started) | First launch, API setup, choosing a model |
-| [The Interface](../../wiki/The-Interface) | Chat, sidebar, menus, shortcuts |
-| [Permissions](../../wiki/Permissions) | File, network, and system access control |
-| [LM Studio Guide](../../wiki/LM-Studio-Guide) | Local AI models, VRAM guide, GPU isolation |
-| [Extensions Overview](../../wiki/Extensions-Overview) | TTS, Music, ComfyUI modules |
-| [All Tools Reference](../../wiki/All-Tools-Reference) | Complete 46+ tool list |
-| [Custom Tools](../../wiki/Custom-Tools) | Build tools dynamically |
-| [Workflows](../../wiki/Workflows) | Multi-step automation |
-| [Glossary](../../wiki/Glossary) | AI terms in plain English |
+Key topics: getting started, API setup, the interface, permissions, LM Studio local models, extensions (TTS/Music/ComfyUI), all 100 tools, custom tool creation, workflows, and a glossary of AI terms.
 
 ---
 

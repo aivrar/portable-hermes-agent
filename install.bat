@@ -268,8 +268,8 @@ echo.
 echo   What's installed:
 echo     - Python 3.13 (portable)
 echo     - Tkinter GUI
-echo     - 30 AI tools
-echo     - 89+ skills
+echo     - 100 AI tools across 20+ toolsets
+echo     - 88+ skills
 echo     - LM Studio SDK
 echo     - Browser automation
 echo.

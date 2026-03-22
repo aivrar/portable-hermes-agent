@@ -61,6 +61,10 @@ python_embedded.zip
 # Agent workspace (temp scripts, scratch files)
 workspace/
 
+# Debug/test logs (legacy locations, now in ~/.hermes/logs/)
+*_debug.log
+test_script.sh
+
 # Extension repos (cloned on install)
 extensions/comfyui/
 extensions/music-server/
