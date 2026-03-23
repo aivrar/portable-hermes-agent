@@ -1001,6 +1001,7 @@ Workflows are saved as JSON files in the `workflows/` directory.
 The `.env` file is for **API keys only**. Model selection, LM Studio settings, GPU preferences, and other runtime state are managed through the GUI — not through environment variables.
 
 **API keys:**
+
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (required for cloud models) | `sk-or-v1-...` |
@@ -1011,6 +1012,7 @@ The `.env` file is for **API keys only**. Model selection, LM Studio settings, G
 | `GITHUB_TOKEN` | Skills Hub (higher rate limits) | |
 
 **Extension ports (optional):**
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TTS_SERVER_URL` | `http://localhost:8200` | TTS server address |
