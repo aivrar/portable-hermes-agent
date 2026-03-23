@@ -55,10 +55,13 @@ for line in text.split("\n"):
         elif s.startswith("---"):
             pdf.ln(2)
         elif s.startswith("| "):
+            # Skip separator rows like |---|---|
+            if s.replace("|", "").replace("-", "").replace(" ", "") == "":
+                continue
             pdf.set_font("Helvetica", "", 8)
             # Truncate long table rows
-            if len(clean) > 120:
-                clean = clean[:117] + "..."
+            if len(clean) > 130:
+                clean = clean[:127] + "..."
             pdf.multi_cell(0, 4, clean)
         elif s.startswith(("- ", "* ")):
             pdf.set_font("Helvetica", "", 10)

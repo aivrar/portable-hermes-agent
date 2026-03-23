@@ -749,7 +749,7 @@ Say: "Generate a 1024x768 image of a cyberpunk city at night, 30 steps, high det
 
 ## Part 7: All Tools — Complete Reference
 
-Hermes has 46+ tools organized into categories. Each tool is a specific capability that Hermes can use to accomplish your requests. You don't need to remember tool names — just describe what you want and Hermes will pick the right tool.
+Hermes has 100 tools organized into categories. Each tool is a specific capability that Hermes can use to accomplish your requests. You don't need to remember tool names — just describe what you want and Hermes will pick the right tool.
 
 ### Web and Search Tools
 
