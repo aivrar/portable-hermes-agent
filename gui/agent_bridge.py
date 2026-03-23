@@ -481,7 +481,6 @@ You are running on **{os_name} {os_release}**.
             tool_progress_callback=self._on_tool_progress,
             thinking_callback=self._on_thinking,
             reasoning_callback=self._on_reasoning,
-            stream_thinking=self.config.get("display", {}).get("stream_thinking", False),
             step_callback=self._on_step,
             clarify_callback=self._on_clarify,
         )

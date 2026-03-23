@@ -221,12 +221,42 @@ class ExtensionsManager(tk.Toplevel):
                 font=FONTS["small"], fg=C["text_hint"],
                 bg=C["bg_main"]).pack()
 
-        # Extension cards
-        self.cards_frame = tk.Frame(self, bg=C["bg_main"])
-        self.cards_frame.pack(fill="both", expand=True, padx=20, pady=16)
+        # Scrollable extension cards
+        container = tk.Frame(self, bg=C["bg_main"])
+        container.pack(fill="both", expand=True, padx=20, pady=16)
 
-        self.status = get_extension_status()
+        canvas = tk.Canvas(container, bg=C["bg_main"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        self.cards_frame = tk.Frame(canvas, bg=C["bg_main"])
+
+        self.cards_frame.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.cards_frame, anchor="nw",
+                            width=canvas.winfo_reqwidth())
+        canvas.configure(yscrollcommand=scrollbar.set)
+        # Resize inner frame when canvas resizes
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(canvas.find_withtag("all")[0], width=e.width))
+        # Mousewheel scrolling
+        canvas.bind_all("<MouseWheel>",
+            lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Load extension status in background to avoid freeze
+        self.status = {}
         self._build_cards()
+        import threading
+        threading.Thread(target=self._load_status, daemon=True).start()
+
+    def _load_status(self):
+        """Load extension status in background, then refresh cards."""
+        self.status = get_extension_status()
+        try:
+            self.after(0, self._build_cards)
+        except Exception:
+            pass  # window may have been closed
 
     def _build_cards(self):
         for widget in self.cards_frame.winfo_children():
