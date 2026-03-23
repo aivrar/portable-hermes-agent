@@ -488,8 +488,8 @@ class Sidebar(tk.Frame):
         ctx_row.pack(fill="x", pady=2)
         tk.Label(ctx_row, text="Ctx:", font=FONTS["small"],
                 fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w").pack(side="left")
-        self._ctx_var = tk.IntVar(value=4096)
-        ctx_spin = ttk.Spinbox(ctx_row, from_=512, to=131072, increment=512,
+        self._ctx_var = tk.IntVar(value=32768)
+        ctx_spin = ttk.Spinbox(ctx_row, from_=32768, to=131072, increment=4096,
                                textvariable=self._ctx_var, font=FONTS["small"], width=8)
         ctx_spin.pack(side="left")
         ctx_spin.bind("<FocusOut>", lambda e: self._save_local_settings())

@@ -434,9 +434,10 @@ class LMStudioPanel(tk.Toplevel):
                 fg=C["text_secondary"], bg=C["bg_main"], width=12,
                 anchor="w").pack(side="left")
 
-        self.ctx_var = tk.IntVar(value=4096)
+        self.ctx_var = tk.IntVar(value=32768)
         # Use a tk.Scale for better visual control (ttk.Scale is too thin)
-        self.ctx_slider = tk.Scale(ctx_row, from_=512, to=131072,
+        # Minimum 32768 — Hermes sends ~17K tokens of tool definitions alone
+        self.ctx_slider = tk.Scale(ctx_row, from_=32768, to=131072,
                                    variable=self.ctx_var, orient="horizontal",
                                    command=self._on_ctx_change,
                                    bg=C["bg_main"], fg=C["text_primary"],
