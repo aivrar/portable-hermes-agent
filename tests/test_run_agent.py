@@ -267,6 +267,21 @@ class TestExtractReasoning:
         result = agent._extract_reasoning(msg)
         assert result == "same text"
 
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            ("<think>thinking hard</think>", "thinking hard"),
+            ("<thinking>step by step</thinking>", "step by step"),
+            (
+                "<REASONING_SCRATCHPAD>scratch analysis</REASONING_SCRATCHPAD>",
+                "scratch analysis",
+            ),
+        ],
+    )
+    def test_inline_reasoning_blocks_fallback(self, agent, content, expected):
+        msg = _mock_assistant_msg(content=content)
+        assert agent._extract_reasoning(msg) == expected
+
 
 class TestCleanSessionContent:
     def test_none_passthrough(self):
@@ -569,6 +584,164 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
+        tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
+        toolset_map = {
+            "web_search": "web",
+            "skills_list": "skills",
+            "skill_view": "skills",
+            "skill_manage": "skills",
+        }
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch(
+                "run_agent.check_toolset_requirements",
+                side_effect=AssertionError("should not re-check toolset requirements"),
+            ),
+            patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
+            patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            prompt = agent._build_system_prompt()
+
+        assert "SKILLS_PROMPT" in prompt
+        assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
+        assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
+
+
+class TestToolUseEnforcementConfig:
+    """Tests for the agent.tool_use_enforcement config option."""
+
+    def _make_agent(self, model="openai/gpt-4.1", tool_use_enforcement="auto"):
+        """Create an agent with tools and a specific enforcement config."""
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_auto_injects_for_gpt(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_codex(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/codex-mini", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_skips_for_claude(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement=True)
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_string_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="true")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_always_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-r1", tool_use_enforcement="always")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_false_disables_for_gpt(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement=False)
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_string_false_disables(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="off")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_custom_list_matches(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="deepseek/deepseek-r1",
+            tool_use_enforcement=["deepseek", "gemini"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_custom_list_no_match(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-sonnet-4",
+            tool_use_enforcement=["deepseek", "gemini"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_custom_list_case_insensitive(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="openai/GPT-4.1",
+            tool_use_enforcement=["GPT", "Codex"],
+        )
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_no_tools_never_injects(self):
+        """Even with enforcement=true, no injection when agent has no tools."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"tool_use_enforcement": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                enabled_toolsets=[],
+            )
+            a.client = MagicMock()
+            prompt = a._build_system_prompt()
+            assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
 
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
@@ -590,7 +763,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
         assert kwargs["model"] == agent.model
         assert kwargs["messages"] is messages
-        assert kwargs["timeout"] == 900.0
+        assert kwargs["timeout"] == 1800.0
 
     def test_provider_preferences_injected(self, agent):
         agent.providers_allowed = ["Anthropic"]
@@ -1202,8 +1375,8 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_empty_content_retry_and_fallback(self, agent):
-        """Empty content (only think block) retries, then falls back to partial."""
+    def test_empty_content_retry_uses_inline_reasoning_as_response(self, agent):
+        """Reasoning-only payloads should recover the inline reasoning text."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content="<think>internal reasoning</think>",
@@ -1221,9 +1394,8 @@ class TestRunConversation:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("answer me")
-        # After 3 retries with no real content, should return partial
-        assert result["completed"] is False
-        assert result.get("partial") is True
+        assert result["completed"] is True
+        assert result["final_response"] == "internal reasoning"
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -1296,19 +1468,41 @@ class TestRunConversation:
         assert result["final_response"] == "All done"
         assert result["completed"] is True
 
-    @pytest.mark.parametrize(
-        ("first_content", "second_content", "expected_final"),
-        [
-            ("Part 1 ", "Part 2", "Part 1 Part 2"),
-            ("<think>internal reasoning</think>", "Recovered final answer", "Recovered final answer"),
-        ],
-    )
-    def test_length_finish_reason_requests_continuation(
-        self, agent, first_content, second_content, expected_final
-    ):
+    def test_glm_prompt_exceeds_max_length_triggers_compression(self, agent):
+        """GLM/Z.AI uses 'Prompt exceeds max length' for context overflow."""
         self._setup_agent(agent)
-        first = _mock_response(content=first_content, finish_reason="length")
-        second = _mock_response(content=second_content, finish_reason="stop")
+        err_400 = Exception(
+            "Error code: 400 - {'error': {'code': '1261', 'message': 'Prompt exceeds max length'}}"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+
+    def test_length_finish_reason_requests_continuation(self, agent):
+        """Normal truncation (partial real content) triggers continuation."""
+        self._setup_agent(agent)
+        first = _mock_response(content="Part 1 ", finish_reason="length")
+        second = _mock_response(content="Part 2", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [first, second]
 
         with (
@@ -1320,11 +1514,57 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["api_calls"] == 2
-        assert result["final_response"] == expected_final
+        assert result["final_response"] == "Part 1 Part 2"
 
         second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+
+    def test_length_thinking_exhausted_skips_continuation(self, agent):
+        """When finish_reason='length' but content is only thinking, skip retries."""
+        self._setup_agent(agent)
+        resp = _mock_response(
+            content="<think>internal reasoning</think>",
+            finish_reason="length",
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Should return immediately — no continuation, only 1 API call
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        assert "output tokens" in result["error"].lower()
+        # Should have a user-friendly response (not None)
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+        assert "/thinkon" in result["final_response"]
+
+    def test_length_empty_content_detected_as_thinking_exhausted(self, agent):
+        """When finish_reason='length' and content is None/empty, detect exhaustion."""
+        self._setup_agent(agent)
+        resp = _mock_response(content=None, finish_reason="length")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 1
+        assert "reasoning" in result["error"].lower()
+        # User-friendly message is returned
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
 
 
 class TestRetryExhaustion:
@@ -1381,8 +1621,8 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
-    def test_api_error_raises_after_retries(self, agent):
-        """Exhausted retries on API errors must raise, not fall through."""
+    def test_api_error_returns_gracefully_after_retries(self, agent):
+        """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
         with (
@@ -1391,8 +1631,11 @@ class TestRetryExhaustion:
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
         ):
-            with pytest.raises(RuntimeError, match="rate limited"):
-                agent.run_conversation("hello")
+            result = agent.run_conversation("hello")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "rate limited" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -2264,6 +2507,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_sets_api_mode(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2285,6 +2530,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_anthropic_enables_prompt_caching(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2302,6 +2549,8 @@ class TestFallbackAnthropicProvider:
     def test_fallback_to_openrouter_uses_openai_client(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://openrouter.ai/api/v1"
@@ -2549,6 +2798,50 @@ class TestStreamingApiCall:
         assert len(tc) == 2
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
+
+    def test_ollama_reused_index_separate_tool_calls(self, agent):
+        """Ollama sends every tool call at index 0 with different ids.
+
+        Without the fix, names and arguments get concatenated into one slot.
+        """
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":"hello"}')]),
+            # Second tool call at the SAME index 0, but different id
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read_file", '{"path":"x.py"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2, f"Expected 2 tool calls, got {len(tc)}: {[t.function.name for t in tc]}"
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[0].id == "call_a"
+        assert tc[1].function.name == "read_file"
+        assert tc[1].function.arguments == '{"path":"x.py"}'
+        assert tc[1].id == "call_b"
+
+    def test_ollama_reused_index_streamed_args(self, agent):
+        """Ollama with streamed arguments across multiple chunks at same index."""
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"hello"}')]),
+            # New tool call, same index 0
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read", '{}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[1].function.name == "read"
+        assert tc[1].function.arguments == '{}'
 
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
@@ -2951,6 +3244,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_oauth_sets_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"
@@ -2972,6 +3267,8 @@ class TestFallbackSetsOAuthFlag:
     def test_fallback_to_anthropic_api_key_clears_flag(self, agent):
         agent._fallback_activated = False
         agent._fallback_model = {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        agent._fallback_chain = [agent._fallback_model]
+        agent._fallback_index = 0
 
         mock_client = MagicMock()
         mock_client.base_url = "https://api.anthropic.com/v1"

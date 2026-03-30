@@ -53,7 +53,16 @@ hermes model
 # Context length: 32768   ← set this to match your server's actual context window
 ```
 
-Hermes persists the endpoint in `config.yaml` and prompts for the context window size so compression triggers at the right time. If you leave context length blank, Hermes auto-detects it from the server's `/models` endpoint or [models.dev](https://models.dev).
+Or configure it directly in `config.yaml`:
+
+```yaml
+model:
+  default: qwen3.5:27b
+  provider: custom
+  base_url: http://localhost:11434/v1
+```
+
+Hermes persists the endpoint, provider, and base URL in `config.yaml` so it survives restarts. If your local server has exactly one model loaded, `/model custom` auto-detects it. You can also set `provider: custom` in config.yaml — it's a first-class provider, not an alias for anything else.
 
 This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See the [Configuration guide](../user-guide/configuration.md) for details.
 
@@ -84,7 +93,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 from hermes.agent import AIAgent
 
 agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
-response = await agent.chat("Explain quantum computing briefly")
+response = agent.chat("Explain quantum computing briefly")
 ```
 
 See the [Python Library guide](../user-guide/features/code-execution.md) for full API usage.
@@ -166,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 **Solution:**
 ```bash
-# Check which keys are set
-hermes config get OPENROUTER_API_KEY
+# Check your configuration
+hermes config show
 
 # Re-configure your provider
 hermes model
@@ -187,7 +196,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 **Solution:**
 ```bash
 # List available models for your provider
-hermes models
+hermes model
 
 # Set a valid model
 hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
@@ -223,10 +232,7 @@ hermes chat --model openrouter/google/gemini-2.0-flash-001
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:
 
-```bash
-# Look at the status bar — it shows the detected context length
-/context
-```
+Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
 To fix context detection, set it explicitly:
 
@@ -309,7 +315,7 @@ hermes gateway status
 hermes gateway start
 
 # Check logs for errors
-hermes gateway logs
+cat ~/.hermes/logs/gateway.log | tail -50
 ```
 
 #### Messages not delivering
@@ -318,7 +324,7 @@ hermes gateway logs
 
 **Solution:**
 - Verify your bot token is valid with `hermes gateway setup`
-- Check gateway logs: `hermes gateway logs`
+- Check gateway logs: `cat ~/.hermes/logs/gateway.log | tail -50`
 - For webhook-based platforms (Slack, WhatsApp), ensure your server is publicly accessible
 
 #### Allowlist confusion — who can talk to the bot?
@@ -342,13 +348,30 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install messaging dependencies
-pip install hermes-agent[telegram]   # or [discord], [slack], [whatsapp]
+pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
 
 # Check for port conflicts
 lsof -i :8080
 
 # Verify configuration
 hermes config show
+```
+
+#### macOS: Node.js / ffmpeg / other tools not found by gateway
+
+**Cause:** launchd services inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include Homebrew, nvm, cargo, or other user-installed tool directories. This commonly breaks the WhatsApp bridge (`node not found`) or voice transcription (`ffmpeg not found`).
+
+**Solution:** The gateway captures your shell PATH when you run `hermes gateway install`. If you installed tools after setting up the gateway, re-run the install to capture the updated PATH:
+
+```bash
+hermes gateway install    # Re-snapshots your current PATH
+hermes gateway start      # Detects the updated plist and reloads
+```
+
+You can verify the plist has the correct PATH:
+```bash
+/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" \
+  ~/Library/LaunchAgents/ai.hermes.gateway.plist
 ```
 
 ---
@@ -374,8 +397,8 @@ hermes config show
 # Compress the conversation to reduce tokens
 /compress
 
-# Check session token count
-/stats
+# Check session token usage
+/usage
 ```
 
 :::tip
@@ -463,6 +486,44 @@ See also:
 :::warning
 If an MCP server crashes mid-request, Hermes will report a timeout. Check the server's own logs (not just Hermes logs) to diagnose the root cause.
 :::
+
+---
+
+## Profiles
+
+### How do profiles differ from just setting HERMES_HOME?
+
+Profiles are a managed layer on top of `HERMES_HOME`. You *could* manually set `HERMES_HOME=/some/path` before every command, but profiles handle all the plumbing for you: creating the directory structure, generating shell aliases (`hermes-work`), tracking the active profile in `~/.hermes/active_profile`, and syncing skill updates across all profiles automatically. They also integrate with tab completion so you don't have to remember paths.
+
+### Can two profiles share the same bot token?
+
+No. Each messaging platform (Telegram, Discord, etc.) requires exclusive access to a bot token. If two profiles try to use the same token simultaneously, the second gateway will fail to connect. Create a separate bot per profile — for Telegram, talk to [@BotFather](https://t.me/BotFather) to make additional bots.
+
+### Do profiles share memory or sessions?
+
+No. Each profile has its own memory store, session database, and skills directory. They are completely isolated. If you want to start a new profile with existing memories and sessions, use `hermes profile create newname --clone-all` to copy everything from the current profile.
+
+### What happens when I run `hermes update`?
+
+`hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
+
+### Can I move a profile to a different machine?
+
+Yes. Export the profile to a portable archive and import it on the other machine:
+
+```bash
+# On the source machine
+hermes profile export work ./work-backup.tar.gz
+
+# Copy the file to the target machine, then:
+hermes profile import ./work-backup.tar.gz work
+```
+
+The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
+
+### How many profiles can I run?
+
+There is no hard limit. Each profile is just a directory under `~/.hermes/profiles/`. The practical limit depends on your disk space and how many concurrent gateways your system can handle (each gateway is a lightweight Python process). Running dozens of profiles is fine; each idle profile uses no resources.
 
 ---
 

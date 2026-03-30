@@ -35,6 +35,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-preview",     ""),
     ("google/gemini-3-flash-preview",   ""),
+    ("google/gemini-3.1-pro-preview",     ""),
+    ("google/gemini-3.1-flash-lite-preview",   ""),
     ("qwen/qwen3.5-plus-02-15",         ""),
     ("qwen/qwen3.5-35b-a3b",            ""),
     ("stepfun/step-3.5-flash",          ""),
@@ -53,12 +55,31 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "gpt-5.4",
-        "gemini-3-flash",
-        "gemini-3.0-pro-preview",
-        "deepseek-v3.2",
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.5",
+        "anthropic/claude-haiku-4.5",
+        "openai/gpt-5.4",
+        "openai/gpt-5.4-mini",
+        "xiaomi/mimo-v2-pro",
+        "openai/gpt-5.3-codex",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3.1-flash-lite-preview",
+        "qwen/qwen3.5-plus-02-15",
+        "qwen/qwen3.5-35b-a3b",
+        "stepfun/step-3.5-flash",
+        "minimax/minimax-m2.7",
+        "minimax/minimax-m2.5",
+        "z-ai/glm-5",
+        "z-ai/glm-5-turbo",
+        "moonshotai/kimi-k2.5",
+        "x-ai/grok-4.20-beta",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "arcee-ai/trinity-large-preview:free",
+        "openai/gpt-5.4-pro",
+        "openai/gpt-5.4-nano",
     ],
     "openai-codex": [
         "gpt-5.3-codex",
@@ -87,6 +108,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "zai": [
         "glm-5",
+        "glm-5-turbo",
         "glm-4.7",
         "glm-4.5",
         "glm-4.5-flash",
@@ -190,14 +212,31 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
+    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
+    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
+    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
+    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
+    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.5-plus",
-        "qwen3-max",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        "qwen-plus-latest",
-        "qwen3.5-flash",
-        "qwen-vl-max",
+        # Third-party models available on coding-intl
+        "glm-5",
+        "glm-4.7",
+        "kimi-k2.5",
+        "MiniMax-M2.5",
+    ],
+    # Curated HF model list — only agentic models that map to OpenRouter defaults.
+    "huggingface": [
+        "Qwen/Qwen3.5-397B-A17B",
+        "Qwen/Qwen3.5-35B-A3B",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2.5",
+        "MiniMaxAI/MiniMax-M2.5",
+        "zai-org/GLM-5",
+        "XiaomiMiMo/MiMo-V2-Flash",
+        "moonshotai/Kimi-K2-Thinking",
     ],
 }
 
@@ -218,6 +257,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
 
@@ -253,6 +293,9 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "hf": "huggingface",
+    "hugging-face": "huggingface",
+    "huggingface-hub": "huggingface",
 }
 
 
@@ -286,7 +329,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
@@ -345,6 +388,15 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
+            # Support custom:name:model triple syntax for named custom
+            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
+            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
+            if provider_part == "custom" and ":" in model_part:
+                second_colon = model_part.find(":")
+                custom_name = model_part[:second_colon].strip()
+                actual_model = model_part[second_colon + 1:].strip()
+                if custom_name and actual_model:
+                    return (f"custom:{custom_name}", actual_model)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

@@ -34,6 +34,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
+    "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -47,12 +48,37 @@ from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
+# Managed mode (NixOS declarative config)
+# =============================================================================
+
+def is_managed() -> bool:
+    """Check if hermes is running in Nix-managed mode.
+
+    Two signals: the HERMES_MANAGED env var (set by the systemd service),
+    or a .managed marker file in HERMES_HOME (set by the NixOS activation
+    script, so interactive shells also see it).
+    """
+    if os.getenv("HERMES_MANAGED", "").lower() in ("true", "1", "yes"):
+        return True
+    managed_marker = get_hermes_home() / ".managed"
+    return managed_marker.exists()
+
+def managed_error(action: str = "modify configuration"):
+    """Print user-friendly error for managed mode."""
+    print(
+        f"Cannot {action}: configuration is managed by NixOS (HERMES_MANAGED=true).\n"
+        "Edit services.hermes-agent.settings in your configuration.nix and run:\n"
+        "  sudo nixos-rebuild switch",
+        file=sys.stderr,
+    )
+
+
+# =============================================================================
 # Config paths
 # =============================================================================
 
-def get_hermes_home() -> Path:
-    """Get the Hermes home directory (~/.hermes)."""
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+# Re-export from hermes_constants — canonical definition lives there.
+from hermes_constants import get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -110,15 +136,26 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "anthropic/claude-opus-4.6",
+    "fallback_providers": [],
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Tool-use enforcement: injects system prompt guidance that tells the
+        # model to actually call tools instead of describing intended actions.
+        # Values: "auto" (default — applies to gpt/codex models), true/false
+        # (force on/off for all models), or a list of model-name substrings
+        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        "tool_use_enforcement": "auto",
     },
     
     "terminal": {
         "backend": "local",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Environment variables to pass through to sandboxed execution
+        # (terminal and execute_code).  Skill-declared required_environment_variables
+        # are passed through automatically; this list is for non-skill use cases.
+        "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
@@ -145,6 +182,7 @@ DEFAULT_CONFIG = {
     
     "browser": {
         "inactivity_timeout": 120,
+        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
     },
 
@@ -158,8 +196,10 @@ DEFAULT_CONFIG = {
     
     "compression": {
         "enabled": True,
-        "threshold": 0.50,
-        "summary_model": "",  # empty = use main configured model
+        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "summary_model": "",          # empty = use main configured model
         "summary_provider": "auto",
         "summary_base_url": None,
     },
@@ -189,42 +229,49 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,         # seconds — increase for slow local models
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
         },
         "session_search": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "skills_hub": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "mcp": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
         "flush_memories": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
+            "timeout": 30,
         },
     },
     
@@ -232,11 +279,14 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
+        "busy_input_mode": "interrupt",
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
     },
 
     # Privacy settings
@@ -310,6 +360,8 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+                               # independent of the parent's max_iterations)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -317,6 +369,13 @@ DEFAULT_CONFIG = {
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
+    # Skills — external skill directories for sharing skills across tools/agents.
+    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
+    # always goes to ~/.hermes/skills/.
+    "skills": {
+        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -370,6 +429,12 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+    },
+
+    "cron": {
+        # Wrap delivered cron responses with a header (task name) and footer
+        # ("The agent cannot see this message").  Set to false for clean output.
+        "wrap_response": True,
     },
 
     # Config schema version - bump this when adding new required fields
@@ -511,14 +576,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
     },
     "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key for Qwen models",
+        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",
         "url": "https://modelstudio.console.alibabacloud.com/",
         "password": True,
         "category": "provider",
     },
     "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: international endpoint)",
+        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "prompt": "DashScope Base URL",
         "url": "",
         "password": False,
@@ -557,8 +622,31 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "HF_TOKEN": {
+        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
+        "prompt": "Hugging Face Token",
+        "url": "https://huggingface.co/settings/tokens",
+        "password": True,
+        "category": "provider",
+    },
+    "HF_BASE_URL": {
+        "description": "Hugging Face Inference Providers base URL override",
+        "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
+    "EXA_API_KEY": {
+        "description": "Exa API key for AI-native web search and contents",
+        "prompt": "Exa API key",
+        "url": "https://exa.ai/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "PARALLEL_API_KEY": {
         "description": "Parallel API key for AI-native web search and extract",
         "prompt": "Parallel API key",
@@ -741,6 +829,20 @@ OPTIONAL_ENV_VARS = {
     "MATTERMOST_ALLOWED_USERS": {
         "description": "Comma-separated Mattermost user IDs allowed to use the bot",
         "prompt": "Allowed Mattermost user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_REQUIRE_MENTION": {
+        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in channels",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
+        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
+        "prompt": "Free-response channel IDs (comma-separated)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1172,6 +1274,26 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _expand_env_vars(obj):
+    """Recursively expand ``${VAR}`` references in config values.
+
+    Only string values are processed; dict keys, numbers, booleans, and
+    None are left untouched.  Unresolved references (variable not in
+    ``os.environ``) are kept verbatim so callers can detect them.
+    """
+    if isinstance(obj, str):
+        return re.sub(
+            r"\${([^}]+)}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            obj,
+        )
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize legacy root-level max_turns into agent.max_turns."""
     config = dict(config)
@@ -1213,7 +1335,7 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _normalize_max_turns_config(config)
+    return _expand_env_vars(_normalize_max_turns_config(config))
 
 
 _SECURITY_COMMENT = """
@@ -1313,6 +1435,9 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
+    if is_managed():
+        managed_error("save configuration")
+        return
     from utils import atomic_yaml_write
 
     ensure_hermes_home()
@@ -1454,6 +1579,9 @@ def sanitize_env_file() -> int:
 
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
+    if is_managed():
+        managed_error(f"set {key}")
+        return
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
@@ -1589,6 +1717,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),
         ("TAVILY_API_KEY", "Tavily"),
@@ -1660,6 +1789,8 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
+        print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         _sm = compression.get('summary_model', '') or '(main model)'
         print(f"  Model:        {_sm}")
         comp_provider = compression.get('summary_provider', 'auto')
@@ -1708,6 +1839,9 @@ def show_config():
 
 def edit_config():
     """Open config file in user's editor."""
+    if is_managed():
+        managed_error("edit configuration")
+        return
     config_path = get_config_path()
     
     # Ensure config exists
@@ -1737,10 +1871,13 @@ def edit_config():
 
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
+    if is_managed():
+        managed_error("set configuration values")
+        return
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL', 'TAVILY_API_KEY',
         'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
         'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
         'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',

@@ -135,21 +135,28 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     """Filter Hermes-managed secrets from a subprocess environment.
 
     `_HERMES_FORCE_<VAR>` entries in ``extra_env`` opt a blocked variable back in
-    intentionally for callers that truly need it.
+    intentionally for callers that truly need it.  Vars registered via
+    :mod:`tools.env_passthrough` (skill-declared or user-configured) also
+    bypass the blocklist.
     """
+    try:
+        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+    except Exception:
+        _is_passthrough = lambda _: False  # noqa: E731
+
     sanitized: dict[str, str] = {}
 
     for key, value in (base_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             continue
-        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        if key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     for key, value in (extra_env or {}).items():
         if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             sanitized[real_key] = value
-        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        elif key not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(key):
             sanitized[key] = value
 
     return sanitized
@@ -254,18 +261,28 @@ def _clean_shell_noise(output: str) -> str:
     return result
 
 
-_SANE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
+# Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
+_SANE_PATH = (
+    "/opt/homebrew/bin:/opt/homebrew/sbin:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
 
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
+    try:
+        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+    except Exception:
+        _is_passthrough = lambda _: False  # noqa: E731
+
     merged = dict(os.environ | env)
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
             real_key = k[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
             run_env[real_key] = v
-        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
     existing_path = run_env.get("PATH", "")
     if "/usr/bin" not in existing_path.split(":"):
@@ -399,14 +416,17 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             effective_stdin = stdin_data
 
         user_shell = _find_bash()
-        _path_prefix = _get_embedded_python_path_prefix()
+        # Newline-separated wrapper (not `cmd; __hermes_rc=...` on one line).
+        # A trailing `; __hermes_rc` glued to `<<EOF` / a closing `EOF` line breaks
+        # heredoc parsing: the delimiter must be alone on its line, otherwise the
+        # rest of this script becomes heredoc body and leaks into stdout (e.g. gh
+        # issue/PR flows that use here-documents for bodies).
         fenced_cmd = (
-            f"{_path_prefix}"
-            f"printf '{_OUTPUT_FENCE}';"
-            f" {exec_command};"
-            f" __hermes_rc=$?;"
-            f" printf '{_OUTPUT_FENCE}';"
-            f" exit $__hermes_rc"
+            f"printf '{_OUTPUT_FENCE}'\n"
+            f"{exec_command}\n"
+            f"__hermes_rc=$?\n"
+            f"printf '{_OUTPUT_FENCE}'\n"
+            f"exit $__hermes_rc\n"
         )
         run_env = _make_run_env(self.env)
 

@@ -25,6 +25,7 @@ try:
         filters,
     )
     from telegram.constants import ParseMode, ChatType
+    from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -34,6 +35,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     TelegramMessageHandler = Any
+    HTTPXRequest = Any
     filters = None
     ParseMode = None
     ChatType = None
@@ -58,6 +60,11 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+)
+from gateway.platforms.telegram_network import (
+    TelegramFallbackTransport,
+    discover_fallback_ips,
+    parse_fallback_ip_env,
 )
 
 
@@ -115,6 +122,7 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -132,6 +140,17 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # DM Topics: map of topic_name -> message_thread_id (populated at startup)
+        self._dm_topics: Dict[str, int] = {}
+        # DM Topics config from extra.dm_topics
+        self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+
+    def _fallback_ips(self) -> list[str]:
+        """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
+        configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
+        if isinstance(configured, str):
+            configured = configured.split(",")
+        return parse_fallback_ip_env(",".join(str(v) for v in configured) if configured else None)
 
     @staticmethod
     def _looks_like_polling_conflict(error: Exception) -> bool:
@@ -214,7 +233,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_network_error_count = 0
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
-            # The next network error will trigger another attempt.
+            # start_polling failed — polling is dead and no further error
+            # callbacks will fire, so schedule the next retry ourselves.
+            if not self.has_fatal_error:
+                task = asyncio.ensure_future(
+                    self._handle_polling_network_error(retry_err)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
@@ -272,6 +298,163 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
         await self._notify_fatal_error()
 
+    async def _create_dm_topic(
+        self,
+        chat_id: int,
+        name: str,
+        icon_color: Optional[int] = None,
+        icon_custom_emoji_id: Optional[str] = None,
+    ) -> Optional[int]:
+        """Create a forum topic in a private (DM) chat.
+
+        Uses Bot API 9.4's createForumTopic which now works for 1-on-1 chats.
+        Returns the message_thread_id on success, None on failure.
+        """
+        if not self._bot:
+            return None
+        try:
+            kwargs: Dict[str, Any] = {"chat_id": chat_id, "name": name}
+            if icon_color is not None:
+                kwargs["icon_color"] = icon_color
+            if icon_custom_emoji_id:
+                kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+
+            topic = await self._bot.create_forum_topic(**kwargs)
+            thread_id = topic.message_thread_id
+            logger.info(
+                "[%s] Created DM topic '%s' in chat %s -> thread_id=%s",
+                self.name, name, chat_id, thread_id,
+            )
+            return thread_id
+        except Exception as e:
+            error_text = str(e).lower()
+            # If topic already exists, try to find it via getForumTopicIconStickers
+            # or we just log and skip — Telegram doesn't provide a "list topics" API
+            if "topic_name_duplicate" in error_text or "already" in error_text:
+                logger.info(
+                    "[%s] DM topic '%s' already exists in chat %s (will be mapped from incoming messages)",
+                    self.name, name, chat_id,
+                )
+            else:
+                logger.warning(
+                    "[%s] Failed to create DM topic '%s' in chat %s: %s",
+                    self.name, name, chat_id, e,
+                )
+            return None
+
+    def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
+        """Save a newly created thread_id back into config.yaml so it persists across restarts."""
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+
+            # Navigate to platforms.telegram.extra.dm_topics
+            dm_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("dm_topics", [])
+            )
+            if not dm_topics:
+                return
+
+            changed = False
+            for chat_entry in dm_topics:
+                if int(chat_entry.get("chat_id", 0)) != int(chat_id):
+                    continue
+                for t in chat_entry.get("topics", []):
+                    if t.get("name") == topic_name and not t.get("thread_id"):
+                        t["thread_id"] = thread_id
+                        changed = True
+                        break
+
+            if changed:
+                with open(config_path, "w") as f:
+                    _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                logger.info(
+                    "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
+                    self.name, thread_id, topic_name,
+                )
+        except Exception as e:
+            logger.warning("[%s] Failed to persist thread_id to config: %s", self.name, e, exc_info=True)
+
+    async def _setup_dm_topics(self) -> None:
+        """Load or create configured DM topics for specified chats.
+
+        Reads config.extra['dm_topics'] — a list of dicts:
+        [
+            {
+                "chat_id": 123456789,
+                "topics": [
+                    {"name": "General", "icon_color": 7322096, "thread_id": 100},
+                    {"name": "Accessibility Auditor", "icon_color": 9367192, "skill": "accessibility-auditor"}
+                ]
+            }
+        ]
+
+        If a topic already has a thread_id in the config (persisted from a previous
+        creation), it is loaded into the cache without calling createForumTopic.
+        Only topics without a thread_id are created via the API, and their thread_id
+        is then saved back to config.yaml for future restarts.
+        """
+        if not self._dm_topics_config:
+            return
+
+        for chat_entry in self._dm_topics_config:
+            chat_id = chat_entry.get("chat_id")
+            topics = chat_entry.get("topics", [])
+            if not chat_id or not topics:
+                continue
+
+            logger.info(
+                "[%s] Setting up %d DM topic(s) for chat %s",
+                self.name, len(topics), chat_id,
+            )
+
+            for topic_conf in topics:
+                topic_name = topic_conf.get("name")
+                if not topic_name:
+                    continue
+
+                cache_key = f"{chat_id}:{topic_name}"
+
+                # If thread_id is already persisted in config, just load into cache
+                existing_thread_id = topic_conf.get("thread_id")
+                if existing_thread_id:
+                    self._dm_topics[cache_key] = int(existing_thread_id)
+                    logger.info(
+                        "[%s] DM topic loaded from config: %s -> thread_id=%s",
+                        self.name, cache_key, existing_thread_id,
+                    )
+                    continue
+
+                # No persisted thread_id — create the topic via API
+                icon_color = topic_conf.get("icon_color")
+                icon_emoji = topic_conf.get("icon_custom_emoji_id")
+
+                thread_id = await self._create_dm_topic(
+                    chat_id=int(chat_id),
+                    name=topic_name,
+                    icon_color=icon_color,
+                    icon_custom_emoji_id=icon_emoji,
+                )
+
+                if thread_id:
+                    self._dm_topics[cache_key] = thread_id
+                    logger.info(
+                        "[%s] DM topic cached: %s -> thread_id=%s",
+                        self.name, cache_key, thread_id,
+                    )
+                    # Persist thread_id to config so we don't recreate on next restart
+                    self._persist_dm_topic_thread_id(int(chat_id), topic_name, thread_id)
+
     async def connect(self) -> bool:
         """Connect to Telegram and start polling for updates."""
         if not TELEGRAM_AVAILABLE:
@@ -306,7 +489,26 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
 
             # Build the application
-            self._app = Application.builder().token(self.config.token).build()
+            builder = Application.builder().token(self.config.token)
+            fallback_ips = self._fallback_ips()
+            if not fallback_ips:
+                fallback_ips = await discover_fallback_ips()
+                logger.info(
+                    "[%s] Auto-discovered Telegram fallback IPs: %s",
+                    self.name,
+                    ", ".join(fallback_ips),
+                )
+            if fallback_ips:
+                logger.warning(
+                    "[%s] Telegram fallback IPs active: %s",
+                    self.name,
+                    ", ".join(fallback_ips),
+                )
+                transport = TelegramFallbackTransport(fallback_ips)
+                request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                get_updates_request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                builder = builder.request(request).get_updates_request(get_updates_request)
+            self._app = builder.build()
             self._bot = self._app.bot
             
             # Register handlers
@@ -389,6 +591,18 @@ class TelegramAdapter(BasePlatformAdapter):
             
             self._mark_connected()
             logger.info("[%s] Connected and polling for Telegram updates", self.name)
+
+            # Set up DM topics (Bot API 9.4 — Private Chat Topics)
+            # Runs after connection is established so the bot can call createForumTopic.
+            # Failures here are non-fatal — the bot works fine without topics.
+            try:
+                await self._setup_dm_topics()
+            except Exception as topics_err:
+                logger.warning(
+                    "[%s] DM topics setup failed (non-fatal): %s",
+                    self.name, topics_err, exc_info=True,
+                )
+
             return True
             
         except Exception as e:
@@ -442,6 +656,26 @@ class TelegramAdapter(BasePlatformAdapter):
         self._token_lock_identity = None
         logger.info("[%s] Disconnected from Telegram", self.name)
 
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int) -> bool:
+        """Determine if this message chunk should thread to the original message.
+
+        Args:
+            reply_to: The original message ID to reply to
+            chunk_index: Index of this chunk (0 = first chunk)
+
+        Returns:
+            True if this chunk should be threaded to the original message
+        """
+        if not reply_to:
+            return False
+        mode = self._reply_to_mode
+        if mode == "off":
+            return False
+        elif mode == "all":
+            return True
+        else:  # "first" (default)
+            return chunk_index == 0
+
     async def send(
         self,
         chat_id: str,
@@ -474,7 +708,16 @@ class TelegramAdapter(BasePlatformAdapter):
             except ImportError:
                 _NetErr = OSError  # type: ignore[misc,assignment]
 
+            try:
+                from telegram.error import BadRequest as _BadReq
+            except ImportError:
+                _BadReq = None  # type: ignore[assignment,misc]
+
             for i, chunk in enumerate(chunks):
+                should_thread = self._should_thread_reply(reply_to, i)
+                reply_to_id = int(reply_to) if should_thread else None
+                effective_thread_id = int(thread_id) if thread_id else None
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -484,8 +727,8 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
-                                reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                                message_thread_id=int(thread_id) if thread_id else None,
+                                reply_to_message_id=reply_to_id,
+                                message_thread_id=effective_thread_id,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -496,13 +739,41 @@ class TelegramAdapter(BasePlatformAdapter):
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
-                                    reply_to_message_id=int(reply_to) if reply_to and i == 0 else None,
-                                    message_thread_id=int(thread_id) if thread_id else None,
+                                    reply_to_message_id=reply_to_id,
+                                    message_thread_id=effective_thread_id,
                                 )
                             else:
                                 raise
                         break  # success
                     except _NetErr as send_err:
+                        # BadRequest is a subclass of NetworkError in
+                        # python-telegram-bot but represents permanent errors
+                        # (not transient network issues). Detect and handle
+                        # specific cases instead of blindly retrying.
+                        if _BadReq and isinstance(send_err, _BadReq):
+                            err_lower = str(send_err).lower()
+                            if "thread not found" in err_lower and effective_thread_id is not None:
+                                # Thread doesn't exist — retry without
+                                # message_thread_id so the message still
+                                # reaches the chat.
+                                logger.warning(
+                                    "[%s] Thread %s not found, retrying without message_thread_id",
+                                    self.name, effective_thread_id,
+                                )
+                                effective_thread_id = None
+                                continue
+                            if "message to be replied not found" in err_lower and reply_to_id is not None:
+                                # Original message was deleted before we
+                                # could reply — clear reply target and retry
+                                # so the response is still delivered.
+                                logger.warning(
+                                    "[%s] Reply target deleted, retrying without reply_to: %s",
+                                    self.name, send_err,
+                                )
+                                reply_to_id = None
+                                continue
+                            # Other BadRequest errors are permanent — don't retry
+                            raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
                             logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
@@ -1490,6 +1761,100 @@ class TelegramAdapter(BasePlatformAdapter):
                 emoji, set_name,
             )
 
+    def _reload_dm_topics_from_config(self) -> None:
+        """Re-read dm_topics from config.yaml and load any new thread_ids into cache.
+
+        This allows topics created externally (e.g. by the agent via API) to be
+        recognized without a gateway restart.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            config_path = get_hermes_home() / "config.yaml"
+            if not config_path.exists():
+                return
+
+            import yaml as _yaml
+            with open(config_path, "r") as f:
+                config = _yaml.safe_load(f) or {}
+
+            dm_topics = (
+                config.get("platforms", {})
+                .get("telegram", {})
+                .get("extra", {})
+                .get("dm_topics", [])
+            )
+            if not dm_topics:
+                return
+
+            # Update in-memory config and cache any new thread_ids
+            self._dm_topics_config = dm_topics
+            for chat_entry in dm_topics:
+                cid = chat_entry.get("chat_id")
+                if not cid:
+                    continue
+                for t in chat_entry.get("topics", []):
+                    tid = t.get("thread_id")
+                    name = t.get("name")
+                    if tid and name:
+                        cache_key = f"{cid}:{name}"
+                        if cache_key not in self._dm_topics:
+                            self._dm_topics[cache_key] = int(tid)
+                            logger.info(
+                                "[%s] Hot-loaded DM topic from config: %s -> thread_id=%s",
+                                self.name, cache_key, tid,
+                            )
+        except Exception as e:
+            logger.debug("[%s] Failed to reload dm_topics from config: %s", self.name, e)
+
+    def _get_dm_topic_info(self, chat_id: str, thread_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Look up DM topic config by chat_id and thread_id.
+
+        Returns the topic config dict (name, skill, etc.) if this thread_id
+        matches a known DM topic, or None.
+        """
+        if not thread_id:
+            return None
+
+        thread_id_int = int(thread_id)
+
+        # Check cached topics first (created by us or loaded at startup)
+        for key, cached_tid in self._dm_topics.items():
+            if cached_tid == thread_id_int and key.startswith(f"{chat_id}:"):
+                topic_name = key.split(":", 1)[1]
+                # Find the full config for this topic
+                for chat_entry in self._dm_topics_config:
+                    if str(chat_entry.get("chat_id")) == chat_id:
+                        for t in chat_entry.get("topics", []):
+                            if t.get("name") == topic_name:
+                                return t
+                return {"name": topic_name}
+
+        # Not in cache — hot-reload config in case topics were added externally
+        self._reload_dm_topics_from_config()
+
+        # Check cache again after reload
+        for key, cached_tid in self._dm_topics.items():
+            if cached_tid == thread_id_int and key.startswith(f"{chat_id}:"):
+                topic_name = key.split(":", 1)[1]
+                for chat_entry in self._dm_topics_config:
+                    if str(chat_entry.get("chat_id")) == chat_id:
+                        for t in chat_entry.get("topics", []):
+                            if t.get("name") == topic_name:
+                                return t
+                return {"name": topic_name}
+
+        return None
+
+    def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
+        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
+        cache_key = f"{chat_id}:{topic_name}"
+        if cache_key not in self._dm_topics:
+            self._dm_topics[cache_key] = int(thread_id)
+            logger.info(
+                "[%s] Cached DM topic from message: %s -> thread_id=%s",
+                self.name, cache_key, thread_id,
+            )
+
     def _build_message_event(self, message: Message, msg_type: MessageType) -> MessageEvent:
         """Build a MessageEvent from a Telegram message."""
         chat = message.chat
@@ -1501,7 +1866,27 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type = "group"
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
-        
+
+        # Resolve DM topic name and skill binding
+        thread_id_raw = message.message_thread_id
+        thread_id_str = str(thread_id_raw) if thread_id_raw else None
+        chat_topic = None
+        topic_skill = None
+
+        if chat_type == "dm" and thread_id_str:
+            topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
+            if topic_info:
+                chat_topic = topic_info.get("name")
+                topic_skill = topic_info.get("skill")
+
+            # Also check forum_topic_created service message for topic discovery
+            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+                created_name = message.forum_topic_created.name
+                if created_name:
+                    self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
+                    if not chat_topic:
+                        chat_topic = created_name
+
         # Build source
         source = self.build_source(
             chat_id=str(chat.id),
@@ -1509,7 +1894,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=str(user.id) if user else None,
             user_name=user.full_name if user else None,
-            thread_id=str(message.message_thread_id) if message.message_thread_id else None,
+            thread_id=thread_id_str,
+            chat_topic=chat_topic,
         )
         
         # Extract reply context if this message is a reply
@@ -1527,5 +1913,6 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message.message_id),
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            auto_skill=topic_skill,
             timestamp=message.date,
         )

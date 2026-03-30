@@ -29,12 +29,14 @@ Create `plugin.yaml`:
 name: calculator
 version: 1.0.0
 description: Math calculator — evaluate expressions and convert units
-provides:
-  tools: true
-  hooks: true
+provides_tools:
+  - calculate
+  - unit_convert
+provides_hooks:
+  - post_tool_call
 ```
 
-This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." That's all the manifest needs.
+This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
 
 Optional fields you could add:
 ```yaml
@@ -232,7 +234,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
-- `ctx.register_command()` adds a slash command to `/help`, autocomplete, and gateway dispatch
+- `ctx.register_command()` — _planned but not yet implemented_
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 ## Step 6: Test it
@@ -363,16 +365,18 @@ def register(ctx):
 
 Available hooks:
 
-| Hook | When | Arguments |
-|------|------|-----------|
-| `pre_tool_call` | Before any tool runs | `tool_name`, `args`, `task_id` |
-| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
-| `pre_llm_call` | Before LLM API call | `messages`, `model` |
-| `post_llm_call` | After LLM response | `messages`, `response`, `model` |
-| `on_session_start` | Session begins | `session_id`, `platform` |
-| `on_session_end` | Session ends | `session_id`, `platform` |
+| Hook | When | Arguments | Return |
+|------|------|-----------|--------|
+| `pre_tool_call` | Before any tool runs | `tool_name`, `args`, `task_id` | — |
+| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` | — |
+| `pre_llm_call` | Once per turn, before the LLM loop | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform` | `{"context": "..."}` |
+| `post_llm_call` | Once per turn, after the LLM loop | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | — |
+| `on_session_start` | New session created (first turn only) | `session_id`, `model`, `platform` | — |
+| `on_session_end` | End of every `run_conversation` call | `session_id`, `completed`, `interrupted`, `model`, `platform` | — |
 
-Hooks are observers — they can't modify arguments or return values. If a hook crashes, it's logged and skipped; other hooks and the tool continue normally.
+Most hooks are fire-and-forget observers. The exception is `pre_llm_call`: if a callback returns a dict with a `"context"` key (or a plain string), the value is appended to the ephemeral system prompt for the current turn. This allows memory plugins to inject recalled context without touching core code.
+
+If a hook crashes, it's logged and skipped; other hooks and the agent continue normally.
 
 ### Distribute via pip
 

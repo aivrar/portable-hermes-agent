@@ -33,17 +33,30 @@ class TestValidateImageUrl:
         assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
-        assert _validate_image_url("http://cdn.example.org/photo.png") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("http://cdn.example.org/photo.png") is True
 
     def test_valid_url_without_extension(self):
         """CDN endpoints that redirect to images should still pass."""
-        assert _validate_image_url("https://cdn.example.com/abcdef123") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://cdn.example.com/abcdef123") is True
 
     def test_valid_url_with_query_params(self):
-        assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://img.example.com/pic?w=200&h=200") is True
+
+    def test_localhost_url_blocked_by_ssrf(self):
+        """localhost URLs are now blocked by SSRF protection."""
+        assert _validate_image_url("http://localhost:8080/image.png") is False
 
     def test_valid_url_with_port(self):
-        assert _validate_image_url("http://localhost:8080/image.png") is True
+        assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
         assert _validate_image_url("https://example.com/") is True
@@ -341,6 +354,78 @@ class TestErrorLoggingExcInfo:
             assert warning_records[0].exc_info is not None
 
 
+class TestVisionSafetyGuards:
+    @pytest.mark.asyncio
+    async def test_local_non_image_file_rejected_before_llm_call(self, tmp_path):
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP-SECRET=1\n", encoding="utf-8")
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
+
+        assert result["success"] is False
+        assert "Only real image files are supported" in result["error"]
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blocked_remote_url_short_circuits_before_download(self):
+        blocked = {
+            "host": "blocked.test",
+            "rule": "blocked.test",
+            "source": "config",
+            "message": "Blocked by website policy",
+        }
+
+        with (
+            patch("tools.vision_tools.check_website_access", return_value=blocked),
+            patch("tools.vision_tools._validate_image_url", return_value=True),
+            patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
+        ):
+            result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
+
+        assert result["success"] is False
+        assert "Blocked by website policy" in result["error"]
+        mock_download.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_download_blocks_redirected_final_url(self, tmp_path):
+        from tools.vision_tools import _download_image
+
+        def fake_check(url):
+            if url == "https://allowed.test/cat.png":
+                return None
+            if url == "https://blocked.test/final.png":
+                return {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                    "message": "Blocked by website policy",
+                }
+            raise AssertionError(f"unexpected URL checked: {url}")
+
+        class FakeResponse:
+            url = "https://blocked.test/final.png"
+            content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+            def raise_for_status(self):
+                return None
+
+        with (
+            patch("tools.vision_tools.check_website_access", side_effect=fake_check),
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            pytest.raises(PermissionError, match="Blocked by website policy"),
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=FakeResponse())
+            mock_client_cls.return_value = mock_client
+
+            await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
+
+        assert not (tmp_path / "cat.png").exists()
+
+
 # ---------------------------------------------------------------------------
 # check_vision_requirements & get_debug_session_info
 # ---------------------------------------------------------------------------
@@ -376,6 +461,62 @@ class TestVisionRequirements:
 # ---------------------------------------------------------------------------
 # Integration: registry entry
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tilde expansion in local file paths
+# ---------------------------------------------------------------------------
+
+
+class TestTildeExpansion:
+    """Verify that ~/path style paths are expanded correctly."""
+
+    @pytest.mark.asyncio
+    async def test_tilde_path_expanded_to_local_file(self, tmp_path, monkeypatch):
+        """vision_analyze_tool should expand ~ in file paths."""
+        # Create a fake image file under a fake home directory
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        img = fake_home / "test_image.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                "~/test_image.png", "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+            assert data["analysis"] == "A test image"
+
+    @pytest.mark.asyncio
+    async def test_tilde_path_nonexistent_file_gives_error(self, tmp_path, monkeypatch):
+        """A tilde path that doesn't resolve to a real file should fail gracefully."""
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        result = await vision_analyze_tool(
+            "~/nonexistent.png", "describe this", "test/model"
+        )
+        data = json.loads(result)
+        assert data["success"] is False
 
 
 class TestVisionRegistration:

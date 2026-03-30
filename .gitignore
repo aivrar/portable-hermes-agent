@@ -53,19 +53,8 @@ environments/benchmarks/evals/
 
 # Release script temp files
 .release_notes.md
+mini-swe-agent/
 
-# Windows portable Python (auto-portable-python-deployer pattern)
-python_embedded/
-python_embedded.zip
-
-# Agent workspace (temp scripts, scratch files)
-workspace/
-
-# Debug/test logs (legacy locations, now in ~/.hermes/logs/)
-*_debug.log
-test_script.sh
-
-# Extension repos (cloned on install)
-extensions/comfyui/
-extensions/music-server/
-extensions/tts-server/
+# Nix
+.direnv/
+result

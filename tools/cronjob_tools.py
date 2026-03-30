@@ -266,8 +266,10 @@ def cronjob(
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if repeat is not None:
+                # Normalize: treat 0 or negative as None (infinite)
+                normalized_repeat = None if repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
-                repeat_state["times"] = repeat
+                repeat_state["times"] = normalized_repeat
                 updates["repeat"] = repeat_state
             if schedule is not None:
                 parsed_schedule = parse_schedule(schedule)
@@ -370,7 +372,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
+                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, feishu, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
             },
             "model": {
                 "type": "string",

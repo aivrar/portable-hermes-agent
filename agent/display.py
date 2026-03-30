@@ -17,6 +17,23 @@ _RESET = "\033[0m"
 
 logger = logging.getLogger(__name__)
 
+# =========================================================================
+# Configurable tool preview length (0 = no limit)
+# Set once at startup by CLI or gateway from display.tool_preview_length config.
+# =========================================================================
+_tool_preview_max_len: int = 0  # 0 = unlimited
+
+
+def set_tool_preview_max_len(n: int) -> None:
+    """Set the global max length for tool call previews. 0 = no limit."""
+    global _tool_preview_max_len
+    _tool_preview_max_len = max(int(n), 0) if n else 0
+
+
+def get_tool_preview_max_len() -> int:
+    """Return the configured max preview length (0 = unlimited)."""
+    return _tool_preview_max_len
+
 
 # =========================================================================
 # Skin-aware helpers (lazy import to avoid circular deps)
@@ -94,8 +111,14 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
-def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | None:
-    """Build a short preview of a tool call's primary argument for display."""
+def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
+    """Build a short preview of a tool call's primary argument for display.
+
+    *max_len* controls truncation.  ``None`` (default) defers to the global
+    ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+    """
+    if max_len is None:
+        max_len = _tool_preview_max_len
     if not args:
         return None
     primary_args = {
@@ -190,7 +213,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int = 40) -> str | N
     preview = _oneline(str(value))
     if not preview:
         return None
-    if len(preview) > max_len:
+    if max_len > 0 and len(preview) > max_len:
         preview = preview[:max_len - 3] + "..."
     return preview
 
@@ -231,7 +254,7 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
-    def __init__(self, message: str = "", spinner_type: str = 'dots'):
+    def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
         self.running = False
@@ -239,13 +262,26 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        self._last_flush_time = 0.0  # Rate-limit flushes for patch_stdout compat
+        # Optional callable to route all output through (e.g. a no-op for silent
+        # background agents).  When set, bypasses self._out entirely so that
+        # agents with _print_fn overridden remain fully silent.
+        self._print_fn = print_fn
         # Capture stdout NOW, before any redirect_stdout(devnull) from
         # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
-        """Write to the stdout captured at spinner creation time."""
+        """Write to the stdout captured at spinner creation time.
+
+        If a print_fn was supplied at construction, all output is routed through
+        it instead — allowing callers to silence the spinner with a no-op lambda.
+        """
+        if self._print_fn is not None:
+            try:
+                self._print_fn(text)
+            except Exception:
+                pass
+            return
         try:
             self._out.write(text + end)
             if flush:
@@ -253,14 +289,48 @@ class KawaiiSpinner:
         except (ValueError, OSError):
             pass
 
+    @property
+    def _is_tty(self) -> bool:
+        """Check if output is a real terminal, safe against closed streams."""
+        try:
+            return hasattr(self._out, 'isatty') and self._out.isatty()
+        except (ValueError, OSError):
+            return False
+
+    def _is_patch_stdout_proxy(self) -> bool:
+        """Return True when stdout is prompt_toolkit's StdoutProxy.
+
+        patch_stdout wraps sys.stdout in a StdoutProxy that queues writes and
+        injects newlines around each flush().  The \\r overwrite never lands on
+        the correct line — each spinner frame ends up on its own line.
+
+        The CLI already drives a TUI widget (_spinner_text) for spinner display,
+        so KawaiiSpinner's \\r-based animation is redundant under StdoutProxy.
+        """
+        try:
+            from prompt_toolkit.patch_stdout import StdoutProxy
+            return isinstance(self._out, StdoutProxy)
+        except ImportError:
+            return False
+
     def _animate(self):
         # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
         # skip the animation entirely — it creates massive log bloat.
         # Just log the start once and let stop() log the completion.
-        if not hasattr(self._out, 'isatty') or not self._out.isatty():
+        if not self._is_tty:
             self._write(f"  [tool] {self.message}", flush=True)
             while self.running:
                 time.sleep(0.5)
+            return
+
+        # When running inside prompt_toolkit's patch_stdout context the CLI
+        # renders spinner state via a dedicated TUI widget (_spinner_text).
+        # Driving a \r-based animation here too causes visual overdraw: the
+        # StdoutProxy injects newlines around each flush, so every frame lands
+        # on a new line and overwrites the status bar.
+        if self._is_patch_stdout_proxy():
+            while self.running:
+                time.sleep(0.1)
             return
 
         # Cache skin wings at start (avoid per-frame imports)
@@ -279,18 +349,7 @@ class KawaiiSpinner:
             else:
                 line = f"  {frame} {self.message} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
-            # Rate-limit flush() calls to avoid spinner spam under
-            # prompt_toolkit's patch_stdout.  Each flush() pushes a queue
-            # item that may trigger a separate run_in_terminal() call; if
-            # items are processed one-at-a-time the \r overwrite is lost
-            # and every frame appears on its own line.  By flushing at
-            # most every 0.4s we guarantee multiple \r-frames are batched
-            # into a single write, so the terminal collapses them correctly.
-            now = time.time()
-            should_flush = (now - self._last_flush_time) >= 0.4
-            self._write(f"\r{line}{' ' * pad}", end='', flush=should_flush)
-            if should_flush:
-                self._last_flush_time = now
+            self._write(f"\r{line}{' ' * pad}", end='', flush=True)
             self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
@@ -329,7 +388,7 @@ class KawaiiSpinner:
         if self.thread:
             self.thread.join(timeout=0.5)
 
-        is_tty = hasattr(self._out, 'isatty') and self._out.isatty()
+        is_tty = self._is_tty
         if is_tty:
             # Clear the spinner line with spaces instead of \033[K to avoid
             # garbled escape codes when prompt_toolkit's patch_stdout is active.
@@ -448,10 +507,14 @@ def get_cute_tool_message(
 
     def _trunc(s, n=40):
         s = str(s)
+        if _tool_preview_max_len == 0:
+            return s  # no limit
         return (s[:n-3] + "...") if len(s) > n else s
 
     def _path(p, n=35):
         p = str(p)
+        if _tool_preview_max_len == 0:
+            return p  # no limit
         return ("..." + p[-(n-3):]) if len(p) > n else p
 
     def _wrap(line: str) -> str:
@@ -657,35 +720,25 @@ def format_context_pressure(
     The bar and percentage show progress toward the compaction threshold,
     NOT the raw context window.  100% = compaction fires.
 
-    Uses ANSI colors:
-      - cyan at ~60% to compaction = informational
-      - bold yellow at ~85% to compaction = warning
-
     Args:
         compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
         threshold_tokens: Compaction threshold in tokens.
         threshold_percent: Compaction threshold as a fraction of context window.
         compression_enabled: Whether auto-compression is active.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 
     threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
     threshold_pct_int = int(threshold_percent * 100)
 
-    # Tier styling
-    if compaction_progress >= 0.85:
-        color = f"{_BOLD}{_YELLOW}"
-        icon = "⚠"
-        if compression_enabled:
-            hint = "compaction imminent"
-        else:
-            hint = "no auto-compaction"
+    color = f"{_BOLD}{_YELLOW}"
+    icon = "⚠"
+    if compression_enabled:
+        hint = "compaction approaching"
     else:
-        color = _CYAN
-        icon = "◐"
-        hint = "approaching compaction"
+        hint = "no auto-compaction"
 
     return (
         f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
@@ -703,20 +756,16 @@ def format_context_pressure_gateway(
     No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
     The percentage shows progress toward the compaction threshold.
     """
-    pct_int = int(compaction_progress * 100)
+    pct_int = min(int(compaction_progress * 100), 100)
     filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
     bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
 
     threshold_pct_int = int(threshold_percent * 100)
 
-    if compaction_progress >= 0.85:
-        icon = "⚠️"
-        if compression_enabled:
-            hint = f"Context compaction is imminent (threshold: {threshold_pct_int}% of window)."
-        else:
-            hint = "Auto-compaction is disabled — context may be truncated."
+    icon = "⚠️"
+    if compression_enabled:
+        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
     else:
-        icon = "ℹ️"
-        hint = f"Compaction threshold is at {threshold_pct_int}% of context window."
+        hint = "Auto-compaction is disabled — context may be truncated."
 
     return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

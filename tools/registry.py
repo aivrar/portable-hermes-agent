@@ -16,7 +16,7 @@ Import chain (circular-import safe):
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,13 @@ class ToolRegistry:
         emoji: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        existing = self._tools.get(name)
+        if existing and existing.toolset != toolset:
+            logger.warning(
+                "Tool name collision: '%s' (toolset '%s') is being "
+                "overwritten by toolset '%s'",
+                name, existing.toolset, toolset,
+            )
         self._tools[name] = ToolEntry(
             name=name,
             toolset=toolset,
@@ -80,6 +87,23 @@ class ToolRegistry:
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
+    def deregister(self, name: str) -> None:
+        """Remove a tool from the registry.
+
+        Also cleans up the toolset check if no other tools remain in the
+        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
+        when a server sends ``notifications/tools/list_changed``.
+        """
+        entry = self._tools.pop(name, None)
+        if entry is None:
+            return
+        # Drop the toolset check if this was the last tool in that toolset
+        if entry.toolset in self._toolset_checks and not any(
+            e.toolset == entry.toolset for e in self._tools.values()
+        ):
+            self._toolset_checks.pop(entry.toolset, None)
+        logger.debug("Deregistered tool: %s", name)
+
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------
@@ -93,55 +117,28 @@ class ToolRegistry:
         requested tools are returned immediately (fail at call time instead
         of blocking startup with network checks).
         """
-        if skip_checks:
-            result = []
-            for name in sorted(tool_names):
-                entry = self._tools.get(name)
-                if entry:
-                    result.append({"type": "function", "function": entry.schema})
-            return result
-
-        # Separate tools that need checking from those that don't
-        no_check = []
-        needs_check = []
+        result = []
+        check_results: Dict[Callable, bool] = {}
         for name in sorted(tool_names):
             entry = self._tools.get(name)
             if not entry:
                 continue
             if entry.check_fn:
-                needs_check.append(entry)
-            else:
-                no_check.append(entry)
-
-        # Run all check_fn calls in parallel (they may do network I/O)
-        passed_checks = []
-        if needs_check:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            def _check(entry):
-                try:
-                    return (entry, entry.check_fn())
-                except Exception:
-                    return (entry, False)
-
-            with ThreadPoolExecutor(max_workers=16) as pool:
-                futures = {pool.submit(_check, e): e for e in needs_check}
-                for fut in as_completed(futures, timeout=15):
+                if entry.check_fn not in check_results:
                     try:
-                        entry, ok = fut.result(timeout=5)
-                        if ok:
-                            passed_checks.append(entry)
-                        elif not quiet:
-                            logger.debug("Tool %s unavailable (check failed)", entry.name)
+                        check_results[entry.check_fn] = bool(entry.check_fn())
                     except Exception:
-                        entry = futures[fut]
+                        check_results[entry.check_fn] = False
                         if not quiet:
-                            logger.debug("Tool %s check timed out; skipping", entry.name)
-
-        # Combine and sort
-        all_entries = no_check + passed_checks
-        all_entries.sort(key=lambda e: e.name)
-        return [{"type": "function", "function": e.schema} for e in all_entries]
+                            logger.debug("Tool %s check raised; skipping", name)
+                if not check_results[entry.check_fn]:
+                    if not quiet:
+                        logger.debug("Tool %s unavailable (check failed)", name)
+                    continue
+            # Ensure schema always has a "name" field — use entry.name as fallback
+            schema_with_name = {**entry.schema, "name": entry.name}
+            result.append({"type": "function", "function": schema_with_name})
+        return result
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -196,6 +193,15 @@ class ToolRegistry:
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
         return sorted(self._tools.keys())
+
+    def get_schema(self, name: str) -> Optional[dict]:
+        """Return a tool's raw schema dict, bypassing check_fn filtering.
+
+        Useful for token estimation and introspection where availability
+        doesn't matter — only the schema content does.
+        """
+        entry = self._tools.get(name)
+        return entry.schema if entry else None
 
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""

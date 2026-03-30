@@ -63,8 +63,11 @@ def _get_model_config() -> Dict[str, Any]:
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
-        default = cfg.get("default", "").strip()
-        base_url = cfg.get("base_url", "").strip()
+        # Accept "model" as alias for "default" (users intuitively write model.model)
+        if not cfg.get("default") and cfg.get("model"):
+            cfg["default"] = cfg["model"]
+        default = (cfg.get("default") or "").strip()
+        base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url
         is_fallback = not default or default == "anthropic/claude-opus-4.6"
         if is_local and is_fallback and base_url:
@@ -198,12 +201,12 @@ def _resolve_named_custom_runtime(
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
     return {
-        "provider": "openrouter",
+        "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
         "base_url": base_url,
-        "api_key": api_key,
+        "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
 
@@ -279,8 +282,16 @@ def _resolve_openrouter_runtime(
 
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"
 
+    # When "custom" was explicitly requested, preserve that as the provider
+    # name instead of silently relabeling to "openrouter" (#2562).
+    # Also provide a placeholder API key for local servers that don't require
+    # authentication — the OpenAI SDK requires a non-empty api_key string.
+    effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    if effective_provider == "custom" and not api_key and not _is_openrouter_url:
+        api_key = "no-key-required"
+
     return {
-        "provider": "openrouter",
+        "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
         or "chat_completions",
@@ -399,12 +410,6 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
-            # MiniMax providers always use Anthropic Messages API.
-            # Auto-correct stale /v1 URLs (from old .env or config) to /anthropic.
-            elif provider in ("minimax", "minimax-cn"):
-                api_mode = "anthropic_messages"
-                if base_url.rstrip("/").endswith("/v1"):
-                    base_url = base_url.rstrip("/")[:-3] + "/anthropic"
         return {
             "provider": provider,
             "api_mode": api_mode,

@@ -41,7 +41,7 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
+from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -82,7 +82,7 @@ auxiliary_is_nous: bool = False
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
-_NOUS_MODEL = "gemini-3-flash"
+_NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -627,14 +627,19 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     custom_key = runtime.get("api_key")
     if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None
-    if not isinstance(custom_key, str) or not custom_key.strip():
-        return None, None
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
         return None, None
+
+    # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
+    # Use a placeholder key — the OpenAI SDK requires a non-empty string but
+    # local servers ignore the Authorization header.  Same fix as cli.py
+    # _ensure_runtime_credentials() (PR #2556).
+    if not isinstance(custom_key, str) or not custom_key.strip():
+        custom_key = "no-key-required"
 
     return custom_base, custom_key.strip()
 
@@ -693,7 +698,13 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     is_oauth = _is_oauth_token(token)
     model = _API_KEY_PROVIDER_AUX_MODELS.get("anthropic", "claude-haiku-4-5-20251001")
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
-    real_client = build_anthropic_client(token, base_url)
+    try:
+        real_client = build_anthropic_client(token, base_url)
+    except ImportError:
+        # The anthropic_adapter module imports fine but the SDK itself is
+        # missing — build_anthropic_client raises ImportError at call time
+        # when _anthropic_sdk is None.  Treat as unavailable.
+        return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
@@ -891,11 +902,12 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
+                or "no-key-required"  # local servers don't need auth
             )
-            if not custom_base or not custom_key:
+            if not custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "
-                    "but no API key was found (set explicit_api_key or OPENAI_API_KEY)"
+                    "but base_url is empty"
                 )
                 return None, None
             final_model = model or _read_main_model() or "gpt-4o-mini"
@@ -1131,7 +1143,13 @@ def resolve_vision_provider_client(
         return "custom", client, final_model
 
     if requested == "auto":
-        for candidate in get_available_vision_backends():
+        ordered = list(_VISION_AUTO_PROVIDER_ORDER)
+        preferred = _preferred_main_vision_provider()
+        if preferred in ordered:
+            ordered.remove(preferred)
+            ordered.insert(0, preferred)
+
+        for candidate in ordered:
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
@@ -1204,6 +1222,39 @@ _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
 
 
+def neuter_async_httpx_del() -> None:
+    """Monkey-patch ``AsyncHttpxClientWrapper.__del__`` to be a no-op.
+
+    The OpenAI SDK's ``AsyncHttpxClientWrapper.__del__`` schedules
+    ``self.aclose()`` via ``asyncio.get_running_loop().create_task()``.
+    When an ``AsyncOpenAI`` client is garbage-collected while
+    prompt_toolkit's event loop is running (the common CLI idle state),
+    the ``aclose()`` task runs on prompt_toolkit's loop but the
+    underlying TCP transport is bound to a *different* loop (the worker
+    thread's loop that the client was originally created on).  If that
+    loop is closed or its thread is dead, the transport's
+    ``self._loop.call_soon()`` raises ``RuntimeError("Event loop is
+    closed")``, which prompt_toolkit surfaces as "Unhandled exception
+    in event loop ... Press ENTER to continue...".
+
+    Neutering ``__del__`` is safe because:
+    - Cached clients are explicitly cleaned via ``_force_close_async_httpx``
+      on stale-loop detection and ``shutdown_cached_clients`` on exit.
+    - Uncached clients' TCP connections are cleaned up by the OS when the
+      process exits.
+    - The OpenAI SDK itself marks this as a TODO (``# TODO(someday):
+      support non asyncio runtimes here``).
+
+    Call this once at CLI startup, before any ``AsyncOpenAI`` clients are
+    created.
+    """
+    try:
+        from openai._base_client import AsyncHttpxClientWrapper
+        AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[assignment]
+    except (ImportError, AttributeError):
+        pass  # Graceful degradation if the SDK changes its internals
+
+
 def _force_close_async_httpx(client: Any) -> None:
     """Mark the httpx AsyncClient inside an AsyncOpenAI client as closed.
 
@@ -1251,6 +1302,25 @@ def shutdown_cached_clients() -> None:
         _client_cache.clear()
 
 
+def cleanup_stale_async_clients() -> None:
+    """Force-close cached async clients whose event loop is closed.
+
+    Call this after each agent turn to proactively clean up stale clients
+    before GC can trigger ``AsyncHttpxClientWrapper.__del__`` on them.
+    This is defense-in-depth — the primary fix is ``neuter_async_httpx_del``
+    which disables ``__del__`` entirely.
+    """
+    with _client_cache_lock:
+        stale_keys = []
+        for key, entry in _client_cache.items():
+            client, _default, cached_loop = entry
+            if cached_loop is not None and cached_loop.is_closed():
+                _force_close_async_httpx(client)
+                stale_keys.append(key)
+        for key in stale_keys:
+            del _client_cache[key]
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -1258,13 +1328,33 @@ def _get_cached_client(
     base_url: str = None,
     api_key: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Get or create a cached client for the given provider."""
-    cache_key = (provider, async_mode, base_url or "", api_key or "")
+    """Get or create a cached client for the given provider.
+
+    Async clients (AsyncOpenAI) use httpx.AsyncClient internally, which
+    binds to the event loop that was current when the client was created.
+    Using such a client on a *different* loop causes deadlocks or
+    RuntimeError.  To prevent cross-loop issues (especially in gateway
+    mode where _run_async() may spawn fresh loops in worker threads), the
+    cache key for async clients includes the current event loop's identity
+    so each loop gets its own client instance.
+    """
+    # Include loop identity for async clients to prevent cross-loop reuse.
+    # httpx.AsyncClient (inside AsyncOpenAI) is bound to the loop where it
+    # was created — reusing it on a different loop causes deadlocks (#2681).
+    loop_id = 0
+    current_loop = None
+    if async_mode:
+        try:
+            import asyncio as _aio
+            current_loop = _aio.get_event_loop()
+            loop_id = id(current_loop)
+        except RuntimeError:
+            pass
+    cache_key = (provider, async_mode, base_url or "", api_key or "", loop_id)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
             if async_mode:
-                # Async clients are bound to the event loop that created them.
                 # A cached async client whose loop has been closed will raise
                 # "Event loop is closed" when httpx tries to clean up its
                 # transport.  Discard the stale client and create a fresh one.
@@ -1286,13 +1376,7 @@ def _get_cached_client(
     if client is not None:
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.
-        bound_loop = None
-        if async_mode:
-            try:
-                import asyncio as _aio
-                bound_loop = _aio.get_event_loop()
-            except RuntimeError:
-                pass
+        bound_loop = current_loop
         with _client_cache_lock:
             if cache_key not in _client_cache:
                 _client_cache[cache_key] = (client, default_model, bound_loop)
@@ -1380,6 +1464,29 @@ def _resolve_task_provider_model(
     return "auto", resolved_model, None, None
 
 
+_DEFAULT_AUX_TIMEOUT = 30.0
+
+
+def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
+    """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
+    if not task:
+        return default
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
+    raw = task_config.get("timeout")
+    if raw is not None:
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -1437,7 +1544,7 @@ def call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
     """Centralized synchronous LLM call.
@@ -1455,7 +1562,7 @@ def call_llm(
         temperature: Sampling temperature (None = provider default).
         max_tokens: Max output tokens (handles max_tokens vs max_completion_tokens).
         tools: Tool definitions (for function calling).
-        timeout: Request timeout in seconds.
+        timeout: Request timeout in seconds (None = read from auxiliary.{task}.timeout config).
         extra_body: Additional request body fields.
 
     Returns:
@@ -1520,10 +1627,12 @@ def call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry
@@ -1538,6 +1647,62 @@ def call_llm(
         raise
 
 
+def extract_content_or_reasoning(response) -> str:
+    """Extract content from an LLM response, falling back to reasoning fields.
+
+    Mirrors the main agent loop's behavior when a reasoning model (DeepSeek-R1,
+    Qwen-QwQ, etc.) returns ``content=None`` with reasoning in structured fields.
+
+    Resolution order:
+      1. ``message.content`` — strip inline think/reasoning blocks, check for
+         remaining non-whitespace text.
+      2. ``message.reasoning`` / ``message.reasoning_content`` — direct
+         structured reasoning fields (DeepSeek, Moonshot, Novita, etc.).
+      3. ``message.reasoning_details`` — OpenRouter unified array format.
+
+    Returns the best available text, or ``""`` if nothing found.
+    """
+    import re
+
+    msg = response.choices[0].message
+    content = (msg.content or "").strip()
+
+    if content:
+        # Strip inline think/reasoning blocks (mirrors _strip_think_blocks)
+        cleaned = re.sub(
+            r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>"
+            r".*?"
+            r"</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>",
+            "", content, flags=re.DOTALL | re.IGNORECASE,
+        ).strip()
+        if cleaned:
+            return cleaned
+
+    # Content is empty or reasoning-only — try structured reasoning fields
+    reasoning_parts: list[str] = []
+    for field in ("reasoning", "reasoning_content"):
+        val = getattr(msg, field, None)
+        if val and isinstance(val, str) and val.strip() and val not in reasoning_parts:
+            reasoning_parts.append(val.strip())
+
+    details = getattr(msg, "reasoning_details", None)
+    if details and isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict):
+                summary = (
+                    detail.get("summary")
+                    or detail.get("content")
+                    or detail.get("text")
+                )
+                if summary and summary not in reasoning_parts:
+                    reasoning_parts.append(summary.strip() if isinstance(summary, str) else str(summary))
+
+    if reasoning_parts:
+        return "\n\n".join(reasoning_parts)
+
+    return ""
+
+
 async def async_call_llm(
     task: str = None,
     *,
@@ -1549,7 +1714,7 @@ async def async_call_llm(
     temperature: float = None,
     max_tokens: int = None,
     tools: list = None,
-    timeout: float = 30.0,
+    timeout: float = None,
     extra_body: dict = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
@@ -1610,10 +1775,12 @@ async def async_call_llm(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
                 f"Run: hermes setup")
 
+    effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=timeout, extra_body=extra_body,
+        tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
     try:

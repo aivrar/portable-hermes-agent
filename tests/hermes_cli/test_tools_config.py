@@ -35,6 +35,39 @@ def test_platform_toolset_summary_uses_explicit_platform_list():
     assert summary["cli"] == _get_platform_tools(config, "cli")
 
 
+def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
+    config = {
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+            "disabled-server": {"url": "https://example.com/mcp", "enabled": False},
+        }
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+    assert "disabled-server" not in enabled
+
+
+def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_selection():
+    config = {
+        "platform_toolsets": {"cli": ["web", "memory"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "memory" in enabled
+    assert "exa" in enabled
+    assert "web-search-prime" in enabled
+
+
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text(
@@ -100,3 +133,157 @@ def test_save_platform_tools_handles_invalid_existing_config():
 
     saved_toolsets = config["platform_toolsets"]["cli"]
     assert "web" in saved_toolsets
+
+
+def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
+    """Platform default toolsets (hermes-cli, hermes-telegram, etc.) must NOT
+    be preserved across saves.
+
+    These "super" toolsets resolve to ALL tools, so if they survive in the
+    config, they silently override any tools the user unchecked. Previously,
+    the preserve filter only excluded configurable toolset keys (web, browser,
+    terminal, etc.) and treated platform defaults as unknown custom entries
+    (like MCP server names), causing them to be kept unconditionally.
+
+    Regression test: user unchecks image_gen and homeassistant via
+    ``hermes tools``, but hermes-cli stays in the config and re-enables
+    everything on the next read.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": [
+                "browser", "clarify", "code_execution", "cronjob",
+                "delegation", "file", "hermes-cli",  # <-- the culprit
+                "memory", "session_search", "skills", "terminal",
+                "todo", "tts", "vision", "web",
+            ]
+        }
+    }
+
+    # User unchecks image_gen, homeassistant, moa — keeps the rest
+    new_selection = {
+        "browser", "clarify", "code_execution", "cronjob",
+        "delegation", "file", "memory", "session_search",
+        "skills", "terminal", "todo", "tts", "vision", "web",
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", new_selection)
+
+    saved = config["platform_toolsets"]["cli"]
+
+    # hermes-cli must NOT survive — it's a platform default, not an MCP server
+    assert "hermes-cli" not in saved
+
+    # The individual toolset keys the user selected must be present
+    assert "web" in saved
+    assert "terminal" in saved
+    assert "browser" in saved
+
+    # Tools the user unchecked must NOT be present
+    assert "image_gen" not in saved
+    assert "homeassistant" not in saved
+    assert "moa" not in saved
+
+
+def test_save_platform_tools_does_not_preserve_hermes_telegram():
+    """Same bug for Telegram — hermes-telegram must not be preserved."""
+    config = {
+        "platform_toolsets": {
+            "telegram": [
+                "browser", "file", "hermes-telegram", "terminal", "web",
+            ]
+        }
+    }
+
+    new_selection = {"browser", "file", "terminal", "web"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "telegram", new_selection)
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert "hermes-telegram" not in saved
+    assert "web" in saved
+
+
+def test_save_platform_tools_still_preserves_mcp_with_platform_default_present():
+    """MCP server names must still be preserved even when platform defaults
+    are being stripped out."""
+    config = {
+        "platform_toolsets": {
+            "cli": [
+                "web", "terminal", "hermes-cli", "my-mcp-server", "github-tools",
+            ]
+        }
+    }
+
+    new_selection = {"web", "browser"}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", new_selection)
+
+    saved = config["platform_toolsets"]["cli"]
+
+    # MCP servers preserved
+    assert "my-mcp-server" in saved
+    assert "github-tools" in saved
+
+    # Platform default stripped
+    assert "hermes-cli" not in saved
+
+    # User selections present
+    assert "web" in saved
+    assert "browser" in saved
+
+    # Deselected configurable toolset removed
+    assert "terminal" not in saved
+
+
+# ── Platform / toolset consistency ────────────────────────────────────────────
+
+
+class TestPlatformToolsetConsistency:
+    """Every platform in tools_config.PLATFORMS must have a matching toolset."""
+
+    def test_all_platforms_have_toolset_definitions(self):
+        """Each platform's default_toolset must exist in TOOLSETS."""
+        from hermes_cli.tools_config import PLATFORMS
+        from toolsets import TOOLSETS
+
+        for platform, meta in PLATFORMS.items():
+            ts_name = meta["default_toolset"]
+            assert ts_name in TOOLSETS, (
+                f"Platform {platform!r} references toolset {ts_name!r} "
+                f"which is not defined in toolsets.py"
+            )
+
+    def test_gateway_toolset_includes_all_messaging_platforms(self):
+        """hermes-gateway includes list should cover all messaging platforms."""
+        from hermes_cli.tools_config import PLATFORMS
+        from toolsets import TOOLSETS
+
+        gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
+        # Exclude non-messaging platforms from the check
+        non_messaging = {"cli", "api_server"}
+        for platform, meta in PLATFORMS.items():
+            if platform in non_messaging:
+                continue
+            ts_name = meta["default_toolset"]
+            assert ts_name in gateway_includes, (
+                f"Platform {platform!r} toolset {ts_name!r} missing from "
+                f"hermes-gateway includes"
+            )
+
+    def test_skills_config_covers_tools_config_platforms(self):
+        """skills_config.PLATFORMS should have entries for all gateway platforms."""
+        from hermes_cli.tools_config import PLATFORMS as TOOLS_PLATFORMS
+        from hermes_cli.skills_config import PLATFORMS as SKILLS_PLATFORMS
+
+        non_messaging = {"api_server"}
+        for platform in TOOLS_PLATFORMS:
+            if platform in non_messaging:
+                continue
+            assert platform in SKILLS_PLATFORMS, (
+                f"Platform {platform!r} in tools_config but missing from "
+                f"skills_config PLATFORMS"
+            )

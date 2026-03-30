@@ -39,6 +39,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
+| `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
@@ -66,7 +67,8 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `opencode-zen`, `opencode-go`, `ai-gateway`, `kilocode`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `alibaba`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`. |
+| `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
@@ -98,7 +100,24 @@ Use this when you want to:
 - switch default providers
 - log into OAuth-backed providers during model selection
 - pick from provider-specific model lists
+- configure a custom/self-hosted endpoint
 - save the new default into config
+
+### `/model` slash command (mid-session)
+
+Switch models without leaving a session:
+
+```
+/model                              # Show current model and available options
+/model claude-sonnet-4              # Switch model (auto-detects provider)
+/model zai:glm-5                    # Switch provider and model
+/model custom:qwen-2.5              # Use model on your custom endpoint
+/model custom                       # Auto-detect model from custom endpoint
+/model custom:local:qwen-2.5        # Use a named custom provider
+/model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
+```
+
+Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
 ## `hermes gateway`
 
@@ -195,6 +214,39 @@ hermes cron <list|create|edit|pause|resume|run|remove|status|tick>
 | `remove` | Delete a scheduled job. |
 | `status` | Check whether the cron scheduler is running. |
 | `tick` | Run due jobs once and exit. |
+
+## `hermes webhook`
+
+```bash
+hermes webhook <subscribe|list|remove|test>
+```
+
+Manage dynamic webhook subscriptions for event-driven agent activation. Requires the webhook platform to be enabled in config — if not configured, prints setup instructions.
+
+| Subcommand | Description |
+|------------|-------------|
+| `subscribe` / `add` | Create a webhook route. Returns the URL and HMAC secret to configure on your service. |
+| `list` / `ls` | Show all agent-created subscriptions. |
+| `remove` / `rm` | Delete a dynamic subscription. Static routes from config.yaml are not affected. |
+| `test` | Send a test POST to verify a subscription is working. |
+
+### `hermes webhook subscribe`
+
+```bash
+hermes webhook subscribe <name> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--prompt` | Prompt template with `{dot.notation}` payload references. |
+| `--events` | Comma-separated event types to accept (e.g. `issues,pull_request`). Empty = all. |
+| `--description` | Human-readable description. |
+| `--skills` | Comma-separated skill names to load for the agent run. |
+| `--deliver` | Delivery target: `log` (default), `telegram`, `discord`, `slack`, `github_comment`. |
+| `--deliver-chat-id` | Target chat/channel ID for cross-platform delivery. |
+| `--secret` | Custom HMAC secret. Auto-generated if omitted. |
+
+Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-reloaded by the webhook adapter without a gateway restart.
 
 ## `hermes doctor`
 
@@ -325,6 +377,47 @@ pip install -e '.[acp]'
 ```
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
+
+## `hermes mcp`
+
+```bash
+hermes mcp <subcommand>
+```
+
+Manage MCP (Model Context Protocol) server configurations and run Hermes as an MCP server.
+
+| Subcommand | Description |
+|------------|-------------|
+| `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
+| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add an MCP server with automatic tool discovery. |
+| `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
+| `list` (alias: `ls`) | List configured MCP servers. |
+| `test <name>` | Test connection to an MCP server. |
+| `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
+
+See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
+
+## `hermes plugins`
+
+```bash
+hermes plugins [subcommand]
+```
+
+Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launches an interactive curses checklist to enable/disable installed plugins.
+
+| Subcommand | Description |
+|------------|-------------|
+| *(none)* | Interactive toggle UI — enable/disable plugins with arrow keys and space. |
+| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
+| `update <name>` | Pull latest changes for an installed plugin. |
+| `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
+| `enable <name>` | Enable a disabled plugin. |
+| `disable <name>` | Disable a plugin without removing it. |
+| `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+
+Disabled plugins are stored in `config.yaml` under `plugins.disabled` and skipped during loading.
+
+See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 
 ## `hermes tools`
 

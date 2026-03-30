@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Terminal Tool Module (mini-swe-agent backend)
+Terminal Tool Module
 
-A terminal tool that executes commands using mini-swe-agent's execution environments.
+A terminal tool that executes commands in local, Docker, Modal, SSH, Singularity, and Daytona environments.
 Supports local execution, Docker containers, and Modal cloud sandboxes.
 
 Environment Selection (via TERMINAL_ENV environment variable):
@@ -31,7 +31,6 @@ import json
 import logging
 import os
 import platform
-import sys
 import time
 import threading
 import atexit
@@ -48,14 +47,8 @@ logger = logging.getLogger(__name__)
 # The terminal tool polls this during command execution so it can kill
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
-from tools.interrupt import is_interrupted, _interrupt_event
-
-
-# Add mini-swe-agent to path if not installed. In git worktrees the populated
-# submodule may live in the main checkout rather than the worktree itself.
-from minisweagent_path import ensure_minisweagent_on_path
-
-ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
+from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
 # =============================================================================
@@ -165,7 +158,8 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     for failure in sudo_failures:
         if failure in output:
-            return output + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.hermes/.env on the agent machine."
+            from hermes_constants import display_hermes_home as _dhh
+            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
 
@@ -492,10 +486,12 @@ def _get_env_config() -> Dict[str, Any]:
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in ("modal", "docker", "singularity", "daytona") and cwd:
-        # Host paths that won't exist inside containers
-        if any(cwd.startswith(p) for p in host_prefixes) and cwd != default_cwd:
+        # Host paths and relative paths that won't work inside containers
+        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
+        if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
-                        "(host path won't exist in sandbox). Using %r instead.",
+                        "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
 
@@ -539,7 +535,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         task_id: str = "default",
                         host_cwd: str = None):
     """
-    Create an execution environment from mini-swe-agent.
+    Create an execution environment for sandboxed command execution.
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal", "daytona", "ssh"
@@ -854,7 +850,7 @@ def terminal_tool(
     pty: bool = False,
 ) -> str:
     """
-    Execute a command using mini-swe-agent's execution environments.
+    Execute a command in the configured terminal environment.
 
     Args:
         command: The command to execute
@@ -989,7 +985,7 @@ def terminal_tool(
                         return json.dumps({
                             "output": "",
                             "exit_code": -1,
-                            "error": f"Terminal tool disabled: mini-swe-agent not available ({e})",
+                            "error": f"Terminal tool disabled: environment creation failed ({e})",
                             "status": "disabled"
                         }, ensure_ascii=False)
 
@@ -1165,6 +1161,11 @@ def terminal_tool(
                 )
                 output = output[:head_chars] + truncated_notice + output[-tail_chars:]
 
+            # Strip ANSI escape sequences so the model never sees terminal
+            # formatting — prevents it from copying escapes into file writes.
+            from tools.ansi_strip import strip_ansi
+            output = strip_ansi(output)
+
             # Redact secrets from command output (catches env/printenv leaking keys)
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
@@ -1185,27 +1186,15 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met.
-
-    Important: local and singularity backends now use Hermes' own environment
-    wrappers directly and do not require the ``minisweagent`` Python package to
-    be installed. Docker and Modal still rely on mini-swe-agent internals.
-    """
+    """Check if all requirements for the terminal tool are met."""
     config = _get_env_config()
     env_type = config["env_type"]
 
     try:
         if env_type == "local":
-            # Local execution uses Hermes' own LocalEnvironment wrapper and does
-            # not depend on minisweagent being importable.
             return True
 
         elif env_type == "docker":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error("mini-swe-agent is required for docker terminal backend but is not importable")
-                return False
-            # Check if docker is available (use find_docker for macOS PATH issues)
             from tools.environments.docker import find_docker
             docker = find_docker()
             if not docker:
@@ -1222,7 +1211,6 @@ def check_terminal_requirements() -> bool:
             return False
 
         elif env_type == "ssh":
-            # Check that host and user are configured
             if not config.get("ssh_host") or not config.get("ssh_user"):
                 logger.error(
                     "SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
@@ -1232,11 +1220,9 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
-            ensure_minisweagent_on_path(Path(__file__).resolve().parent.parent)
-            if importlib.util.find_spec("minisweagent") is None:
-                logger.error("mini-swe-agent is required for modal terminal backend but is not importable")
+            if importlib.util.find_spec("modal") is None:
+                logger.error("modal is required for modal terminal backend: pip install modal")
                 return False
-            # Check for modal token
             has_token = os.getenv("MODAL_TOKEN_ID") is not None
             has_config = Path.home().joinpath(".modal.toml").exists()
             if not (has_token or has_config):
@@ -1249,7 +1235,7 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona
+            from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:
@@ -1266,11 +1252,11 @@ def check_terminal_requirements() -> bool:
 
 if __name__ == "__main__":
     # Simple test when run directly
-    print("Terminal Tool Module (mini-swe-agent backend)")
+    print("Terminal Tool Module")
     print("=" * 50)
     
     config = _get_env_config()
-    print(f"\nCurrent Configuration:")
+    print("\nCurrent Configuration:")
     print(f"  Environment type: {config['env_type']}")
     print(f"  Docker image: {config['docker_image']}")
     print(f"  Modal image: {config['modal_image']}")
@@ -1284,7 +1270,7 @@ if __name__ == "__main__":
 
     print("\n✅ All requirements met!")
     print("\nAvailable Tool:")
-    print("  - terminal_tool: Execute commands using mini-swe-agent environments")
+    print("  - terminal_tool: Execute commands in sandboxed environments")
 
     print("\nUsage Examples:")
     print("  # Execute a command")
@@ -1301,7 +1287,8 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 

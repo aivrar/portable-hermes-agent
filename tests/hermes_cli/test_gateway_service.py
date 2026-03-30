@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_cli.gateway as gateway_cli
@@ -152,12 +153,13 @@ class TestLaunchdServiceRecovery:
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
 
         calls = []
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
-            if cmd == ["launchctl", "start", "ai.hermes.gateway"] and calls.count(cmd) == 1:
+            if cmd == ["launchctl", "start", label] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -167,9 +169,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
             ["launchctl", "load", str(plist_path)],
-            ["launchctl", "start", "ai.hermes.gateway"],
+            ["launchctl", "start", label],
         ]
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
@@ -280,6 +282,92 @@ class TestGatewaySystemServiceRouting:
             raise AssertionError("Expected gateway_command to exit when service restart fails")
 
         assert run_calls == []
+
+
+class TestDetectVenvDir:
+    """Tests for _detect_venv_dir() virtualenv detection."""
+
+    def test_detects_active_virtualenv_via_sys_prefix(self, tmp_path, monkeypatch):
+        venv_path = tmp_path / "my-custom-venv"
+        venv_path.mkdir()
+        monkeypatch.setattr("sys.prefix", str(venv_path))
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == venv_path
+
+    def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
+        # Not inside a virtualenv
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        dot_venv = tmp_path / ".venv"
+        dot_venv.mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == dot_venv
+
+    def test_falls_back_to_venv_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        venv = tmp_path / "venv"
+        venv.mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == venv
+
+    def test_prefers_dot_venv_over_venv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        (tmp_path / ".venv").mkdir()
+        (tmp_path / "venv").mkdir()
+
+        result = gateway_cli._detect_venv_dir()
+        assert result == tmp_path / ".venv"
+
+    def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("sys.prefix", "/usr")
+        monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+
+        result = gateway_cli._detect_venv_dir()
+        assert result is None
+
+
+class TestGeneratedUnitUsesDetectedVenv:
+    def test_systemd_unit_uses_dot_venv_when_detected(self, tmp_path, monkeypatch):
+        dot_venv = tmp_path / ".venv"
+        dot_venv.mkdir()
+        (dot_venv / "bin").mkdir()
+
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: dot_venv)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(dot_venv / "bin" / "python"))
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"VIRTUAL_ENV={dot_venv}" in unit
+        assert f"{dot_venv}/bin" in unit
+        # Must NOT contain a hardcoded /venv/ path
+        assert "/venv/" not in unit or "/.venv/" in unit
+
+
+class TestGeneratedUnitIncludesLocalBin:
+    """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
+
+    def test_user_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        home = str(Path.home())
+        assert f"{home}/.local/bin" in unit
+
+    def test_system_unit_includes_local_bin_in_path(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+        # System unit uses the resolved home dir from _system_service_identity
+        assert "/.local/bin" in unit
 
 
 class TestEnsureUserSystemdEnv:

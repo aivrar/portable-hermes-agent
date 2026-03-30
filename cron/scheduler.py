@@ -24,8 +24,9 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from datetime import datetime
 from pathlib import Path
+from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config
 from typing import Optional
 
 from hermes_time import now as _hermes_now
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -43,7 +44,7 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output
 SILENT_MARKER = "[SILENT]"
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _hermes_home / "cron"
@@ -145,6 +146,7 @@ def _deliver_result(job: dict, content: str) -> None:
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
+        "feishu": Platform.FEISHU,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -164,18 +166,29 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
         return
 
-    # Wrap the content so the user knows this is a cron delivery and that
-    # the interactive agent has no visibility into it.
-    task_name = job.get("name", job["id"])
-    wrapped = (
-        f"Cronjob Response: {task_name}\n"
-        f"-------------\n\n"
-        f"{content}\n\n"
-        f"Note: The agent cannot see this message, and therefore cannot respond to it."
-    )
+    # Optionally wrap the content with a header/footer so the user knows this
+    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
+    # in config.yaml for clean output.
+    wrap_response = True
+    try:
+        user_cfg = load_config()
+        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+    except Exception:
+        pass
+
+    if wrap_response:
+        task_name = job.get("name", job["id"])
+        delivery_content = (
+            f"Cronjob Response: {task_name}\n"
+            f"-------------\n\n"
+            f"{content}\n\n"
+            f"Note: The agent cannot see this message, and therefore cannot respond to it."
+        )
+    else:
+        delivery_content = content
 
     # Run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id)
+    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -186,7 +199,7 @@ def _deliver_result(job: dict, content: str) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, wrapped, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
@@ -280,6 +293,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_name = job["name"]
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -307,7 +321,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
+        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -327,16 +341,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
         # Reasoning config from env or config.yaml
-        reasoning_config = None
+        from hermes_constants import parse_reasoning_effort
         effort = os.getenv("HERMES_REASONING_EFFORT", "")
         if not effort:
             effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        if effort and effort.lower() != "none":
-            valid = ("xhigh", "high", "medium", "low", "minimal")
-            if effort.lower() in valid:
-                reasoning_config = {"enabled": True, "effort": effort.lower()}
-        elif effort.lower() == "none":
-            reasoning_config = {"enabled": False}
+        reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
@@ -411,7 +420,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             platform="cron",
-            session_id=f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}",
+            session_id=_cron_session_id,
             session_db=_session_db,
         )
         
@@ -477,8 +486,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ.pop(key, None)
         if _session_db:
             try:
+                _session_db.end_session(_cron_session_id, "cron_complete")
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            try:
                 _session_db.close()
-            except Exception as e:
+            except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
@@ -524,6 +537,12 @@ def tick(verbose: bool = True) -> int:
         executed = 0
         for job in due_jobs:
             try:
+                # For recurring jobs (cron/interval), advance next_run_at to the
+                # next future occurrence BEFORE execution.  This way, if the
+                # process crashes mid-run, the job won't re-fire on restart.
+                # One-shot jobs are left alone so they can retry on restart.
+                advance_next_run(job["id"])
+
                 success, output, final_response, error = run_job(job)
 
                 output_file = save_job_output(job["id"], output)

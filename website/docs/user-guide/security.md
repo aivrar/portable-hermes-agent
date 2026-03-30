@@ -43,6 +43,8 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `bash -c`, `python -e` | Shell/script execution via flags |
 | `find -exec rm`, `find -delete` | Find with destructive actions |
 | Fork bomb patterns | Fork bombs |
+| `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `gateway run` with `&`/`disown`/`nohup` | Prevents starting gateway outside service manager |
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -256,6 +258,90 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 
+## Environment Variable Passthrough {#environment-variable-passthrough}
+
+Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+
+### How It Works
+
+Two mechanisms allow specific variables through the sandbox filters:
+
+**1. Skill-scoped passthrough (automatic)**
+
+When a skill is loaded (via `skill_view` or the `/skill` command) and declares `required_environment_variables`, any of those vars that are actually set in the environment are automatically registered as passthrough. Missing vars (still in setup-needed state) are **not** registered.
+
+```yaml
+# In a skill's SKILL.md frontmatter
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+```
+
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+
+:::info Docker & Modal
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::
+
+**2. Config-based passthrough (manual)**
+
+For env vars not declared by any skill, add them to `terminal.env_passthrough` in `config.yaml`:
+
+```yaml
+terminal:
+  env_passthrough:
+    - MY_CUSTOM_KEY
+    - ANOTHER_TOKEN
+```
+
+### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
+
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+
+- **Docker**: Read-only bind mounts (`-v host:container:ro`)
+- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Local**: No action needed (files already accessible)
+
+You can also list credential files manually in `config.yaml`:
+
+```yaml
+terminal:
+  credential_files:
+    - google_token.json
+    - my_custom_oauth_token.json
+```
+
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+
+### What Each Sandbox Filters
+
+| Sandbox | Default Filter | Passthrough Override |
+|---------|---------------|---------------------|
+| **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
+| **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
+| **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
+
+### Security Considerations
+
+- The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Credential files are mounted **read-only** into Docker containers
+- Skills Guard scans skill content for suspicious env access patterns before installation
+- Missing/unset vars are never registered (you can't leak what doesn't exist)
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
+
 ## MCP Credential Handling
 
 MCP (Model Context Protocol) server subprocesses receive a **filtered environment** to prevent accidental credential leakage.
@@ -296,18 +382,55 @@ You can restrict which websites the agent can access through its web and browser
 
 ```yaml
 # In ~/.hermes/config.yaml
-website_blocklist:
-  enabled: true
-  domains:
-    - "*.internal.company.com"
-    - "admin.example.com"
-  shared_files:
-    - "/etc/hermes/blocked-sites.txt"
+security:
+  website_blocklist:
+    enabled: true
+    domains:
+      - "*.internal.company.com"
+      - "admin.example.com"
+    shared_files:
+      - "/etc/hermes/blocked-sites.txt"
 ```
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
 See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+
+### SSRF Protection
+
+All URL-capable tools (web search, web extract, vision, browser) validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. Blocked addresses include:
+
+- **Private networks** (RFC 1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- **Loopback**: `127.0.0.0/8`, `::1`
+- **Link-local**: `169.254.0.0/16` (includes cloud metadata at `169.254.169.254`)
+- **CGNAT / shared address space** (RFC 6598): `100.64.0.0/10` (Tailscale, WireGuard VPNs)
+- **Cloud metadata hostnames**: `metadata.google.internal`, `metadata.goog`
+- **Reserved, multicast, and unspecified addresses**
+
+SSRF protection is always active and cannot be disabled. DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+
+### Tirith Pre-Exec Security Scanning
+
+Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
+
+- Homograph URL spoofing (internationalized domain attacks)
+- Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
+- Terminal injection attacks
+
+Tirith auto-installs from GitHub releases on first use with SHA-256 checksum verification (and cosign provenance verification if cosign is available).
+
+```yaml
+# In ~/.hermes/config.yaml
+security:
+  tirith_enabled: true       # Enable/disable tirith scanning (default: true)
+  tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
+  tirith_timeout: 5          # Subprocess timeout in seconds
+  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
+```
+
+When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
+
+Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
 

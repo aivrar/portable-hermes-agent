@@ -46,14 +46,16 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 
 ## Available hooks
 
+Plugins can register callbacks for these lifecycle events. See the **[Event Hooks page](/docs/user-guide/features/hooks#plugin-hooks)** for full details, callback signatures, and examples.
+
 | Hook | Fires when |
 |------|-----------|
 | `pre_tool_call` | Before any tool executes |
 | `post_tool_call` | After any tool returns |
-| `pre_llm_call` | Before LLM API request |
-| `post_llm_call` | After LLM API response |
-| `on_session_start` | Session begins |
-| `on_session_end` | Session ends |
+| `pre_llm_call` | Once per turn, before the LLM loop — can return `{"context": "..."}` to inject into the system prompt |
+| `post_llm_call` | Once per turn, after the LLM loop completes |
+| `on_session_start` | New session created (first turn only) |
+| `on_session_end` | End of every `run_conversation` call |
 
 ## Slash commands
 
@@ -81,12 +83,30 @@ The handler receives the argument string (everything after `/greet`) and returns
 | `aliases` | Tuple of alternative names |
 | `cli_only` | Only available in CLI |
 | `gateway_only` | Only available in messaging platforms |
+| `gateway_config_gate` | Config dotpath (e.g. `"display.my_option"`). When set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. |
 
 ## Managing plugins
 
+```bash
+hermes plugins                  # interactive toggle UI — enable/disable with checkboxes
+hermes plugins list             # table view with enabled/disabled status
+hermes plugins install user/repo  # install from Git
+hermes plugins update my-plugin   # pull latest
+hermes plugins remove my-plugin   # uninstall
+hermes plugins enable my-plugin   # re-enable a disabled plugin
+hermes plugins disable my-plugin  # disable without removing
 ```
-/plugins              # list loaded plugins in a session
-hermes config set display.show_cost true  # show cost in status bar
+
+Running `hermes plugins` with no arguments launches an interactive curses checklist (same UI as `hermes tools`) where you can toggle plugins on/off with arrow keys and space.
+
+Disabled plugins remain installed but are skipped during loading. The disabled list is stored in `config.yaml` under `plugins.disabled`:
+
+```yaml
+plugins:
+  disabled:
+    - my-noisy-plugin
 ```
+
+In a running session, `/plugins` shows which plugins are currently loaded.
 
 See the **[full guide](/docs/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

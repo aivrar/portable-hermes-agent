@@ -14,7 +14,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value
+from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
+# display_hermes_home is imported lazily at call sites to avoid ImportError
+# when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -125,20 +127,43 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
+def _profile_suffix() -> str:
+    """Derive a service-name suffix from the current HERMES_HOME.
+
+    Returns ``""`` for the default ``~/.hermes``, the profile name for
+    ``~/.hermes/profiles/<name>``, or a short hash for any other custom
+    HERMES_HOME path.
+    """
+    import hashlib
+    import re
+    from pathlib import Path as _Path
+    home = get_hermes_home().resolve()
+    default = (_Path.home() / ".hermes").resolve()
+    if home == default:
+        return ""
+    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
+    profiles_root = (default / "profiles").resolve()
+    try:
+        rel = home.relative_to(profiles_root)
+        parts = rel.parts
+        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+            return parts[0]
+    except ValueError:
+        pass
+    # Fallback: short hash for arbitrary HERMES_HOME paths
+    return hashlib.sha256(str(home).encode()).hexdigest()[:8]
+
+
 def get_service_name() -> str:
     """Derive a systemd service name scoped to this HERMES_HOME.
 
     Default ``~/.hermes`` returns ``hermes-gateway`` (backward compatible).
-    Any other HERMES_HOME appends a short hash so multiple installations
-    can each have their own systemd service without conflicting.
+    Profile ``~/.hermes/profiles/coder`` returns ``hermes-gateway-coder``.
+    Any other HERMES_HOME appends a short hash for uniqueness.
     """
-    import hashlib
-    from pathlib import Path as _Path  # local import to avoid monkeypatch interference
-    home = _Path(os.getenv("HERMES_HOME", _Path.home() / ".hermes")).resolve()
-    default = (_Path.home() / ".hermes").resolve()
-    if home == default:
+    suffix = _profile_suffix()
+    if not suffix:
         return _SERVICE_BASE
-    suffix = hashlib.sha256(str(home).encode()).hexdigest()[:8]
     return f"{_SERVICE_BASE}-{suffix}"
 
 
@@ -369,15 +394,46 @@ def print_systemd_linger_guidance() -> None:
         print("  sudo loginctl enable-linger $USER")
 
 def get_launchd_plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+    """Return the launchd plist path, scoped per profile.
+
+    Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
+    Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
+    """
+    suffix = _profile_suffix()
+    name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+    return Path.home() / "Library" / "LaunchAgents" / f"{name}.plist"
+
+def _detect_venv_dir() -> Path | None:
+    """Detect the active virtualenv directory.
+
+    Checks ``sys.prefix`` first (works regardless of the directory name),
+    then falls back to probing common directory names under PROJECT_ROOT.
+    Returns ``None`` when no virtualenv can be found.
+    """
+    # If we're running inside a virtualenv, sys.prefix points to it.
+    if sys.prefix != sys.base_prefix:
+        venv = Path(sys.prefix)
+        if venv.is_dir():
+            return venv
+
+    # Fallback: check common virtualenv directory names under the project root.
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
+        if venv.is_dir():
+            return venv
+
+    return None
+
 
 def get_python_path() -> str:
-    if is_windows():
-        venv_python = PROJECT_ROOT / "venv" / "Scripts" / "python.exe"
-    else:
-        venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    venv = _detect_venv_dir()
+    if venv is not None:
+        if is_windows():
+            venv_python = venv / "Scripts" / "python.exe"
+        else:
+            venv_python = venv / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_hermes_cli_path() -> str:
@@ -396,11 +452,23 @@ def get_hermes_cli_path() -> str:
 # Systemd (Linux)
 # =============================================================================
 
+def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
+    """Return user-local bin dirs that exist and aren't already in *path_entries*."""
+    candidates = [
+        str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
+        str(home / ".cargo" / "bin"),        # Rust/cargo tools
+        str(home / "go" / "bin"),            # Go tools
+        str(home / ".npm-global" / "bin"),   # npm global packages
+    ]
+    return [p for p in candidates if p not in path_entries and Path(p).exists()]
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
-    venv_dir = str(PROJECT_ROOT / "venv")
-    venv_bin = str(PROJECT_ROOT / "venv" / "bin")
+    detected_venv = _detect_venv_dir()
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
@@ -409,13 +477,16 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         resolved_node_dir = str(Path(resolved_node).resolve().parent)
         if resolved_node_dir not in path_entries:
             path_entries.append(resolved_node_dir)
-    path_entries.extend(["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
-    sane_path = ":".join(path_entries)
 
-    hermes_home = str(Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")).resolve())
+    hermes_home = str(get_hermes_home().resolve())
+
+    common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
+        path_entries.extend(common_bin_paths)
+        sane_path = ":".join(path_entries)
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -447,6 +518,9 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
+    path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
+    path_entries.extend(common_bin_paths)
+    sane_path = ":".join(path_entries)
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network.target
@@ -727,18 +801,46 @@ def systemd_status(deep: bool = False, system: bool = False):
 # Launchd (macOS)
 # =============================================================================
 
+def get_launchd_label() -> str:
+    """Return the launchd service label, scoped per profile."""
+    suffix = _profile_suffix()
+    return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
+    hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    
+    label = get_launchd_label()
+    # Build a sane PATH for the launchd plist.  launchd provides only a
+    # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
+    # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
+    # the systemd unit), then capture the user's full shell PATH so every
+    # user-installed tool (node, ffmpeg, …) is reachable.
+    detected_venv = _detect_venv_dir()
+    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
+    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
+    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+    # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
+    # so it's explicitly in PATH even if the user's shell PATH changes later.
+    priority_dirs = [venv_bin, node_bin]
+    resolved_node = shutil.which("node")
+    if resolved_node:
+        resolved_node_dir = str(Path(resolved_node).resolve().parent)
+        if resolved_node_dir not in priority_dirs:
+            priority_dirs.append(resolved_node_dir)
+    sane_path = ":".join(
+        dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
+    )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>ai.hermes.gateway</string>
+    <string>{label}</string>
     
     <key>ProgramArguments</key>
     <array>
@@ -752,6 +854,16 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{sane_path}</string>
+        <key>VIRTUAL_ENV</key>
+        <string>{venv_dir}</string>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
+    </dict>
     
     <key>RunAtLoad</key>
     <true/>
@@ -825,7 +937,8 @@ def launchd_install(force: bool = False):
     print()
     print("Next steps:")
     print("  hermes gateway status             # Check status")
-    print("  tail -f ~/.hermes/logs/gateway.log  # View logs")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
@@ -838,20 +951,33 @@ def launchd_uninstall():
     print("✓ Service uninstalled")
 
 def launchd_start():
-    refresh_launchd_plist_if_needed()
     plist_path = get_launchd_plist_path()
+    label = get_launchd_label()
+
+    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
+    if not plist_path.exists():
+        print("↻ launchd plist missing; regenerating service definition")
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
+        print("✓ Service started")
+        return
+
+    refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
     except subprocess.CalledProcessError as e:
-        if e.returncode != 3 or not plist_path.exists():
+        if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
         subprocess.run(["launchctl", "load", str(plist_path)], check=True)
-        subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+        subprocess.run(["launchctl", "start", label], check=True)
     print("✓ Service started")
 
 def launchd_stop():
-    subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
+    label = get_launchd_label()
+    subprocess.run(["launchctl", "stop", label], check=True)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -906,8 +1032,9 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
+    label = get_launchd_label()
     result = subprocess.run(
-        ["launchctl", "list", "ai.hermes.gateway"],
+        ["launchctl", "list", label],
         capture_output=True,
         text=True
     )
@@ -1195,6 +1322,35 @@ _PLATFORMS = [
              "help": "The AppSecret from your DingTalk application credentials."},
         ],
     },
+    {
+        "key": "feishu",
+        "label": "Feishu / Lark",
+        "emoji": "🪽",
+        "token_var": "FEISHU_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
+            "2. Create an app and copy the App ID and App Secret",
+            "3. Enable the Bot capability for the app",
+            "4. Choose WebSocket (recommended) or Webhook connection mode",
+            "5. Add the bot to a group chat or message it directly",
+            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Feishu/Lark application."},
+            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your Feishu/Lark application."},
+            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
+             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Feishu/Lark users can interact with the bot."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
 ]
 
 
@@ -1307,9 +1463,9 @@ def _setup_standard_platform(platform: dict):
 
         # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
-            print_info(f"  The gateway DENIES all users by default for security.")
-            print_info(f"  Enter user IDs to create an allowlist, or leave empty")
-            print_info(f"  and you'll be asked about open access next.")
+            print_info("  The gateway DENIES all users by default for security.")
+            print_info("  Enter user IDs to create an allowlist, or leave empty")
+            print_info("  and you'll be asked about open access next.")
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
@@ -1326,7 +1482,7 @@ def _setup_standard_platform(platform: dict):
                             parts.append(uid)
                     cleaned = ",".join(parts)
                 save_env_value(var["name"], cleaned)
-                print_success(f"  Saved — only these users can interact with the bot.")
+                print_success("  Saved — only these users can interact with the bot.")
                 allowed_val_set = cleaned
             else:
                 # No allowlist — ask about open access vs DM pairing
@@ -1355,7 +1511,7 @@ def _setup_standard_platform(platform: dict):
             print_warning(f"  Skipped — {label} won't work without this.")
             return
         else:
-            print_info(f"  Skipped (can configure later)")
+            print_info("  Skipped (can configure later)")
 
     # If an allowlist was set and home channel wasn't, offer to reuse
     # the first user ID (common for Telegram DMs).
@@ -1412,7 +1568,7 @@ def _is_service_running() -> bool:
         return False
     elif is_macos() and get_launchd_plist_path().exists():
         result = subprocess.run(
-            ["launchctl", "list", "ai.hermes.gateway"],
+            ["launchctl", "list", get_launchd_label()],
             capture_output=True, text=True
         )
         return result.returncode == 0
@@ -1531,12 +1687,15 @@ def _setup_signal():
     print_success("Signal configured!")
     print_info(f"  URL: {url}")
     print_info(f"  Account: {account}")
-    print_info(f"  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
+    print_info("  DM auth: via SIGNAL_ALLOWED_USERS + DM pairing")
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
+    if is_managed():
+        managed_error("run gateway setup")
+        return
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
@@ -1691,6 +1850,9 @@ def gateway_command(args):
 
     # Service management commands
     if subcmd == "install":
+        if is_managed():
+            managed_error("install gateway service (managed by NixOS)")
+            return
         force = getattr(args, 'force', False)
         system = getattr(args, 'system', False)
         run_as_user = getattr(args, 'run_as_user', None)
@@ -1704,6 +1866,9 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "uninstall":
+        if is_managed():
+            managed_error("uninstall gateway service (managed by NixOS)")
+            return
         system = getattr(args, 'system', False)
         if is_linux():
             systemd_uninstall(system=system)
