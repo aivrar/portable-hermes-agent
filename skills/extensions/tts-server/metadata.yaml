@@ -2,5 +2,5 @@ name: tts-server
 description: Generate speech, clone voices, and create dialogue using the portable TTS Server (10 models, voice cloning, emotions)
 category: extensions
 version: "1.0"
-author: rookiemann
+author: aivrar
 tags: [tts, speech, voice, cloning, audio, gpu]

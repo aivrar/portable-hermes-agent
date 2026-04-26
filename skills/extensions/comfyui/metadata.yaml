@@ -2,5 +2,5 @@ name: comfyui
 description: AI image generation with ComfyUI - 101+ models, workflows, multi-GPU, custom nodes
 category: extensions
 version: "1.0"
-author: rookiemann
+author: aivrar
 tags: [comfyui, images, stable-diffusion, generation, gpu, workflows]

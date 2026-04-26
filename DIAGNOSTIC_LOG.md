@@ -142,7 +142,7 @@
 
 | Property | Value |
 |----------|-------|
-| **Origin** | `github.com/rookiemann/portable-hermes-agent.git` |
+| **Origin** | `github.com/aivrar/portable-hermes-agent.git` |
 | **Upstream** | `github.com/nousresearch/hermes-agent.git` |
 | **Branch** | main |
 | **Last Commit** | `f9bff32` fix: rewrite PDF builder with fpdf2 built-in table support |

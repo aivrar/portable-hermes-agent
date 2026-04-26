@@ -29,7 +29,7 @@ EXTENSIONS = [
         "icon": "MUSIC",
         "description": "Generate music, songs, and sound effects from text prompts.\n"
                        "8 AI models, multi-GPU, production mastering pipeline.",
-        "repo": "https://github.com/rookiemann/portable-music-server.git",
+        "repo": "https://github.com/aivrar/portable-music-server.git",
         "port": 9150,
         "api_base": "http://127.0.0.1:9150",
         "start_cmd": "launcher.bat api",
@@ -51,7 +51,7 @@ EXTENSIONS = [
         "icon": "TTS",
         "description": "Convert text to broadcast-quality speech with voice cloning.\n"
                        "10 TTS models, emotions, multilingual, post-processing.",
-        "repo": "https://github.com/rookiemann/portable-tts-server.git",
+        "repo": "https://github.com/aivrar/portable-tts-server.git",
         "port": 8200,
         "api_base": "http://127.0.0.1:8200",
         "start_cmd": "launcher.bat api",
@@ -73,7 +73,7 @@ EXTENSIONS = [
         "icon": "IMG",
         "description": "Full ComfyUI installation for AI image generation.\n"
                        "100+ models, workflows, multi-GPU, custom nodes.",
-        "repo": "https://github.com/rookiemann/comfyui-portable-installer.git",
+        "repo": "https://github.com/aivrar/comfyui-portable-installer.git",
         "port": 8188,
         "api_base": "http://127.0.0.1:8188",
         "start_cmd": "launcher.bat run",

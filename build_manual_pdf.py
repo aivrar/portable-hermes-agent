@@ -61,7 +61,7 @@ class ManualPDF(FPDF):
         self.ln(25)
         self.set_font("Helvetica", "I", 9)
         self.set_text_color(150, 150, 150)
-        self.cell(0, 6, "github.com/rookiemann/portable-hermes-agent",
+        self.cell(0, 6, "github.com/aivrar/portable-hermes-agent",
                   align="C")
 
     def toc_page(self, sections):

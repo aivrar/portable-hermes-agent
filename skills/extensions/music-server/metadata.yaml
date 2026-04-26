@@ -2,5 +2,5 @@ name: music-server
 description: Generate music, songs, and sound effects using the portable Music Generation Server (8 AI models, multi-GPU)
 category: extensions
 version: "1.0"
-author: rookiemann
+author: aivrar
 tags: [music, audio, generation, ai, gpu]
