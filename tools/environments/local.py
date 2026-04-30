@@ -184,19 +184,29 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
-    # shutil.which finds bash.exe if Git\bin is on PATH
-    found = shutil.which("bash")
-    if found:
-        return found
-
-    # Check common Git for Windows install locations
+    # Check known Git for Windows install locations BEFORE shutil.which.
+    #
+    # shutil.which("bash") finds C:\Windows\System32\bash.exe (the WSL stub) first
+    # on Windows 11 because System32 precedes Git\bin in PATH. On machines where
+    # WSL is installed but the user lacks the SeInteractiveLogonRight privilege
+    # (common in enterprise environments), the WSL stub exits immediately with a
+    # "logon type not allowed" error, making every shell command fail silently.
+    #
+    # User-level Git install (%LOCALAPPDATA%\Programs\Git) is checked first because
+    # non-admin users cannot install to Program Files.
     for candidate in (
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    # shutil.which as last resort — may return WSL bash on some systems, but user
+    # can override via HERMES_GIT_BASH_PATH if that causes problems.
+    found = shutil.which("bash")
+    if found:
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

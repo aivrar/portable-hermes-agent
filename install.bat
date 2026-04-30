@@ -122,7 +122,11 @@ if not exist "%PYTHON_DIR%\Lib\tkinter" (
         "Invoke-WebRequest -Uri '%TCLTK_URL%' -OutFile '%TCLTK_MSI%'"
 
     if exist "!TCLTK_MSI!" (
-        start /wait msiexec.exe /a "!TCLTK_MSI!" /qn TARGETDIR="!TCLTK_TEMP!"
+        :: Use PowerShell Start-Process -Wait for reliable synchronous extraction.
+        :: "start /wait msiexec /a" can return before extraction completes on
+        :: Windows 11 Enterprise with restrictive Group Policy, leaving DLLs absent.
+        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+            "Start-Process msiexec.exe -ArgumentList '/a','\"!TCLTK_MSI!\"','/qn','TARGETDIR=\"!TCLTK_TEMP!\"' -Wait -NoNewWindow"
         if exist "!TCLTK_TEMP!\DLLs" (
             xcopy /E /Y /Q "!TCLTK_TEMP!\DLLs\*" "%PYTHON_DIR%\DLLs\" >nul 2>nul
             copy /Y "!TCLTK_TEMP!\DLLs\*.dll" "%PYTHON_DIR%\" >nul 2>nul
@@ -178,6 +182,15 @@ echo        (this may take several minutes on first run)
 "%PYTHON_EXE%" -m pip install -e "%SCRIPT_DIR%." --quiet 2>nul
 if errorlevel 1 (
     "%PYTHON_EXE%" -m pip install -r "%SCRIPT_DIR%requirements.txt" --quiet 2>nul
+)
+
+:: Guarantee the project root is on sys.path regardless of editable-install outcome.
+:: Embedded Python does not create .egg-link / .pth files the same way as regular
+:: Python, so pip install -e . may succeed (exit 0) but leave hermes_cli unreachable.
+set "PTH_FILE=%PYTHON_DIR%\Lib\site-packages\hermes_project.pth"
+if not exist "!PTH_FILE!" (
+    echo %SCRIPT_DIR%> "!PTH_FILE!"
+    echo [OK] hermes_project.pth created.
 )
 
 :: All optional extras
