@@ -18,6 +18,11 @@ EXCLUDE_DIRS = {
     ".mypy_cache",
     ".pytest_cache",
     ".venv",
+    "venv",
+    "codex",
+    "workspace",
+    "tinker-atropos",
+    "mini-swe-agent",
 }
 
 # Specific paths to exclude
