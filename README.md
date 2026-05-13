@@ -84,6 +84,16 @@ hermes_gui.bat      :: GUI mode
 3. Tools > LM Studio in the GUI
 4. Load model, click "Use for Chat"
 
+### 4. Optional X/Twitter Automation
+
+Install Hermes Tweet when you need a native Hermes Agent X/Twitter plugin:
+
+```batch
+hermes plugins install Xquik-dev/hermes-tweet --enable
+```
+
+Set `XQUIK_API_KEY` in the Hermes environment before launching `hermes.bat`, or add it through the portable bundle's API key workflow if you manage custom keys there. Hermes Tweet can scrape/search tweets, search Twitter/X, read tweet replies, look up users, monitor tweets, export followers, post tweets/replies, send DMs, and automate X actions with confirmation gates for writes.
+
 ---
 
 ## Requirements
