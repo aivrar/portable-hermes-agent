@@ -1466,18 +1466,22 @@ def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env."""
     env_path = get_env_path()
     env_vars = {}
-    
+
     if env_path.exists():
-        # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
-        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-        with open(env_path, **open_kw) as f:
+        # Explicit UTF-8 unconditionally: open()'s default encoding is
+        # locale-dependent and not guaranteed UTF-8 even on POSIX (any
+        # container/embedded Linux with no LANG set, locale-misconfigured
+        # macOS, etc. can hit the same trap that Windows cp1252 hits).
+        # PEP 597 also flags locale-default open() as a deprecation
+        # candidate. Pinning UTF-8 is correct on every platform.
+        # errors='replace' so a corrupt byte doesn't kill the whole load.
+        with open(env_path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     key, _, value = line.partition('=')
                     env_vars[key.strip()] = value.strip().strip('"\'')
-    
+
     return env_vars
 
 
@@ -1542,8 +1546,11 @@ def sanitize_env_file() -> int:
     if not env_path.exists():
         return 0
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+    # Unconditional UTF-8 on every platform — see load_env() above for
+    # the rationale (locale-default open() is not guaranteed UTF-8 on
+    # POSIX either; pinning is the only safe pattern).
+    read_kw = {"encoding": "utf-8", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
@@ -1587,11 +1594,13 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     ensure_hermes_home()
     env_path = get_env_path()
-    
-    # On Windows, open() defaults to the system locale (cp1252) which can
-    # cause OSError errno 22 on UTF-8 .env files.
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    # Unconditional UTF-8 on every platform — see load_env() above. The
+    # previous Windows-only conditional left POSIX hosts exposed to the
+    # same trap when LANG is unset or locale.getpreferredencoding() is
+    # ANSI-X3.4 (some minimal containers, locale-broken systems).
+    read_kw = {"encoding": "utf-8", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
 
     lines = []
     if env_path.exists():
