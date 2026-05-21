@@ -53,6 +53,13 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    # ACP set_config_option backing store. Canonical config_ids consumed by
+    # list_sessions: "title" (rename), "deleted" (soft-delete, filtered out).
+    # Other keys passed through opaquely for forward-compatibility.
+    config_options: Dict[str, str] = field(default_factory=dict)
+    # Unix epoch seconds of the most recent prompt processed on this session.
+    # Populated by SessionManager.touch_prompted(); surfaced via SessionInfo.updated_at.
+    last_prompted_at: Optional[float] = None
 
 
 class SessionManager:
@@ -151,7 +158,12 @@ class SessionManager:
         return state
 
     def list_sessions(self) -> List[Dict[str, Any]]:
-        """Return lightweight info dicts for all sessions (memory + database)."""
+        """Return lightweight info dicts for all sessions (memory + database).
+
+        Includes per-session config_options, last_prompted_at, and history_len
+        so the ACP server can populate the optional SessionInfo.title /
+        SessionInfo.updated_at fields without a second round-trip.
+        """
         # Collect in-memory sessions first.
         with self._lock:
             seen_ids = set(self._sessions.keys())
@@ -161,6 +173,9 @@ class SessionManager:
                     "cwd": s.cwd,
                     "model": s.model,
                     "history_len": len(s.history),
+                    "config_options": dict(s.config_options),
+                    "last_prompted_at": s.last_prompted_at,
+                    "history": list(s.history),  # for first-message title derivation
                 }
                 for s in self._sessions.values()
             ]
@@ -174,24 +189,71 @@ class SessionManager:
                     sid = row["id"]
                     if sid in seen_ids:
                         continue
-                    # Extract cwd from model_config JSON.
+                    # Extract cwd + config_options + last_prompted_at from
+                    # model_config JSON (all three stored together by _persist).
                     cwd = "."
+                    config_options: Dict[str, str] = {}
+                    last_prompted_at: Optional[float] = None
                     mc = row.get("model_config")
                     if mc:
                         try:
-                            cwd = json.loads(mc).get("cwd", ".")
+                            mc_data = json.loads(mc)
+                            cwd = mc_data.get("cwd", ".")
+                            config_options = mc_data.get("config_options") or {}
+                            last_prompted_at = mc_data.get("last_prompted_at")
                         except (json.JSONDecodeError, TypeError):
                             pass
+                    # Fall back to started_at if no last_prompted_at recorded.
+                    if last_prompted_at is None:
+                        last_prompted_at = row.get("started_at")
                     results.append({
                         "session_id": sid,
                         "cwd": cwd,
                         "model": row.get("model") or "",
                         "history_len": row.get("message_count") or 0,
+                        "config_options": config_options,
+                        "last_prompted_at": last_prompted_at,
+                        # First-message derivation for unrenamed sessions:
+                        # pull the first user message via a focused DB query.
+                        "history": self._first_user_message(sid) if not config_options.get("title") else [],
                     })
             except Exception:
                 logger.debug("Failed to list ACP sessions from DB", exc_info=True)
 
         return results
+
+    def _first_user_message(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return up to one user message (the first) for title auto-derivation.
+
+        Returns a one-element list (matching history shape) when found, else
+        an empty list. Used by list_sessions when the session has no manual
+        title set in config_options.
+        """
+        db = self._get_db()
+        if db is None:
+            return []
+        try:
+            msgs = db.get_messages(session_id, limit=1)
+            for msg in msgs:
+                if msg.get("role") == "user":
+                    return [{"role": "user", "content": msg.get("content", "")}]
+            # If first message isn't user, scan more
+            msgs = db.get_messages(session_id, limit=10)
+            for msg in msgs:
+                if msg.get("role") == "user":
+                    return [{"role": "user", "content": msg.get("content", "")}]
+        except Exception:
+            logger.debug("Failed to fetch first user message for %s", session_id, exc_info=True)
+        return []
+
+    def touch_prompted(self, session_id: str) -> None:
+        """Mark a session as just-prompted. Updates last_prompted_at + persists."""
+        import time
+        state = self.get_session(session_id)
+        if state is None:
+            return
+        state.last_prompted_at = time.time()
+        self._persist(state)
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
@@ -282,6 +344,13 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        # Persist config_options (used for title/deleted/etc by ACP
+        # set_session_config_option) + last_prompted_at alongside cwd in
+        # the model_config JSON column. Avoids a schema migration.
+        if state.config_options:
+            session_meta["config_options"] = dict(state.config_options)
+        if state.last_prompted_at is not None:
+            session_meta["last_prompted_at"] = state.last_prompted_at
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -292,10 +361,11 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=json.loads(cwd_json),
                 )
             else:
-                # Update model_config (contains cwd) if changed.
+                # Update model_config (contains cwd, config_options,
+                # last_prompted_at) if changed.
                 try:
                     with db._lock:
                         db._conn.execute(
@@ -341,11 +411,13 @@ class SessionManager:
         if row.get("source") != "acp":
             return None
 
-        # Extract cwd from model_config.
+        # Extract cwd + config_options + last_prompted_at from model_config.
         cwd = "."
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_config_options: Dict[str, str] = {}
+        restored_last_prompted_at: Optional[float] = None
         mc = row.get("model_config")
         if mc:
             try:
@@ -355,6 +427,8 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_config_options = meta.get("config_options") or {}
+                    restored_last_prompted_at = meta.get("last_prompted_at")
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -387,6 +461,8 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            config_options=dict(restored_config_options),
+            last_prompted_at=restored_last_prompted_at,
         )
         with self._lock:
             self._sessions[session_id] = state
