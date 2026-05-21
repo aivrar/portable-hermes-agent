@@ -209,11 +209,72 @@ class HermesACPAgent(acp.Agent):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> ListSessionsResponse:
+        """Populate the optional SessionInfo.title and SessionInfo.updated_at
+        fields (defined by the ACP v0.10.8 schema) and surface message_count
+        via the canonical SessionInfo._meta extensibility key.
+
+        Title resolution order:
+          1. config_options["title"] — set via session/set_config_option
+          2. First user message truncated to 40 chars
+          3. None (renderer falls back to displaying the session_id prefix)
+
+        Sessions with config_options["deleted"] == "true" are filtered out —
+        canonical "soft delete" semantics using the existing ACP machinery.
+        """
+        from datetime import datetime, timezone
+
         infos = self.session_manager.list_sessions()
-        sessions = [
-            SessionInfo(session_id=s["session_id"], cwd=s["cwd"])
-            for s in infos
-        ]
+        sessions: list[SessionInfo] = []
+        for s in infos:
+            opts = s.get("config_options") or {}
+            if str(opts.get("deleted", "")).lower() == "true":
+                continue  # filtered: soft-deleted
+
+            title = opts.get("title")
+            if not title:
+                # Derive from first user message in history
+                history = s.get("history") or []
+                for msg in history:
+                    if msg.get("role") == "user":
+                        content = msg.get("content") or ""
+                        if isinstance(content, list):
+                            # ACP content blocks — extract text
+                            content = " ".join(
+                                b.get("text", "")
+                                for b in content
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            )
+                        content = str(content).strip()
+                        if content:
+                            title = content[:40].rstrip()
+                            if len(content) > 40:
+                                title += "…"
+                        break
+
+            updated_at_iso: str | None = None
+            lp = s.get("last_prompted_at")
+            if isinstance(lp, (int, float)) and lp > 0:
+                try:
+                    updated_at_iso = (
+                        datetime.fromtimestamp(lp, tz=timezone.utc)
+                        .isoformat()
+                        .replace("+00:00", "Z")
+                    )
+                except (OSError, OverflowError, ValueError):
+                    updated_at_iso = None
+
+            sessions.append(
+                SessionInfo(
+                    session_id=s["session_id"],
+                    cwd=s["cwd"],
+                    title=title,
+                    updated_at=updated_at_iso,
+                    field_meta={
+                        "message_count": s.get("history_len", 0),
+                        "model": s.get("model") or "",
+                    },
+                )
+            )
         return ListSessionsResponse(sessions=sessions)
 
     # ---- Prompt (core) ------------------------------------------------------
@@ -239,6 +300,10 @@ class HermesACPAgent(acp.Agent):
         user_text = _extract_text(prompt).strip()
         if not user_text:
             return PromptResponse(stop_reason="end_turn")
+
+        # M-2a: mark this session as just-prompted so SessionInfo.updated_at
+        # reflects the most recent activity in list_sessions responses.
+        self.session_manager.touch_prompted(session_id)
 
         # Intercept slash commands — handle locally without calling the LLM
         if user_text.startswith("/"):
@@ -519,17 +584,22 @@ class HermesACPAgent(acp.Agent):
     async def set_config_option(
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
-        """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        """Accept ACP config option updates.
+
+        Canonical keys consumed by list_sessions / session lifecycle:
+          - "title": override the auto-derived title (manual rename)
+          - "deleted": "true" soft-deletes (filtered from list_sessions)
+
+        Other config_ids pass through opaquely for forward-compatibility.
+        Backed by SessionState.config_options (typed field as of M-2a;
+        previous setattr-only pattern lost data on _restore).
+        """
         state = self.session_manager.get_session(session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)
             return None
 
-        options = getattr(state, "config_options", None)
-        if not isinstance(options, dict):
-            options = {}
-        options[str(config_id)] = value
-        setattr(state, "config_options", options)
+        state.config_options[str(config_id)] = str(value)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
         return SetSessionConfigOptionResponse(config_options=[])
