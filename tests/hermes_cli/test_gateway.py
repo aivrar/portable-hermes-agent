@@ -1,10 +1,18 @@
 """Tests for hermes_cli.gateway."""
 
 import signal
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
+import pytest
+
 import hermes_cli.gateway as gateway
+
+_skip_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Unix-only gateway service management (systemd/launchd, os.getuid, signal.SIGKILL).",
+)
 
 
 class TestSystemdLingerStatus:
@@ -33,6 +41,7 @@ class TestSystemdLingerStatus:
         assert gateway.get_systemd_linger_status() == (False, "")
 
 
+@_skip_on_windows
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
@@ -57,6 +66,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     assert "loginctl enable-linger" in out
 
 
+@_skip_on_windows
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
@@ -141,6 +151,7 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
     assert "--system" in out
 
 
+@_skip_on_windows
 def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
@@ -155,6 +166,7 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
     assert "sudo hermes gateway start --system" in out
 
 
+@_skip_on_windows
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
@@ -178,6 +190,7 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 # ---------------------------------------------------------------------------
 
 
+@_skip_on_windows
 class TestWaitForGatewayExit:
     """PID-based wait with force-kill on timeout."""
 
