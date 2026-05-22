@@ -13,7 +13,7 @@ jobs:
   pytest:
     name: pytest (windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,8 +30,11 @@ jobs:
           pip install -e ".[all,dev]"
 
       - name: Run test suite
-        # pyproject sets addopts = "-m 'not integration' -n auto", so integration
-        # tests are skipped and the suite runs in parallel. --timeout bounds every
-        # test (thread method = Windows-compatible; the conftest SIGALRM timeout is
-        # POSIX-only) so a hung test fails cleanly instead of aborting the session.
-        run: pytest tests/ -p no:cacheprovider --timeout=120 --timeout-method=thread
+        # Run SERIALLY (-n0, overriding pyproject's -n auto): a flaky KeyboardInterrupt
+        # under parallel xdist intermittently aborts the whole session on the Windows
+        # runner. --timeout bounds every test (thread method = Windows-compatible; the
+        # conftest SIGALRM timeout is POSIX-only).
+        # NOTE: do NOT add -p no:cacheprovider here — in serial mode the main process
+        # does collection, and the CLI's --profile/-p argv scan misreads it and
+        # sys.exits during collection.
+        run: pytest tests/ -n0 --timeout=120 --timeout-method=thread
