@@ -1,8 +1,16 @@
 """Tests for gateway linger auto-enable behavior on headless Linux installs."""
 
+import sys
 from types import SimpleNamespace
 
+import pytest
+
 import hermes_cli.gateway as gateway
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="systemd linger is a Linux-only concept (uses os.getuid).",
+)
 
 
 class TestEnsureLingerEnabled:

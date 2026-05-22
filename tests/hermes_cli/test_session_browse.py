@@ -7,6 +7,7 @@ Covers:
 """
 
 import os
+import sys
 import time
 from unittest.mock import MagicMock, patch, call
 
@@ -244,6 +245,7 @@ class TestSessionBrowsePicker:
 
 # ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
+@pytest.mark.skipif(sys.platform == "win32", reason="curses module is Unix-only")
 class TestCursesBrowse:
     """Tests for the curses-based interactive picker via simulated key sequences."""
 
