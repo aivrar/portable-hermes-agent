@@ -37,4 +37,4 @@ jobs:
         # NOTE: do NOT add -p no:cacheprovider here — in serial mode the main process
         # does collection, and the CLI's --profile/-p argv scan misreads it and
         # sys.exits during collection.
-        run: pytest tests/ -n0 -v --full-trace --timeout=120 --timeout-method=thread
+        run: pytest tests/ -n0 --timeout=120 --timeout-method=thread
