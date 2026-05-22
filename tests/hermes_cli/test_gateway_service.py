@@ -4,7 +4,16 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import sys
+
+import pytest
+
 import hermes_cli.gateway as gateway_cli
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="systemd service management is Unix-only (os.getuid, grp, signal.SIGKILL).",
+)
 
 
 class TestSystemdServiceRefresh:
