@@ -14,7 +14,18 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    env_home = os.getenv("HERMES_HOME")
+    if env_home:
+        return Path(env_home)
+    try:
+        return Path.home() / ".hermes"
+    except RuntimeError:
+        # Path.home() raises "Could not determine home directory" when no
+        # home can be resolved — e.g. on Windows when USERPROFILE/HOMEDRIVE/
+        # HOMEPATH are all unset (Windows has no POSIX passwd-db fallback).
+        # Degrade to a temp-based dir instead of crashing the caller.
+        import tempfile
+        return Path(tempfile.gettempdir()) / ".hermes"
 
 
 def get_hermes_dir(new_subpath: str, old_name: str) -> Path:

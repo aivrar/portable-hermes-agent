@@ -35,6 +35,10 @@ dependencies = [
   "faster-whisper>=1.0.0,<2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # Windows ships no system timezone database, so zoneinfo lookups for the
+  # `timezone` config feature (e.g. ZoneInfo("Asia/Kolkata")) raise
+  # ZoneInfoNotFoundError without this. Unix uses the OS tz data.
+  "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
