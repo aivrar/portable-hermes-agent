@@ -44,6 +44,7 @@ class TestProviderRegistry:
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
+        ("evolink", "EvoLink", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
@@ -83,6 +84,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_evolink_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["evolink"]
+        assert pconfig.api_key_env_vars == ("EVOLINK_API_KEY",)
+        assert pconfig.base_url_env_var == "EVOLINK_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -101,6 +107,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
+        assert PROVIDER_REGISTRY["evolink"].inference_base_url == "https://api.evolink.ai/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
@@ -122,6 +129,7 @@ PROVIDER_ENV_VARS = (
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
+    "EVOLINK_API_KEY", "EVOLINK_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
@@ -155,6 +163,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_evolink(self):
+        assert resolve_provider("evolink") == "evolink"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -178,6 +189,11 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_evolink(self):
+        assert resolve_provider("evo-link") == "evolink"
+        assert resolve_provider("evolink-ai") == "evolink"
+        assert resolve_provider("evolink.ai") == "evolink"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -249,6 +265,10 @@ class TestResolveProvider:
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_detects_evolink_key(self, monkeypatch):
+        monkeypatch.setenv("EVOLINK_API_KEY", "test-evolink-key")
+        assert resolve_provider("auto") == "evolink"
 
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
@@ -439,6 +459,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "gw-secret-key"
         assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
 
+    def test_resolve_evolink_with_key(self, monkeypatch):
+        monkeypatch.setenv("EVOLINK_API_KEY", "evolink-secret-key")
+        creds = resolve_api_key_provider_credentials("evolink")
+        assert creds["provider"] == "evolink"
+        assert creds["api_key"] == "evolink-secret-key"
+        assert creds["base_url"] == "https://api.evolink.ai/v1"
+
+    def test_resolve_evolink_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("EVOLINK_API_KEY", "evolink-key")
+        monkeypatch.setenv("EVOLINK_BASE_URL", "https://custom.evolink.example/v1")
+        creds = resolve_api_key_provider_credentials("evolink")
+        assert creds["base_url"] == "https://custom.evolink.example/v1"
+
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -521,6 +554,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "gw-key"
         assert "ai-gateway.vercel.sh" in result["base_url"]
+
+    def test_runtime_evolink(self, monkeypatch):
+        monkeypatch.setenv("EVOLINK_API_KEY", "evolink-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="evolink")
+        assert result["provider"] == "evolink"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "evolink-key"
+        assert result["base_url"] == "https://api.evolink.ai/v1"
 
     def test_runtime_kilocode(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")

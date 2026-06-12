@@ -28,6 +28,7 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "EVOLINK_API_KEY", "EVOLINK_BASE_URL",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -430,6 +431,15 @@ class TestExplicitProviderRouting:
             mock_openai.return_value = MagicMock()
             client, model = resolve_provider_client("deepseek")
             assert client is not None
+
+    def test_explicit_evolink(self, monkeypatch):
+        """provider='evolink' should use EVOLINK_API_KEY."""
+        monkeypatch.setenv("EVOLINK_API_KEY", "evolink-test-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("evolink")
+            assert client is not None
+            assert model == "google/gemini-3-flash"
 
     def test_explicit_zai(self, monkeypatch):
         """provider='zai' should use GLM_API_KEY."""

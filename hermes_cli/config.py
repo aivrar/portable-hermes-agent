@@ -575,6 +575,22 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "provider",
     },
+    "EVOLINK_API_KEY": {
+        "description": "EvoLink API key",
+        "prompt": "EvoLink API key",
+        "url": "https://evolink.ai",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "EVOLINK_BASE_URL": {
+        "description": "EvoLink base URL override",
+        "prompt": "EvoLink base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "DASHSCOPE_API_KEY": {
         "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
         "prompt": "DashScope API Key",

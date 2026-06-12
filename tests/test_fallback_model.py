@@ -358,6 +358,7 @@ class TestProviderCredentials:
         ("kimi-coding", "KIMI_API_KEY", "moonshot.ai"),
         ("minimax", "MINIMAX_API_KEY", "minimax.io"),
         ("minimax-cn", "MINIMAX_CN_API_KEY", "minimaxi.com"),
+        ("evolink", "EVOLINK_API_KEY", "evolink.ai"),
     ])
     def test_provider_resolves(self, provider, env_var, base_url_fragment):
         agent = _make_agent(
