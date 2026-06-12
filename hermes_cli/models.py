@@ -205,6 +205,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-2.5-flash",
         "deepseek/deepseek-v3.2",
     ],
+    "evolink": [
+        "openai/gpt-5.5",
+        "openai/gpt-5.4",
+        "anthropic/claude-opus-4.6",
+        "anthropic/claude-sonnet-4.6",
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash",
+    ],
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
@@ -255,6 +263,7 @@ _PROVIDER_LABELS = {
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
+    "evolink": "EvoLink",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
     "huggingface": "Hugging Face",
@@ -286,6 +295,9 @@ _PROVIDER_ALIASES = {
     "aigateway": "ai-gateway",
     "vercel": "ai-gateway",
     "vercel-ai-gateway": "ai-gateway",
+    "evo-link": "evolink",
+    "evolink-ai": "evolink",
+    "evolink.ai": "evolink",
     "kilo": "kilocode",
     "kilo-code": "kilocode",
     "kilo-gateway": "kilocode",
@@ -331,7 +343,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "evolink", "deepseek", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "opencode-zen", "opencode-go", "ai-gateway", "evolink", "kilocode", "alibaba",
     "custom", "local",
     # Common aliases
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
-    "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "opencode", "zen", "go", "vercel", "evo-link", "evolink-ai", "evolink.ai",
+    "kilo", "dashscope", "aliyun", "qwen",
 })
 
 
@@ -175,6 +176,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
+    "api.evolink.ai": "evolink",
 }
 
 
