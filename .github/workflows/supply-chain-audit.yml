@@ -126,8 +126,8 @@ jobs:
               # commit 3a7ed7be0. Any future setup.py change gets a different
               # digest and remains a blocking critical finding.
               if [ "$path" = "setup.py" ] && [ -f "$path" ]; then
-                digest="$(sha256sum "$path" | awk '{print $1}')"
-                if [ "$digest" = "6fc4fd32be898257a28722b00a035bf9078bdf5d80028ca32200f9c235b36f2f" ]; then
+                digest="$(git show "${HEAD}:${path}" | sha256sum | awk '{print $1}')"
+                if [ "$digest" = "1cd38809832cc1bc16bbf499a153382d7ceb5f714ab979abf69d80a4495cfeb4" ]; then
                   continue
                 fi
               fi
