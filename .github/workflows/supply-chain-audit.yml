@@ -131,8 +131,7 @@ jobs:
                   continue
                 fi
               fi
-              UNREVIEWED_SETUP_HITS="${UNREVIEWED_SETUP_HITS}${path}
-"
+              UNREVIEWED_SETUP_HITS="${UNREVIEWED_SETUP_HITS}${path}"$'\n'
             done <<< "$SETUP_HITS"
             SETUP_HITS="$(printf "%s" "$UNREVIEWED_SETUP_HITS" | sed '/^$/d')"
           fi
