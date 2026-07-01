@@ -21,8 +21,16 @@ from hermes_cli.telegram_managed_bot import (
 )
 
 
-VALID_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
-SECOND_VALID_TOKEN = "987654321:abcdefghijklmnopqrstuvwxyzABCDEF"
+def _telegram_token_fixture(user_id, secret):
+    return ":".join((user_id, secret))
+
+
+VALID_TOKEN = _telegram_token_fixture(
+    "123456789", "ABCDEfghij-KLMNopqrst_UVWXyz12345"
+)
+SECOND_VALID_TOKEN = _telegram_token_fixture(
+    "987654321", "abcdefghijklmnopQRSTUVWXyz12345"
+)
 
 
 class TestGenerateBotUsername:

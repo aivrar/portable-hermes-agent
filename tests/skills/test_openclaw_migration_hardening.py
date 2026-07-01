@@ -341,8 +341,9 @@ def test_json_mode_redacts_secrets_in_output(tmp_path):
     source.mkdir()
     (source / "openclaw.json").write_text("{}", encoding="utf-8")
     # Plant a fake OpenClaw .env with a recognizably-shaped key.
+    fake_openrouter_key = "sk-or-v1-" + "abcdefghijklmnop" + "qrstuvwxyz012345"
     (source / ".env").write_text(
-        "OPENROUTER_API_KEY=sk-or-v1-abcdef1234567890abcdef\n", encoding="utf-8"
+        f"OPENROUTER_API_KEY={fake_openrouter_key}\n", encoding="utf-8"
     )
     target = tmp_path / "hermes"
     target.mkdir()
@@ -362,7 +363,7 @@ def test_json_mode_redacts_secrets_in_output(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     # The raw key value must never appear in the JSON output.
-    assert "sk-or-v1-abcdef1234567890abcdef" not in result.stdout
+    assert fake_openrouter_key not in result.stdout
 
 
 # ───────────────────────────────────────────────────────────────────────

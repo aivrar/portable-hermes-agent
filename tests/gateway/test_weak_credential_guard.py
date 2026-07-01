@@ -33,6 +33,11 @@ def _validate_and_return(config):
     return config
 
 
+def _telegram_token_fixture():
+    """Return a syntactically valid dummy token without storing one verbatim."""
+    return ":".join(("7123456789", "AAHdqTcvCH1vGWJxfSeOfSAs0K5PALDsaw"))
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: platform token placeholder rejection
 # ---------------------------------------------------------------------------
@@ -69,9 +74,7 @@ class TestPlatformTokenPlaceholderGuard:
 
     def test_accepts_real_token(self, caplog):
         """A real-looking bot token should pass validation."""
-        config = _make_gateway_config(
-            Platform.TELEGRAM, "7123456789:AAHdqTcvCH1vGWJxfSeOfSAs0K5PALDsaw"
-        )
+        config = _make_gateway_config(Platform.TELEGRAM, _telegram_token_fixture())
         with caplog.at_level(logging.ERROR):
             _validate_and_return(config)
         assert config.platforms[Platform.TELEGRAM].enabled is True

@@ -15,6 +15,18 @@ def _ensure_redaction_enabled(monkeypatch):
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
 
+def _openrouter_key_fixture():
+    return "sk-or-v1-" + "abcdefghijklmnop" + "qrstuvwxyz012345"
+
+
+def _google_api_key_fixture():
+    return "AIza" + "abc123def456" + "ghi789jkl012mno345pqr"
+
+
+def _telegram_token_fixture(user_id="123456789"):
+    return ":".join((user_id, "ABCDEfghij-KLMNopqrst_UVWXyz12345"))
+
+
 class TestKnownPrefixes:
     def test_openai_sk_key(self):
         text = "Using key sk-proj-abc123def456ghi789jkl012"
@@ -24,7 +36,7 @@ class TestKnownPrefixes:
         assert "..." in result
 
     def test_openrouter_sk_key(self):
-        text = "OPENROUTER_API_KEY=sk-or-v1-abcdefghijklmnopqrstuvwxyz1234567890"
+        text = "OPENROUTER_API_KEY=" + _openrouter_key_fixture()
         result = redact_sensitive_text(text)
         assert "abcdefghijklmnop" not in result
 
@@ -42,7 +54,7 @@ class TestKnownPrefixes:
         assert "a" * 14 not in result
 
     def test_google_api_key(self):
-        result = redact_sensitive_text("AIzaSyB-abc123def456ghi789jklmno012345")
+        result = redact_sensitive_text(_google_api_key_fixture())
         assert "abc123def456" not in result
 
     def test_perplexity_key(self):
@@ -211,13 +223,13 @@ class TestApiKeyHeaders:
 
 class TestTelegramTokens:
     def test_bot_token(self):
-        text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"
+        text = "bot" + _telegram_token_fixture()
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
         assert "123456789:***" in result
 
     def test_raw_token(self):
-        text = "12345678901:ABCDEfghijKLMNopqrstUVWXyz1234567890"
+        text = _telegram_token_fixture()
         result = redact_sensitive_text(text)
         assert "ABCDEfghij" not in result
 
@@ -270,12 +282,14 @@ class TestPrintenvSimulation:
     """Simulate what happens when the agent runs `env` or `printenv`."""
 
     def test_full_env_dump(self):
-        env_dump = """HOME=/home/user
+        openrouter_key = _openrouter_key_fixture()
+        telegram_token = "bot" + _telegram_token_fixture("987654321")
+        env_dump = f"""HOME=/home/user
 PATH=/usr/local/bin:/usr/bin
 OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345
-OPENROUTER_API_KEY=sk-or-v1-reallyLongSecretKeyValue12345678
+OPENROUTER_API_KEY={openrouter_key}
 FIRECRAWL_API_KEY=fc-shortkey123456789012
-TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
+TELEGRAM_BOT_TOKEN={telegram_token}
 SHELL=/bin/bash
 USER=teknium"""
         result = redact_sensitive_text(env_dump)

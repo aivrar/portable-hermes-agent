@@ -595,7 +595,11 @@ class TestSanitizeEnvLines:
 
     def test_value_ending_with_digits_still_splits(self):
         """Concatenation is detected even when value ends with digits."""
-        lines = ["OPENROUTER_API_KEY=sk-or-v1-abc123OPENAI_BASE_URL=https://api.openai.com/v1\n"]
+        openrouter_key = "sk-or-v1-" + "abcdefghijklmnop" + "qrstuvwxyz012345"
+        lines = [
+            f"OPENROUTER_API_KEY={openrouter_key}"
+            "OPENAI_BASE_URL=https://api.openai.com/v1\n"
+        ]
         result = _sanitize_env_lines(lines)
         assert len(result) == 2
         assert result[0].startswith("OPENROUTER_API_KEY=")

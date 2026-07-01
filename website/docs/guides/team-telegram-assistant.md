@@ -47,7 +47,7 @@ Every Telegram bot starts with **@BotFather** — Telegram's official bot for cr
 3. **Copy the bot token** — BotFather replies with something like:
    ```
    Use this token to access the HTTP API:
-   7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
+   <your-bot-token>
    ```
    Save this token — you'll need it in the next step.
 
@@ -97,7 +97,7 @@ Add these lines to `~/.hermes/.env`:
 
 ```bash
 # Telegram bot token from BotFather
-TELEGRAM_BOT_TOKEN=7123456789:AAH1bGciOiJSUzI1NiIsInR5cCI6Ikp...
+TELEGRAM_BOT_TOKEN=<your-bot-token>
 
 # Your Telegram user ID (numeric)
 TELEGRAM_ALLOWED_USERS=123456789
