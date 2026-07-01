@@ -29,6 +29,7 @@ data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/
+pytest-cache-files-*/
 tmp/
 temp_vision_images/
 hermes-*/*
@@ -98,6 +99,7 @@ models-dev-upstream/
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
 .codex/
 codex/test-logs/
+.claude/
 .cursor/
 .gemini/
 .zed/
@@ -117,6 +119,9 @@ docs/superpowers/*
 # folder-local portable checkout but should never be committed.
 extensions/
 python_embedded/
+
+# Local scratch output.
+test.pdf
 
 # Desktop/bootstrap install marker written into the managed checkout root by the
 # bootstrap installer. It is Hermes-managed runtime state, never a code change —

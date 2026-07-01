@@ -1,9 +1,31 @@
 """Generate styled HTML manual from hermes-guide.md, then convert to PDF."""
-import markdown
+import argparse
+from html import escape
 from pathlib import Path
 
 md_path = Path(__file__).parent / "hermes-guide.md"
 html_path = Path(__file__).parent / "Portable-Hermes-Agent-Manual.html"
+
+parser = argparse.ArgumentParser(description="Generate the Portable Hermes Agent manual.")
+parser.add_argument("--version", help="Optional release version to show on the title page.")
+parser.add_argument("--date", help="Optional release month/date to show on the title page.")
+args = parser.parse_args()
+
+if args.version and args.date:
+    manual_meta_html = f"Version {escape(args.version)} &mdash; {escape(args.date)}"
+elif args.version:
+    manual_meta_html = f"Version {escape(args.version)}"
+elif args.date:
+    manual_meta_html = escape(args.date)
+else:
+    manual_meta_html = "Current main documentation"
+
+try:
+    import markdown
+except ImportError as exc:
+    raise SystemExit(
+        "Missing dependency: markdown. Install it with `python -m pip install markdown`."
+    ) from exc
 
 md_text = md_path.read_text(encoding="utf-8")
 
@@ -15,7 +37,7 @@ html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Hermes Agent - Complete User Guide</title>
+<title>Portable Hermes Agent - Complete User Guide</title>
 <style>
   @media print {{
     body {{ font-size: 11pt; }}
@@ -163,7 +185,7 @@ html = f"""<!DOCTYPE html>
 
 <div style="text-align:center; margin-bottom: 60px;">
   <p style="font-size: 18px; color: #5d6d7e;">Complete User Guide</p>
-  <p style="font-size: 14px; color: #95a5a6;">Version 0.4.0 &mdash; March 2026</p>
+  <p style="font-size: 14px; color: #95a5a6;">{manual_meta_html}</p>
 </div>
 
 {html_body}

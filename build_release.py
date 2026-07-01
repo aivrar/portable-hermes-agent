@@ -1,16 +1,16 @@
 """Build a release zip for portable-hermes-agent."""
+import argparse
 import os
 import zipfile
-import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-VERSION = "0.5.1"
-ZIP_NAME = f"portable-hermes-agent-v{VERSION}.zip"
-ZIP_PATH = os.path.join(os.path.dirname(PROJECT_ROOT), ZIP_NAME)
 
 # Directories to exclude entirely
 EXCLUDE_DIRS = {
     ".git",
+    ".claude",
+    ".codex",
+    ".plans",
     "python_embedded",
     "node_modules",
     "__pycache__",
@@ -20,6 +20,7 @@ EXCLUDE_DIRS = {
     ".venv",
     "venv",
     "codex",
+    "plans",
     "workspace",
     "tinker-atropos",
     "mini-swe-agent",
@@ -46,6 +47,21 @@ EXCLUDE_EXT_REPOS = {
     os.path.join("extensions", "music-server"),
     os.path.join("extensions", "tts-server"),
 }
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Build a portable Hermes release zip.")
+    parser.add_argument(
+        "--version",
+        default=os.environ.get("HERMES_RELEASE_VERSION", "dev"),
+        help="Version suffix for the zip name, for example 1.2.0 or 2026.7.1.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=os.path.dirname(PROJECT_ROOT),
+        help="Directory where the release zip should be written.",
+    )
+    return parser.parse_args()
 
 
 def should_exclude(rel_path):
@@ -78,15 +94,23 @@ def should_exclude(rel_path):
 
 
 def main():
-    print(f"Building release: {ZIP_NAME}")
+    args = parse_args()
+    version = args.version[1:] if args.version.startswith("v") else args.version
+    output_dir = os.path.abspath(args.output_dir)
+    zip_name = f"portable-hermes-agent-v{version}.zip"
+    zip_path = os.path.join(output_dir, zip_name)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f"Building release: {zip_name}")
     print(f"Source: {PROJECT_ROOT}")
-    print(f"Output: {ZIP_PATH}")
+    print(f"Output: {zip_path}")
     print()
 
     count = 0
     prefix = "portable-hermes-agent"
 
-    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for root, dirs, files in os.walk(PROJECT_ROOT):
             # Prune excluded dirs in-place to avoid walking into them
             dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
@@ -105,9 +129,9 @@ def main():
                 except (PermissionError, OSError):
                     pass
 
-    size_mb = os.path.getsize(ZIP_PATH) / (1024 * 1024)
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
     print(f"Done! {count} files, {size_mb:.1f} MB")
-    print(f"Output: {ZIP_PATH}")
+    print(f"Output: {zip_path}")
 
 
 if __name__ == "__main__":
