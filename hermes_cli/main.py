@@ -6197,34 +6197,32 @@ def _atomic_replace_dir(src: str, dst: str) -> None:
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
-    Used on Windows when git file I/O is broken (antivirus, NTFS filter
+    Used for portable/source-zip installs without a .git directory and as a
+    Windows fallback when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
     """
     import tempfile
     import zipfile
     from urllib.request import urlretrieve
 
-    # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
-    # static archive from GitHub, which is fine for the default "main"
-    # channel but would silently ignore --branch and update from main even
-    # if the user asked for something else — exactly the silent-divergence
-    # bug --branch was added to prevent. Refuse to proceed in that case
-    # rather than lie.
+    # The ZIP fallback pulls a static archive from GitHub, which is fine for
+    # the default "main" channel but would silently ignore --branch and update
+    # from main if the user asked for something else. Refuse to proceed in
+    # that case rather than lie.
     branch = _resolve_update_branch(args)
     if branch != "main":
         print(
-            f"✗ --branch={branch} is not supported on the Windows ZIP-fallback "
+            f"✗ --branch={branch} is not supported on the ZIP-fallback "
             "update path."
         )
         print(
-            "  This path runs when git file I/O is broken on the system. "
-            "Either resolve the git-side breakage (typically an antivirus "
-            "or NTFS filter holding files open) and rerun `hermes update "
-            f"--branch {branch}`, or update against main with `hermes update`."
+            "  This path runs when git file I/O is broken on the system "
+            "or when the install has no .git directory. Use a git checkout "
+            f"for branch updates, or update against main with `hermes update`."
         )
         sys.exit(1)
     zip_url = (
-        f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
+        f"https://github.com/aivrar/portable-hermes-agent/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
@@ -6260,8 +6258,8 @@ def _update_via_zip(args):
                     )
             zf.extractall(tmp_dir)
 
-        # GitHub ZIPs extract to hermes-agent-<branch>/
-        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
+        # GitHub ZIPs extract to portable-hermes-agent-<branch>/
+        extracted = os.path.join(tmp_dir, f"portable-hermes-agent-{branch}")
         if not os.path.isdir(extracted):
             # Try to find it
             for d in os.listdir(tmp_dir):
@@ -6271,10 +6269,8 @@ def _update_via_zip(args):
                     break
 
         # Copy updated files over existing installation, preserving runtime
-        # state.  The portable entries are intentionally included even though
-        # upstream source ZIPs do not currently ship them: if a future upstream
-        # archive adds a same-named directory, the ZIP fallback must not replace
-        # a user's folder-local portable payload.
+        # state. The preserve list is part of the portable contract: update
+        # archives must not replace a user's folder-local runtime payloads.
         preserve = {
             "venv",
             "node_modules",
@@ -6283,6 +6279,11 @@ def _update_via_zip(args):
             ".hermes",
             "extensions",
             "python_embedded",
+            # GitHub source ZIPs include repo-maintenance content that the
+            # portable release zip intentionally omits for end users.
+            ".github",
+            "tests",
+            "build_release.py",
         }
         update_count = 0
         for item in os.listdir(extracted):
@@ -6644,12 +6645,12 @@ def _discard_stashed_changes(
 # =========================================================================
 
 OFFICIAL_REPO_URLS = {
-    "https://github.com/NousResearch/hermes-agent.git",
-    "git@github.com:NousResearch/hermes-agent.git",
-    "https://github.com/NousResearch/hermes-agent",
-    "git@github.com:NousResearch/hermes-agent",
+    "https://github.com/aivrar/portable-hermes-agent.git",
+    "git@github.com:aivrar/portable-hermes-agent.git",
+    "https://github.com/aivrar/portable-hermes-agent",
+    "git@github.com:aivrar/portable-hermes-agent",
 }
-OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+OFFICIAL_REPO_URL = "https://github.com/aivrar/portable-hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
@@ -6783,7 +6784,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         # Ask user if they want to add upstream
         print()
         print("ℹ Your fork is not tracking the official Hermes repository.")
-        print("  This means you may miss updates from NousResearch/hermes-agent.")
+        print("  This means you may miss Portable Hermes Agent updates.")
         print()
         try:
             response = (
@@ -6797,7 +6798,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             print("→ Adding upstream remote...")
             if _add_upstream_remote(git_cmd, cwd):
                 print(
-                    "  ✓ Added upstream: https://github.com/NousResearch/hermes-agent.git"
+                    f"  ✓ Added upstream: {OFFICIAL_REPO_URL}"
                 )
                 has_upstream = True
             else:
@@ -6805,7 +6806,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 return
         else:
             print(
-                "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/hermes-agent.git' to add later."
+                f"  Skipped. Run 'git remote add upstream {OFFICIAL_REPO_URL}' to add later."
             )
             _mark_skip_upstream_prompt()
             return
@@ -9312,25 +9313,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _windows_gateway_resume,
         )
 
-    # Try git-based update first, fall back to ZIP download on Windows
-    # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
+    # Try git-based update first. Source-zip/portable installs without .git use
+    # the ZIP fallback; pip installs keep the package-manager update path.
     use_zip_update = False
     git_dir = PROJECT_ROOT / ".git"
 
     if not git_dir.exists():
-        if sys.platform == "win32":
-            use_zip_update = True
-        else:
-            from hermes_cli.config import detect_install_method
-            method = detect_install_method(PROJECT_ROOT)
-            if method == "pip":
-                _cmd_update_pip(args)
-                return
-            print("✗ Not a git repository. Please reinstall:")
-            print(
-                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
-            )
-            sys.exit(1)
+        from hermes_cli.config import detect_install_method
+        method = detect_install_method(PROJECT_ROOT)
+        if method == "pip":
+            _cmd_update_pip(args)
+            return
+        use_zip_update = True
+
+    if use_zip_update:
+        try:
+            _update_via_zip(args)
+        finally:
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+        return
 
     # On Windows, git can fail with "unable to write loose object file: Invalid argument"
     # due to filesystem atomicity issues. Set the recommended workaround.
@@ -9371,14 +9372,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("⚠ Updating from fork:")
         print(f"  {origin_url}")
         print()
-
-    if use_zip_update:
-        # ZIP-based update for Windows when git is broken
-        try:
-            _update_via_zip(args)
-        finally:
-            _resume_windows_gateways_after_update(_windows_gateway_resume)
-        return
 
     # Fetch and pull
     try:

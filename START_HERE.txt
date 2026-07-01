@@ -17,6 +17,7 @@ For Windows users:
 Useful launchers:
 
 - START.bat       - easiest first-time launch
+- UPDATE.bat      - safest one-click update
 - hermes_gui.bat  - desktop GUI
 - hermes.bat      - command-line interface
 - install.bat     - full setup or repair install
@@ -24,6 +25,17 @@ Useful launchers:
 PowerShell setup:
 
   .\scripts\install.ps1
+
+Safe update:
+
+  UPDATE.bat
+
+  or:
+
+  .\hermes.bat update --backup --yes
+
+Updates come from aivrar/portable-hermes-agent. Runtime folders and
+custom tools under .hermes are preserved.
 
 Documentation:
 

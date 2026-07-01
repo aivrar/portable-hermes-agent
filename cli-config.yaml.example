@@ -813,6 +813,17 @@ platform_toolsets:
 #   todo         - todo (in-memory task planning, no deps)
 #   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX/MISTRAL key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
+#   lm_studio    - LM Studio local model control
+#   music        - Portable music server tools
+#   extension_tts - Portable TTS server tools
+#   comfyui      - Portable ComfyUI tools
+#   gpu          - NVIDIA GPU status
+#   model_switcher - Switch active model/provider config
+#   hermes_update - Safe portable update check/apply tools
+#   tool_maker   - Runtime custom tool creation/list/delete
+#   workflows    - Workflow create/run/schedule/manage
+#   serper       - Serper.dev search
+#   guide        - Search the built-in Portable Hermes guide
 #
 # PRESETS (curated bundles):
 #   hermes-cli       - All of the above except send_message

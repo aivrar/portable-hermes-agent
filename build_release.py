@@ -8,6 +8,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # Directories to exclude entirely
 EXCLUDE_DIRS = {
     ".git",
+    ".github",
     ".claude",
     ".codex",
     ".plans",
@@ -19,6 +20,7 @@ EXCLUDE_DIRS = {
     ".pytest_cache",
     ".venv",
     "venv",
+    "tests",
     "codex",
     "plans",
     "workspace",
@@ -65,7 +67,8 @@ def parse_args():
 
 
 def should_exclude(rel_path):
-    parts = rel_path.replace("\\", "/").split("/")
+    norm_path = rel_path.replace("\\", "/")
+    parts = norm_path.split("/")
 
     # Check dir exclusions
     for part in parts:
@@ -73,21 +76,22 @@ def should_exclude(rel_path):
             return True
 
     # Check path exclusions
-    if rel_path in EXCLUDE_PATHS:
+    if norm_path in {path.replace("\\", "/") for path in EXCLUDE_PATHS}:
         return True
 
     # Check extension repos
     for repo in EXCLUDE_EXT_REPOS:
-        if rel_path.startswith(repo + os.sep) or rel_path.startswith(repo + "/"):
+        norm_repo = repo.replace("\\", "/")
+        if norm_path.startswith(norm_repo + "/"):
             return True
 
     # Check extensions
-    _, ext = os.path.splitext(rel_path)
+    _, ext = os.path.splitext(norm_path)
     if ext in EXCLUDE_EXTS:
         return True
 
     # Skip the weird unicode filename
-    if "check_lm_studio" in rel_path and rel_path.startswith("E"):
+    if "check_lm_studio" in norm_path and norm_path.startswith("E"):
         return True
 
     return False

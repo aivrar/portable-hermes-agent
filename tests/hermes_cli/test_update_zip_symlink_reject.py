@@ -41,6 +41,15 @@ def _build_zip_with_portable_runtime_names(zip_path: str) -> None:
         zf.writestr("hermes-agent-main/.hermes/upstream.txt", "upstream\n")
 
 
+def _build_zip_with_release_excluded_paths(zip_path: str) -> None:
+    """Write a ZIP with source-archive paths omitted from portable releases."""
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("hermes-agent-main/README.md", "ok\n")
+        zf.writestr("hermes-agent-main/.github/workflows/tests.yml", "ci\n")
+        zf.writestr("hermes-agent-main/tests/test_example.py", "def test_x(): pass\n")
+        zf.writestr("hermes-agent-main/build_release.py", "print('dev only')\n")
+
+
 def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
     """A symlink member in the update ZIP must raise before extractall."""
     zip_path = tmp_path / "evil.zip"
@@ -182,3 +191,38 @@ def test_update_via_zip_preserves_portable_runtime_dirs(tmp_path, monkeypatch):
     assert not (fake_root / "extensions" / "upstream.txt").exists()
     assert not (fake_root / "python_embedded" / "upstream.txt").exists()
     assert not (fake_root / ".hermes" / "upstream.txt").exists()
+
+
+def test_update_via_zip_does_not_reintroduce_release_excluded_paths(
+    tmp_path, monkeypatch
+):
+    """GitHub source ZIP fallback must keep the portable release surface clean."""
+    zip_path = tmp_path / "release-excluded.zip"
+    _build_zip_with_release_excluded_paths(str(zip_path))
+
+    fake_root = tmp_path / "install_dir"
+    fake_root.mkdir()
+
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    args = type("Args", (), {})()
+
+    def fake_urlretrieve(url, dest):
+        with open(zip_path, "rb") as src, open(dest, "wb") as dst:
+            dst.write(src.read())
+        return dest, None
+
+    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch("subprocess.run") as fake_run, \
+         patch("subprocess.check_call"):
+        fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        try:
+            hermes_main._update_via_zip(args)
+        except SystemExit:
+            pass
+
+    assert (fake_root / "README.md").read_text(encoding="utf-8") == "ok\n"
+    assert not (fake_root / ".github").exists()
+    assert not (fake_root / "tests").exists()
+    assert not (fake_root / "build_release.py").exists()

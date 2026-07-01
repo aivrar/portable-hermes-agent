@@ -884,8 +884,8 @@ See Part 5 for complete details on all 10 LM Studio tools.
 
 | Tool | What It Does | Requirements |
 |------|-------------|-------------|
-| **update_hermes** | Pull latest updates from upstream | Git |
-| **check_hermes_updates** | Check if updates are available | Git |
+| **update_hermes** | Run the safe portable update flow from this repo | None |
+| **check_hermes_updates** | Check if portable repo updates are available | None |
 | **search_guide** | Search this user guide | None |
 
 ### Messaging Tools
@@ -936,7 +936,7 @@ Say: "Create a tool that counts words, sentences, and paragraphs in text"
 
 ### Managing Custom Tools
 
-- Custom tools persist across sessions (saved in `tools/custom/`)
+- Custom tools persist across sessions (saved in `.hermes/custom_tools/`)
 - Say "List my custom tools" to see what you've created
 - Say "Delete the [tool_name] tool" to remove one
 - Custom tools reload automatically when Hermes restarts

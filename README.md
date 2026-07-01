@@ -29,7 +29,7 @@ Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agen
 | **Guide** | 1 | Searchable built-in user manual |
 | **GPU** | 1 | NVIDIA GPU status (memory, temp, utilization) |
 | **Model Switcher** | 1 | Switch between cloud and local AI models |
-| **Hermes Update** | 2 | Pull upstream updates + auto-reinject custom tools |
+| **Hermes Update** | 2 | Update from this portable repo with backups and runtime preservation |
 
 Plus all built-in hermes-agent tools: web search, file operations, browser automation, code execution, delegation, memory, skills, messaging, Home Assistant, and more.
 
@@ -90,9 +90,26 @@ PowerShell users can run:
 ### 3. Launch Again
 ```batch
 START.bat           :: easiest GUI launch
+UPDATE.bat          :: safest one-click update
 hermes_gui.bat      :: GUI mode
 hermes.bat          :: CLI mode
 ```
+
+### Updating
+
+For the easiest safe update, double-click:
+
+```batch
+UPDATE.bat
+```
+
+Or run:
+
+```batch
+hermes.bat update --backup --yes
+```
+
+Updates come from `aivrar/portable-hermes-agent`. Runtime folders such as `.hermes/`, `.hermes/custom_tools/`, `.hermes/extensions/`, `extensions/`, and `python_embedded/` are preserved. Upstream Hermes changes from NousResearch are included only after this portable repo has merged, tested, and released them.
 
 ### 4. Connect an AI Model
 

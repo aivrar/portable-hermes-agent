@@ -840,6 +840,40 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+def test_no_git_portable_install_uses_zip_fallback(monkeypatch, tmp_path):
+    import hermes_cli.main as hermes_main
+
+    args = SimpleNamespace(
+        check=False,
+        yes=True,
+        force=True,
+        branch=None,
+        no_backup=True,
+        backup=False,
+    )
+    zip_calls = []
+
+    def fail_on_git(cmd, **kwargs):
+        if cmd and "git" in str(cmd[0]):
+            raise AssertionError(f"no-git ZIP fallback should not run git: {cmd!r}")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(hermes_main, "_run_pre_update_backup", lambda _args: None)
+    monkeypatch.setattr(hermes_main, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(
+        hermes_main, "_resume_windows_gateways_after_update", lambda _token: None
+    )
+    monkeypatch.setattr(hermes_main, "_update_via_zip", lambda _args: zip_calls.append(_args))
+    monkeypatch.setattr(hermes_main.subprocess, "run", fail_on_git)
+    monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda _root: "git")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    hermes_main._cmd_update_impl(args, gateway_mode=False)
+
+    assert zip_calls == [args]
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

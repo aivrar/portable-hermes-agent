@@ -253,3 +253,19 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+    def test_hermes_cli_includes_portable_extension_and_update_tools(self):
+        tools = set(resolve_toolset("hermes-cli"))
+
+        assert {
+            "update_hermes",
+            "check_hermes_updates",
+            "create_tool",
+            "list_custom_tools",
+            "run_python",
+            "lm_studio_status",
+            "music_status",
+            "tts_server_status",
+            "comfyui_status",
+            "search_guide",
+        }.issubset(tools)

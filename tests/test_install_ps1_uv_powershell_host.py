@@ -1,7 +1,7 @@
 """Regression: the Windows installer must not spawn a bare ``powershell``.
 
 A user on Windows reported the installer getting stuck; running
-``irm https://hermes-agent.nousresearch.com/install.ps1 | iex`` failed at the
+``irm https://raw.githubusercontent.com/aivrar/portable-hermes-agent/main/scripts/install.ps1 | iex`` failed at the
 uv step with::
 
     [X] Failed to install uv: The term 'powershell' is not recognized as the

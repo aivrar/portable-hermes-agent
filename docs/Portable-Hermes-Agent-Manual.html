@@ -1516,13 +1516,13 @@ Say: "Generate a 1024x768 image of a cyberpunk city at night, 30 steps, high det
 <tbody>
 <tr>
 <td><strong>update_hermes</strong></td>
-<td>Pull latest updates from upstream</td>
-<td>Git</td>
+<td>Run the safe portable update flow from this repo</td>
+<td>None</td>
 </tr>
 <tr>
 <td><strong>check_hermes_updates</strong></td>
-<td>Check if updates are available</td>
-<td>Git</td>
+<td>Check if portable repo updates are available</td>
+<td>None</td>
 </tr>
 <tr>
 <td><strong>search_guide</strong></td>
@@ -1600,7 +1600,7 @@ Say: "Create a tool called 'dir_size' that takes a path and returns the total si
 Say: "Create a tool that counts words, sentences, and paragraphs in text"</p>
 <h3>Managing Custom Tools</h3>
 <ul>
-<li>Custom tools persist across sessions (saved in <code>tools/custom/</code>)</li>
+<li>Custom tools persist across sessions (saved in <code>.hermes/custom_tools/</code>)</li>
 <li>Say "List my custom tools" to see what you've created</li>
 <li>Say "Delete the [tool_name] tool" to remove one</li>
 <li>Custom tools reload automatically when Hermes restarts</li>

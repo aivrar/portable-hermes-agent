@@ -7,26 +7,29 @@ Supports two creation modes:
 2. Custom Code:  Provide raw Python handler code → wraps and registers it
 
 Created tools are:
-- Saved to tools/custom/<name>.py for persistence across restarts
+- Saved to <HERMES_HOME>/custom_tools/<name>.py for persistence across restarts
 - Registered with the registry immediately (hot-loaded)
 - Added to the "custom" toolset
-- Tracked in tools/custom/manifest.json for auto-reload on startup
+- Tracked in <HERMES_HOME>/custom_tools/manifest.json for auto-reload on startup
 """
 
+import importlib.util
 import json
 import logging
-import os
 import re
-import textwrap
+import shutil
 from pathlib import Path
 
+from hermes_constants import display_hermes_home, get_hermes_home
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_CUSTOM_DIR = _PROJECT_ROOT / "tools" / "custom"
+_CUSTOM_DIR = get_hermes_home() / "custom_tools"
 _MANIFEST_PATH = _CUSTOM_DIR / "manifest.json"
+_LEGACY_CUSTOM_DIR = _PROJECT_ROOT / "tools" / "custom"
+_LEGACY_MANIFEST_PATH = _LEGACY_CUSTOM_DIR / "manifest.json"
 
 
 def _ensure_custom_dir():
@@ -38,7 +41,18 @@ def _ensure_custom_dir():
 
 def _load_manifest() -> dict:
     if _MANIFEST_PATH.exists():
-        return json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+        try:
+            manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read custom tools manifest: %s", exc)
+            return {"tools": {}, "manifest_error": str(exc)}
+        if isinstance(manifest, dict) and isinstance(manifest.get("tools", {}), dict):
+            return manifest
+        logger.warning("Custom tools manifest has invalid shape: %s", _MANIFEST_PATH)
+        return {"tools": {}, "manifest_error": "invalid manifest shape"}
+    migrated = _migrate_legacy_custom_tools()
+    if migrated is not None:
+        return migrated
     return {"tools": {}}
 
 
@@ -48,6 +62,52 @@ def _save_manifest(manifest: dict):
         json.dumps(manifest, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def _migrate_legacy_custom_tools() -> dict | None:
+    """Copy old source-tree custom tools into runtime state once.
+
+    Older portable builds stored Tool Maker output under ``tools/custom``.
+    That path is tracked source, so updates can conflict with user-created
+    tools.  Keep backward compatibility by copying those files into
+    ``HERMES_HOME/custom_tools`` the first time a newer build starts.
+    """
+    if not _LEGACY_MANIFEST_PATH.exists():
+        return None
+
+    try:
+        legacy_manifest = json.loads(_LEGACY_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read legacy custom tools manifest: %s", exc)
+        return None
+
+    if not isinstance(legacy_manifest, dict):
+        return None
+
+    tools = legacy_manifest.get("tools") or {}
+    if not isinstance(tools, dict):
+        return None
+
+    _ensure_custom_dir()
+    migrated_manifest = {"tools": {}}
+
+    for name, info in tools.items():
+        if not isinstance(info, dict):
+            continue
+        file_name = info.get("file") or f"{name}.py"
+        legacy_file = _LEGACY_CUSTOM_DIR / file_name
+        target_file = _CUSTOM_DIR / file_name
+        if legacy_file.exists() and not target_file.exists():
+            try:
+                shutil.copy2(legacy_file, target_file)
+            except Exception as exc:
+                logger.warning("Could not migrate custom tool %s: %s", name, exc)
+                continue
+        migrated_manifest["tools"][name] = dict(info)
+
+    migrated_manifest["migrated_from"] = "tools/custom"
+    _save_manifest(migrated_manifest)
+    return migrated_manifest
 
 
 def _safe_name(name: str) -> str:
@@ -182,6 +242,11 @@ def _generate_custom_tool(name: str, description: str,
         lines.append("        " + line)
 
     lines.extend([
+        f'        if "result" in locals():',
+        f'            if isinstance(result, str):',
+        f'                return result',
+        f'            return json.dumps(result, ensure_ascii=False)',
+        f'        return json.dumps({{"success": True}})',
         f'    except Exception as e:',
         f'        return json.dumps({{"error": f"{{type(e).__name__}}: {{e}}"}})',
         f'',
@@ -208,10 +273,11 @@ def _generate_custom_tool(name: str, description: str,
 # ---------------------------------------------------------------------------
 def _hot_load(name: str, file_path: Path):
     """Import and register a tool file at runtime."""
-    import importlib.util
     spec = importlib.util.spec_from_file_location(
-        f"tools.custom.{name}", str(file_path),
+        f"hermes_custom_tool_{name}", str(file_path),
     )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load custom tool spec for {file_path}")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     logger.info("Hot-loaded custom tool: %s", name)
@@ -294,6 +360,7 @@ def create_tool_handler(args: dict, **kwargs) -> str:
         "name": name,
         "mode": mode,
         "file": str(tool_path),
+        "runtime_dir": f"{display_hermes_home()}/custom_tools",
         "description": description,
     }, ensure_ascii=False)
 
@@ -335,7 +402,14 @@ def list_custom_tools_handler(args: dict, **kwargs) -> str:
             "registered": entry is not None,
             "file": info.get("file"),
         })
-    return json.dumps({"tools": tools, "count": len(tools)}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "tools": tools,
+            "count": len(tools),
+            "runtime_dir": f"{display_hermes_home()}/custom_tools",
+        },
+        ensure_ascii=False,
+    )
 
 
 def load_custom_tools():

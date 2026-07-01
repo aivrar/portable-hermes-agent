@@ -10,9 +10,10 @@ the folder:
   scripts/portable/   # launchers
 ```
 
-Hermes Agent remains the upstream Nous Research project. The portable update in
-this branch adds a folder-local runtime surface and is credited to `aivrar`
-(formerly `rookiemann`).
+Hermes Agent remains based on the upstream Nous Research project. This portable
+distribution ships through `aivrar/portable-hermes-agent`, which merges upstream
+Hermes changes after validating the portable Windows launchers, runtime state,
+and extension tooling.
 
 ## Quick Start
 
@@ -36,13 +37,12 @@ scripts\portable\hermes-portable.ps1
 
 The launcher sets only `HERMES_HOME=<portable-root>\.hermes`, validates Python
 `>=3.11,<3.14`, creates the folder-local state directories, and then delegates
-to upstream `hermes_cli.main`.
+to `hermes_cli.main`.
 
 ## Install And Repair
 
-Portable mode does not duplicate the upstream installer. To bootstrap or repair
-a portable checkout, print the exact upstream installer command for the current
-folder:
+Portable mode does not duplicate the installer. To bootstrap or repair a
+portable checkout, print the exact installer command for the current folder:
 
 ```powershell
 python -m hermes_cli.main portable install-command --shell powershell
@@ -106,9 +106,16 @@ Targets are preserved unless `--overwrite` is explicit.
 Portable runtime state is intentionally kept out of tracked upstream source:
 
 - `.hermes/` holds config, keys, sessions, skills, plugins, logs, backups, and extension payloads
+- `.hermes/custom_tools/` holds Tool Maker output created by users or the agent
 - `.hermes/extensions/` holds optional local extension payloads and service notes
 - root-level `extensions/` is treated as a legacy portable path and is included in backups/migration if present
 - `python_embedded/` may hold an optional folder-local Python runtime
+
+For a release-zip install, double-click:
+
+```batch
+UPDATE.bat
+```
 
 For one-command update safety, run the update through the portable launcher
 with `--backup`:
@@ -117,7 +124,7 @@ with `--backup`:
 scripts\portable\hermes-portable.ps1 -Root . update --backup
 ```
 
-When portable mode is active, `update --backup` creates the normal upstream
+When portable mode is active, `update --backup` creates the normal
 pre-update `HERMES_HOME` backup and an additional focused
 `portable-runtime-*.zip` archive for folder-local portable payloads.
 
@@ -133,11 +140,13 @@ includes `.hermes/` plus a legacy root-level `extensions/` folder if present.
 Add `--include-python` if the embedded Python folder is not easily
 reinstallable.
 
-Upstream `hermes update` already stashes uncommitted source edits and untracked
+`hermes update` stashes uncommitted source edits and untracked
 non-ignored source files, then restores them after the pull unless the user has
 explicitly configured `updates.non_interactive_local_changes: discard`. Runtime
 folders are ignored and preserved in place; the Windows ZIP fallback also treats
 `.hermes/`, `extensions/`, and `python_embedded/` as preserve-only directories.
+The portable ZIP fallback downloads from `aivrar/portable-hermes-agent`, not
+directly from `NousResearch/hermes-agent`.
 
 ## Safety
 

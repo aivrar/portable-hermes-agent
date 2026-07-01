@@ -77,6 +77,28 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Portable Hermes extension and maintenance tools. Service-backed tools are
+    # still hidden by their check_fn until the matching local server is running.
+    "run_python",
+    "gpu_info",
+    "switch_model",
+    "lm_studio_status", "lm_studio_models", "lm_studio_load", "lm_studio_unload",
+    "lm_studio_search", "lm_studio_download", "lm_studio_model_info",
+    "lm_studio_tokenize", "lm_studio_embed", "lm_studio_chat",
+    "music_status", "music_generate",
+    "music_models", "music_model_load", "music_model_unload", "music_outputs",
+    "music_install",
+    "tts_server_status", "tts_server_generate",
+    "tts_server_models", "tts_server_model_load", "tts_server_model_unload",
+    "tts_server_voices", "tts_server_jobs",
+    "comfyui_status", "comfyui_instances", "comfyui_instance_start",
+    "comfyui_instance_stop", "comfyui_generate", "comfyui_models",
+    "comfyui_nodes",
+    "update_hermes", "check_hermes_updates",
+    "create_tool", "delete_tool", "list_custom_tools",
+    "workflow_create", "workflow_run", "workflow_list", "workflow_delete",
+    "workflow_show", "workflow_schedule",
+    "serper_search", "search_guide",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -154,6 +176,98 @@ TOOLSETS = {
             "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
         "tools": ["computer_use"],
+        "includes": []
+    },
+
+    "run_python": {
+        "description": "Execute Python code through the portable Python runtime",
+        "tools": ["run_python"],
+        "includes": []
+    },
+
+    "gpu": {
+        "description": "NVIDIA GPU status: memory, temperature, and utilization",
+        "tools": ["gpu_info"],
+        "includes": []
+    },
+
+    "model_switcher": {
+        "description": "Switch the active model/provider configuration",
+        "tools": ["switch_model"],
+        "includes": []
+    },
+
+    "lm_studio": {
+        "description": "LM Studio local model control and model library tools",
+        "tools": [
+            "lm_studio_status", "lm_studio_models", "lm_studio_load",
+            "lm_studio_unload", "lm_studio_search", "lm_studio_download",
+            "lm_studio_model_info", "lm_studio_tokenize",
+            "lm_studio_embed", "lm_studio_chat",
+        ],
+        "includes": []
+    },
+
+    "music": {
+        "description": "Portable music generation server tools",
+        "tools": [
+            "music_status", "music_generate", "music_models",
+            "music_model_load", "music_model_unload", "music_outputs",
+            "music_install",
+        ],
+        "includes": []
+    },
+
+    "extension_tts": {
+        "description": "Portable TTS server tools for local voice models",
+        "tools": [
+            "tts_server_status", "tts_server_generate", "tts_server_models",
+            "tts_server_model_load", "tts_server_model_unload",
+            "tts_server_voices", "tts_server_jobs",
+        ],
+        "includes": []
+    },
+
+    "comfyui": {
+        "description": "Portable ComfyUI image generation and instance tools",
+        "tools": [
+            "comfyui_status", "comfyui_instances", "comfyui_instance_start",
+            "comfyui_instance_stop", "comfyui_generate", "comfyui_models",
+            "comfyui_nodes",
+        ],
+        "includes": []
+    },
+
+    "hermes_update": {
+        "description": "Portable Hermes update check and safe self-update tools",
+        "tools": ["update_hermes", "check_hermes_updates"],
+        "includes": []
+    },
+
+    "tool_maker": {
+        "description": "Create, delete, and list runtime custom tools",
+        "tools": ["create_tool", "delete_tool", "list_custom_tools"],
+        "includes": []
+    },
+
+    "workflows": {
+        "description": "Create, run, schedule, and manage multi-step workflows",
+        "tools": [
+            "workflow_create", "workflow_run", "workflow_list",
+            "workflow_delete", "workflow_show", "workflow_schedule",
+        ],
+        "includes": []
+    },
+
+    "serper": {
+        "description": "Google-quality search through Serper.dev",
+        "tools": ["serper_search"],
+        "includes": []
+    },
+
+    "guide": {
+        "description": "Search the built-in Portable Hermes Agent guide",
+        "tools": ["search_guide"],
         "includes": []
     },
 

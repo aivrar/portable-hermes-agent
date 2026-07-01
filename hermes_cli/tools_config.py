@@ -83,6 +83,18 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
+    ("lm_studio",        "LM Studio",                    "local model load/unload, search, tokenize, chat"),
+    ("music",            "Music Server",                 "local music generation server tools"),
+    ("extension_tts",    "TTS Server",                   "local voice model server tools"),
+    ("comfyui",          "ComfyUI",                      "local image generation and instance tools"),
+    ("gpu",              "GPU Status",                   "NVIDIA GPU memory, temperature, utilization"),
+    ("model_switcher",   "Model Switcher",               "switch active model/provider configuration"),
+    ("hermes_update",    "Portable Updates",             "check and apply safe portable repo updates"),
+    ("tool_maker",       "Tool Maker",                   "create, delete, and list runtime custom tools"),
+    ("workflows",        "Workflows",                    "create, run, schedule, and manage workflows"),
+    ("serper",           "Serper Search",                "Google-quality search through Serper.dev"),
+    ("guide",            "Built-in Guide",               "search the Portable Hermes Agent guide"),
+    ("run_python",       "Run Python",                   "execute Python through the portable runtime"),
 ]
 
 
