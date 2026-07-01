@@ -9,7 +9,6 @@
 #
 tests/agent/test_prompt_builder.py::TestBuildContextFilesPrompt::test_claude_md_uppercase_takes_priority
 tests/gateway/test_flush_memory_stale_guard.py::TestMemoryInjection::test_memory_content_injected_into_flush_prompt
-tests/gateway/test_image_enrichment.py::test_image_enrichment_uses_athabasca_upload_guidance_without_stale_r2_warning
 tests/gateway/test_pairing.py::TestSecureWrite::test_sets_file_permissions
 tests/gateway/test_slack.py::TestAppMentionHandler::test_app_mention_registered_on_connect
 tests/gateway/test_update_command.py::TestSendUpdateNotification::test_cleans_up_files_after_notification
