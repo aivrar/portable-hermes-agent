@@ -8,6 +8,10 @@ description: "Practical advice to get the most out of Hermes Agent — prompt ti
 
 A quick-wins collection of practical tips that make you immediately more effective with Hermes Agent. Each section targets a different aspect — scan the headers and jump to what's relevant.
 
+:::tip Confused which model to pick?
+Run `hermes setup --portal` — you get 300+ models including Claude, GPT-5, and Gemini under one subscription. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ---
 
 ## Getting the Best Results
@@ -36,7 +40,7 @@ Before writing a long prompt explaining how to do something, check if there's al
 
 ### Multi-Line Input
 
-Press **Alt+Enter** (or **Ctrl+J**) to insert a newline without sending. This lets you compose multi-line prompts, paste code blocks, or structure complex requests before hitting Enter to send.
+Press **Alt+Enter**, **Ctrl+J**, or **Shift+Enter** to insert a newline without sending. `Shift+Enter` only works when the terminal sends it as a distinct keystroke (Kitty / foot / WezTerm / Ghostty by default; iTerm2 / Alacritty / VS Code terminal once the Kitty keyboard protocol is enabled). The other two work in every terminal.
 
 ### Paste Detection
 
@@ -80,7 +84,7 @@ Create an `AGENTS.md` in your project root with architecture decisions, coding c
 
 Want Hermes to have a stable default voice? Edit `~/.hermes/SOUL.md` (or `$HERMES_HOME/SOUL.md` if you use a custom Hermes home). Hermes now seeds a starter SOUL automatically and uses that global file as the instance-wide personality source.
 
-For a full walkthrough, see [Use SOUL.md with Hermes](/docs/guides/use-soul-with-hermes).
+For a full walkthrough, see [Use SOUL.md with Hermes](/guides/use-soul-with-hermes).
 
 ```markdown
 # Soul
@@ -95,9 +99,9 @@ Use `SOUL.md` for durable personality. Use `AGENTS.md` for project-specific inst
 
 Already have a `.cursorrules` or `.cursor/rules/*.mdc` file? Hermes reads those too. No need to duplicate your coding conventions — they're loaded automatically from the working directory.
 
-### Hierarchical Discovery
+### Discovery
 
-Hermes walks the directory tree and discovers **all** `AGENTS.md` files at every level. In a monorepo, put project-wide conventions at the root and team-specific ones in subdirectories — they're all concatenated together with path headers.
+Hermes loads the top-level `AGENTS.md` from the current working directory at session start. Subdirectory `AGENTS.md` files are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
 
 :::tip
 Keep context files focused and concise. Every character counts against your token budget since they're injected into every single message.

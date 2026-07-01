@@ -9,34 +9,31 @@ asserts zero contamination from shell noise via _assert_clean().
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 
-import json
+
 import os
+import shlex
 import sys
 from pathlib import Path
 
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.environments.local import (
-    LocalEnvironment,
-    _clean_shell_noise,
-    _extract_fenced_output,
-    _OUTPUT_FENCE,
-    _SHELL_NOISE_SUBSTRINGS,
-)
-from tools.file_operations import ShellFileOperations
+from tools.environments.local import LocalEnvironment
+from tools.file_operations import ShellFileOperations, _windows_path_to_bash
 
 
 # ── Shared noise detection ───────────────────────────────────────────────
-# Every known shell noise pattern. If ANY of these appear in output that
-# isn't explicitly expected, the test fails with a clear message.
+# Known shell noise patterns that should never appear in command output.
 
-_ALL_NOISE_PATTERNS = list(_SHELL_NOISE_SUBSTRINGS) + [
+_ALL_NOISE_PATTERNS = [
+    "bash: cannot set terminal process group",
+    "bash: no job control in this shell",
+    "no job control in this shell",
+    "cannot set terminal process group",
+    "tcsetattr: Inappropriate ioctl for device",
     "bash: ",
     "Inappropriate ioctl",
     "Auto-suggestions:",
@@ -52,6 +49,18 @@ def _assert_clean(text: str, context: str = "output"):
             f"Shell noise leaked into {context}: found {noise!r} in:\n"
             f"{text[:500]}"
         )
+
+
+def _shell_path(path: os.PathLike | str) -> str:
+    return _windows_path_to_bash(str(path))
+
+
+def _qpath(path: os.PathLike | str) -> str:
+    return shlex.quote(_shell_path(path))
+
+
+def _write_text_lf(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8", newline="\n")
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
@@ -81,139 +90,11 @@ def ops(env, tmp_path):
 @pytest.fixture
 def populated_dir(tmp_path):
     """A temp directory with known files for search/read tests."""
-    (tmp_path / "alpha.py").write_text(MULTIFILE_A)
-    (tmp_path / "bravo.py").write_text(MULTIFILE_B)
-    (tmp_path / "notes.txt").write_text(MULTIFILE_C)
-    (tmp_path / "data.csv").write_text("col1,col2\n1,2\n3,4\n")
+    _write_text_lf(tmp_path / "alpha.py", MULTIFILE_A)
+    _write_text_lf(tmp_path / "bravo.py", MULTIFILE_B)
+    _write_text_lf(tmp_path / "notes.txt", MULTIFILE_C)
+    _write_text_lf(tmp_path / "data.csv", "col1,col2\n1,2\n3,4\n")
     return tmp_path
-
-
-# ── _clean_shell_noise unit tests ────────────────────────────────────────
-
-class TestCleanShellNoise:
-    def test_single_noise_line(self):
-        output = "bash: no job control in this shell\nhello world\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello world\n"
-
-    def test_double_noise_lines(self):
-        output = (
-            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n"
-            "bash: no job control in this shell\n"
-            "actual output here\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "actual output here\n"
-        _assert_clean(result)
-
-    def test_tcsetattr_noise(self):
-        output = (
-            "bash: [12345: 2 (255)] tcsetattr: Inappropriate ioctl for device\n"
-            "real content\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "real content\n"
-        _assert_clean(result)
-
-    def test_triple_noise_lines(self):
-        output = (
-            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n"
-            "bash: no job control in this shell\n"
-            "bash: [999: 2 (255)] tcsetattr: Inappropriate ioctl for device\n"
-            "clean\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "clean\n"
-
-    def test_no_noise_untouched(self):
-        assert _clean_shell_noise("hello\nworld\n") == "hello\nworld\n"
-
-    def test_empty_string(self):
-        assert _clean_shell_noise("") == ""
-
-    def test_only_noise_produces_empty(self):
-        output = "bash: no job control in this shell\n"
-        result = _clean_shell_noise(output)
-        _assert_clean(result)
-
-    def test_noise_in_middle_not_stripped(self):
-        """Noise in the middle is real output and should be preserved."""
-        output = "real\nbash: no job control in this shell\nmore real\n"
-        result = _clean_shell_noise(output)
-        assert result == output
-
-    def test_zsh_restored_session(self):
-        output = "Restored session: Mon Mar  2 22:16:54 +03 2026\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_saving_session_trailing(self):
-        output = "hello\nSaving session...completed.\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_oh_my_zsh_banner(self):
-        output = "Oh My Zsh on! | Auto-suggestions: press right\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_full_noise_sandwich(self):
-        """Both leading and trailing zsh noise stripped."""
-        output = (
-            "Restored session: Mon Mar  2\n"
-            "command not found: docker\n"
-            "Oh My Zsh on!\n"
-            "actual output\n"
-            "Saving session...completed.\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "actual output\n"
-
-    def test_last_login_stripped(self):
-        output = "Last login: Mon Mar 2 22:00:00 on ttys001\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-
-# ── _extract_fenced_output unit tests ────────────────────────────────────
-
-class TestExtractFencedOutput:
-    def test_normal_fenced_output(self):
-        raw = f"noise\n{_OUTPUT_FENCE}hello world\n{_OUTPUT_FENCE}more noise\n"
-        assert _extract_fenced_output(raw) == "hello world\n"
-
-    def test_no_trailing_newline(self):
-        """printf output with no trailing newline is preserved."""
-        raw = f"noise{_OUTPUT_FENCE}exact{_OUTPUT_FENCE}noise"
-        assert _extract_fenced_output(raw) == "exact"
-
-    def test_no_fences_falls_back(self):
-        """Without fences, falls back to pattern-based cleaning."""
-        raw = "bash: no job control in this shell\nhello\n"
-        result = _extract_fenced_output(raw)
-        assert result == "hello\n"
-
-    def test_only_start_fence(self):
-        """Only start fence (e.g. user command called exit)."""
-        raw = f"noise{_OUTPUT_FENCE}hello\nSaving session...\n"
-        result = _extract_fenced_output(raw)
-        assert result == "hello\n"
-
-    def test_user_outputs_fence_string(self):
-        """If user command outputs the fence marker, it is preserved."""
-        raw = f"noise{_OUTPUT_FENCE}{_OUTPUT_FENCE}real\n{_OUTPUT_FENCE}noise"
-        result = _extract_fenced_output(raw)
-        # first fence -> last fence captures the middle including user's fence
-        assert _OUTPUT_FENCE in result
-        assert "real\n" in result
-
-    def test_empty_command_output(self):
-        raw = f"noise{_OUTPUT_FENCE}{_OUTPUT_FENCE}noise"
-        assert _extract_fenced_output(raw) == ""
-
-    def test_multiline_output(self):
-        raw = f"noise\n{_OUTPUT_FENCE}line1\nline2\nline3\n{_OUTPUT_FENCE}noise\n"
-        assert _extract_fenced_output(raw) == "line1\nline2\nline3\n"
 
 
 # ── LocalEnvironment.execute() ───────────────────────────────────────────
@@ -245,7 +126,7 @@ class TestLocalEnvironmentExecute:
         subdir.mkdir()
         result = env.execute("pwd", cwd=str(subdir))
         assert result["returncode"] == 0
-        assert result["output"].strip() == str(subdir)
+        assert result["output"].strip() == _shell_path(subdir)
         _assert_clean(result["output"])
 
     def test_multiline_exact(self, env):
@@ -258,7 +139,7 @@ class TestLocalEnvironmentExecute:
         result = env.execute("echo $HOME")
         assert result["returncode"] == 0
         home = result["output"].strip()
-        assert home == str(Path.home())
+        assert home == _shell_path(Path.home())
         _assert_clean(result["output"])
 
     def test_pipe_exact(self, env):
@@ -269,8 +150,8 @@ class TestLocalEnvironmentExecute:
 
     def test_cat_deterministic_content(self, env, tmp_path):
         f = tmp_path / "det.txt"
-        f.write_text(SIMPLE_CONTENT)
-        result = env.execute(f"cat {f}")
+        _write_text_lf(f, SIMPLE_CONTENT)
+        result = env.execute(f"cat {_qpath(f)}")
         assert result["returncode"] == 0
         assert result["output"] == SIMPLE_CONTENT
         _assert_clean(result["output"])
@@ -307,7 +188,7 @@ class TestHasCommand:
 class TestReadFile:
     def test_exact_content(self, ops, tmp_path):
         f = tmp_path / "exact.txt"
-        f.write_text(SIMPLE_CONTENT)
+        _write_text_lf(f, SIMPLE_CONTENT)
         result = ops.read_file(str(f))
         assert result.error is None
         # Content has line numbers prepended, check the actual text is there
@@ -319,7 +200,7 @@ class TestReadFile:
 
     def test_absolute_path(self, ops, tmp_path):
         f = tmp_path / "abs.txt"
-        f.write_text("ABSOLUTE_PATH_CONTENT\n")
+        _write_text_lf(f, "ABSOLUTE_PATH_CONTENT\n")
         result = ops.read_file(str(f))
         assert result.error is None
         assert "ABSOLUTE_PATH_CONTENT" in result.content
@@ -328,7 +209,7 @@ class TestReadFile:
     def test_tilde_expansion(self, ops):
         test_path = Path.home() / ".hermes_test_tilde_9f8a7b"
         try:
-            test_path.write_text("TILDE_EXPANSION_OK\n")
+            _write_text_lf(test_path, "TILDE_EXPANSION_OK\n")
             result = ops.read_file("~/.hermes_test_tilde_9f8a7b")
             assert result.error is None
             assert "TILDE_EXPANSION_OK" in result.content
@@ -342,7 +223,7 @@ class TestReadFile:
 
     def test_pagination_exact_window(self, ops, tmp_path):
         f = tmp_path / "numbered.txt"
-        f.write_text(NUMBERED_CONTENT)
+        _write_text_lf(f, NUMBERED_CONTENT)
         result = ops.read_file(str(f), offset=10, limit=5)
         assert result.error is None
         assert "LINE_0010" in result.content
@@ -354,7 +235,7 @@ class TestReadFile:
 
     def test_no_noise_in_content(self, ops, tmp_path):
         f = tmp_path / "noise_check.txt"
-        f.write_text("ONLY_THIS_CONTENT\n")
+        _write_text_lf(f, "ONLY_THIS_CONTENT\n")
         result = ops.read_file(str(f))
         assert result.error is None
         _assert_clean(result.content)
@@ -379,7 +260,7 @@ class TestWriteFile:
 
     def test_overwrites_exact(self, ops, tmp_path):
         path = str(tmp_path / "overwrite.txt")
-        Path(path).write_text("OLD_DATA\n")
+        _write_text_lf(Path(path), "OLD_DATA\n")
         result = ops.write_file(path, "NEW_DATA\n")
         assert result.error is None
         assert Path(path).read_text() == "NEW_DATA\n"
@@ -413,21 +294,21 @@ class TestWriteFile:
 class TestPatchReplace:
     def test_exact_replacement(self, ops, tmp_path):
         path = str(tmp_path / "patch.txt")
-        Path(path).write_text("hello world\n")
+        _write_text_lf(Path(path), "hello world\n")
         result = ops.patch_replace(path, "world", "earth")
         assert result.error is None
         assert Path(path).read_text() == "hello earth\n"
 
     def test_not_found_error(self, ops, tmp_path):
         path = str(tmp_path / "patch2.txt")
-        Path(path).write_text("hello\n")
+        _write_text_lf(Path(path), "hello\n")
         result = ops.patch_replace(path, "NONEXISTENT_STRING", "replacement")
         assert result.error is not None
         assert "Could not find" in result.error
 
     def test_multiline_patch(self, ops, tmp_path):
         path = str(tmp_path / "multi.txt")
-        Path(path).write_text("line1\nline2\nline3\n")
+        _write_text_lf(Path(path), "line1\nline2\nline3\n")
         result = ops.patch_replace(path, "line2", "REPLACED")
         assert result.error is None
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
@@ -495,7 +376,7 @@ class TestSearch:
 class TestExpandPath:
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
-        expected = f"{Path.home()}/test.txt"
+        expected = f"{_shell_path(Path.home())}/test.txt"
         assert result == expected
         _assert_clean(result)
 
@@ -507,7 +388,7 @@ class TestExpandPath:
 
     def test_bare_tilde(self, ops):
         result = ops._expand_path("~")
-        assert result == str(Path.home())
+        assert result == _shell_path(Path.home())
         _assert_clean(result)
 
     def test_tilde_injection_blocked(self, ops):
@@ -518,7 +399,6 @@ class TestExpandPath:
         # The path should be returned as-is (no expansion).
         assert result == malicious
         # Verify the injected command did NOT execute
-        import os
         assert not os.path.exists("/tmp/_hermes_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):
@@ -542,37 +422,37 @@ class TestTerminalOutputCleanliness:
 
     def test_cat(self, env, tmp_path):
         f = tmp_path / "cat_test.txt"
-        f.write_text("CAT_CONTENT_EXACT\n")
-        result = env.execute(f"cat {f}")
+        _write_text_lf(f, "CAT_CONTENT_EXACT\n")
+        result = env.execute(f"cat {_qpath(f)}")
         assert result["output"] == "CAT_CONTENT_EXACT\n"
         _assert_clean(result["output"])
 
     def test_ls(self, env, tmp_path):
-        (tmp_path / "file_a.txt").write_text("")
-        (tmp_path / "file_b.txt").write_text("")
-        result = env.execute(f"ls {tmp_path}")
+        _write_text_lf(tmp_path / "file_a.txt", "")
+        _write_text_lf(tmp_path / "file_b.txt", "")
+        result = env.execute(f"ls {_qpath(tmp_path)}")
         _assert_clean(result["output"])
         assert "file_a.txt" in result["output"]
         assert "file_b.txt" in result["output"]
 
     def test_wc(self, env, tmp_path):
         f = tmp_path / "wc_test.txt"
-        f.write_text("one\ntwo\nthree\n")
-        result = env.execute(f"wc -l < {f}")
+        _write_text_lf(f, "one\ntwo\nthree\n")
+        result = env.execute(f"wc -l < {_qpath(f)}")
         assert result["output"].strip() == "3"
         _assert_clean(result["output"])
 
     def test_head(self, env, tmp_path):
         f = tmp_path / "head_test.txt"
-        f.write_text(NUMBERED_CONTENT)
-        result = env.execute(f"head -n 3 {f}")
+        _write_text_lf(f, NUMBERED_CONTENT)
+        result = env.execute(f"head -n 3 {_qpath(f)}")
         expected = "LINE_0001\nLINE_0002\nLINE_0003\n"
         assert result["output"] == expected
         _assert_clean(result["output"])
 
     def test_env_var_expansion(self, env):
         result = env.execute("echo $HOME")
-        assert result["output"].strip() == str(Path.home())
+        assert result["output"].strip() == _shell_path(Path.home())
         _assert_clean(result["output"])
 
     def test_command_substitution(self, env):

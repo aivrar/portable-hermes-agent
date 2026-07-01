@@ -1,7 +1,7 @@
 # Windows Portable Install — Diagnosis & Fixes
 
-**Date:** 2026-04-30  
-**Environment:** Windows 11 Enterprise, non-admin account, no WSL, no Docker  
+**Date:** 2026-04-30
+**Environment:** Windows 11 Enterprise, non-admin account, no WSL, no Docker
 **Repo version:** v0.4.0
 
 ---

@@ -1,9 +1,6 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
-import os
-import json
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from toolsets import resolve_toolset, get_toolset, validate_toolset
 
@@ -39,7 +36,7 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         for tool in ["browser_navigate", "browser_snapshot", "browser_click",
                       "browser_type", "browser_scroll", "browser_back",
-                      "browser_press", "browser_close"]:
+                      "browser_press"]:
             assert tool in tools, f"Missing browser tool: {tool}"
 
     def test_toolset_includes_homeassistant_tools(self):

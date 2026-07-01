@@ -2,6 +2,9 @@
 
 import sys
 from types import SimpleNamespace
+import sys
+
+import pytest
 
 import pytest
 
@@ -13,9 +16,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _posix_gateway_shims(monkeypatch):
+    if sys.platform == "win32":
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 1000, raising=False)
+
+
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
 
@@ -30,6 +40,7 @@ class TestEnsureLingerEnabled:
 
     def test_status_enabled_skips_enable(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (True, ""))
@@ -45,6 +56,7 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_success_enables_linger(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
@@ -52,7 +64,7 @@ class TestEnsureLingerEnabled:
 
         run_calls = []
 
-        def fake_run(cmd, capture_output=False, text=False, check=False):
+        def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
             run_calls.append((cmd, capture_output, text, check))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -67,6 +79,7 @@ class TestEnsureLingerEnabled:
 
     def test_missing_loginctl_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (None, "loginctl not found"))
@@ -84,6 +97,7 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
@@ -105,6 +119,15 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
 
