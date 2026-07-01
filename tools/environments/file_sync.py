@@ -76,6 +76,29 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
     return files
 
 
+def _credential_host_paths() -> set[str]:
+    """Return credential files that are upload-only for remote sandboxes."""
+    try:
+        from tools.credential_files import get_credential_file_mounts
+    except Exception:
+        return set()
+
+    paths: set[str] = set()
+    try:
+        mounts = get_credential_file_mounts()
+    except Exception:
+        return set()
+    for entry in mounts:
+        host_path = entry.get("host_path") if isinstance(entry, dict) else None
+        if not host_path:
+            continue
+        try:
+            paths.add(str(Path(host_path).expanduser().resolve()))
+        except OSError:
+            paths.add(str(Path(host_path).expanduser()))
+    return paths
+
+
 def quoted_rm_command(remote_paths: list[str]) -> str:
     """Build a shell ``rm -f`` command for a batch of remote paths."""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
@@ -140,6 +163,7 @@ class FileSyncManager:
         self._delete_fn = delete_fn
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
+        self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
 
@@ -158,6 +182,7 @@ class FileSyncManager:
                 return
 
         current_files = self._get_files_fn()
+        self._upload_only_host_paths.update(_credential_host_paths())
         current_remote_paths = {remote for _, remote in current_files}
 
         # --- Uploads: new or changed files ---
@@ -315,13 +340,16 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
-        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
-            self._bulk_download_fn(Path(tf.name))
+        tf = tempfile.NamedTemporaryFile(suffix=".tar", delete=False)
+        tar_path = Path(tf.name)
+        tf.close()
+        try:
+            self._bulk_download_fn(tar_path)
 
             # Defensive size cap: a misbehaving sandbox could produce an
             # arbitrarily large tar. Refuse to extract if it exceeds the cap.
             try:
-                tar_size = os.path.getsize(tf.name)
+                tar_size = tar_path.stat().st_size
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
@@ -332,15 +360,18 @@ class FileSyncManager:
                 return
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
-                with tarfile.open(tf.name) as tar:
+                with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 
                 applied = 0
+                upload_only_host_paths = (
+                    self._upload_only_host_paths | _credential_host_paths()
+                )
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
                         rel = os.path.relpath(staged_file, staging)
-                        remote_path = "/" + rel
+                        remote_path = "/" + rel.replace(os.sep, "/")
 
                         pushed_hash = self._pushed_hashes.get(remote_path)
 
@@ -355,13 +386,24 @@ class FileSyncManager:
                         # Resolve host path from cached mapping
                         host_path = self._resolve_host_path(remote_path, file_mapping)
                         if host_path is None:
-                            host_path = self._infer_host_path(remote_path, file_mapping)
+                            host_path = self._infer_host_path(
+                                remote_path,
+                                file_mapping,
+                                upload_only_host_paths=upload_only_host_paths,
+                            )
                             if host_path is None:
                                 logger.debug(
                                     "sync_back: skipping %s (no host mapping)",
                                     remote_path,
                                 )
                                 continue
+
+                        if self._is_upload_only_host_path(host_path, upload_only_host_paths):
+                            logger.debug(
+                                "sync_back: skipping upload-only credential file %s",
+                                remote_path,
+                            )
+                            continue
 
                         if os.path.exists(host_path) and pushed_hash is not None:
                             host_hash = _sha256_file(host_path)
@@ -381,6 +423,11 @@ class FileSyncManager:
                     logger.info("sync_back: applied %d changed file(s)", applied)
                 else:
                     logger.debug("sync_back: no remote changes detected")
+        finally:
+            try:
+                tar_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("sync_back: could not remove temporary archive %s", tar_path)
 
     def _resolve_host_path(self, remote_path: str,
                            file_mapping: list[tuple[str, str]] | None = None) -> str | None:
@@ -392,7 +439,9 @@ class FileSyncManager:
         return None
 
     def _infer_host_path(self, remote_path: str,
-                         file_mapping: list[tuple[str, str]] | None = None) -> str | None:
+                         file_mapping: list[tuple[str, str]] | None = None,
+                         *,
+                         upload_only_host_paths: set[str] | None = None) -> str | None:
         """Infer a host path for a new remote file by matching path prefixes.
 
         Uses the existing file mapping to find a remote->host directory
@@ -402,7 +451,10 @@ class FileSyncManager:
         ``/root/.hermes/skills/b.md`` maps to ``~/.hermes/skills/b.md``.
         """
         mapping = file_mapping if file_mapping is not None else []
+        upload_only_host_paths = upload_only_host_paths or set()
         for host, remote in mapping:
+            if self._is_upload_only_host_path(host, upload_only_host_paths):
+                continue
             remote_dir = remote_parent_dir(remote)
             if remote_path.startswith(remote_dir + "/"):
                 host_dir = str(Path(host).parent)
@@ -410,3 +462,11 @@ class FileSyncManager:
                 parts = [part for part in suffix.lstrip("/").split("/") if part]
                 return str(Path(host_dir, *parts)) if parts else host_dir
         return None
+
+    @staticmethod
+    def _is_upload_only_host_path(host_path: str, upload_only_host_paths: set[str]) -> bool:
+        try:
+            resolved = str(Path(host_path).expanduser().resolve())
+        except OSError:
+            resolved = str(Path(host_path).expanduser())
+        return resolved in upload_only_host_paths
