@@ -58,25 +58,43 @@ No API key? No problem. The chat works offline using a built-in 1,054-line user 
 
 ## Quick Start
 
-### 1. Install
+### 1. Download
+Download the latest `portable-hermes-agent-v*.zip` from [Releases](https://github.com/aivrar/portable-hermes-agent/releases/latest), then extract it to a normal folder.
+
+Recommended:
+```text
+C:\Users\YourName\Portable-Hermes-Agent
+```
+
+Avoid protected folders such as `C:\Program Files`.
+
+### 2. Start
+Double-click:
+```batch
+START.bat
+```
+
+On first launch, `START.bat` runs the portable setup automatically. It downloads embedded Python, dependencies, LM Studio SDK, and Node.js tools into this folder only. No admin rights are needed.
+
+Manual setup:
 ```batch
 install.bat
 ```
+
 PowerShell users can run:
 
 ```powershell
 .\scripts\install.ps1
 ```
 
-Downloads embedded Python 3.13, all dependencies, LM Studio SDK, and Node.js tools. No admin rights needed.
-
-### 2. Launch
+### 3. Launch Again
 ```batch
-hermes.bat          :: CLI mode
+START.bat           :: easiest GUI launch
 hermes_gui.bat      :: GUI mode
+hermes.bat          :: CLI mode
 ```
 
-### 3. Connect an AI Model
+### 4. Connect an AI Model
 
 **Cloud (2 minutes, free):**
 1. File > API Key Setup > OpenRouter

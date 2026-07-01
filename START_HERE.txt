@@ -1,0 +1,39 @@
+Portable Hermes Agent - Start Here
+==================================
+
+For Windows users:
+
+1. Extract the release zip to a normal folder, for example:
+   C:\Users\YourName\Portable-Hermes-Agent
+
+2. Double-click START.bat.
+
+   On first launch, START.bat runs the portable setup automatically.
+   It downloads embedded Python and dependencies into this folder only.
+   No admin rights are required.
+
+3. After setup finishes, Hermes opens the desktop GUI.
+
+Useful launchers:
+
+- START.bat       - easiest first-time launch
+- hermes_gui.bat  - desktop GUI
+- hermes.bat      - command-line interface
+- install.bat     - full setup or repair install
+
+PowerShell setup:
+
+  .\scripts\install.ps1
+
+Documentation:
+
+- README.md has the short overview and quick start.
+- docs\Portable-Hermes-Agent-Manual.html is the full manual.
+- The PDF manual is also attached to the GitHub release.
+
+Notes:
+
+- Keep the extracted folder together. Runtime files such as python_embedded,
+  extensions, node_modules, .env, and cli-config.yaml are intentionally local.
+- API keys belong in the setup wizard or .env file, not in Git.
+- Extension servers for TTS, Music, and ComfyUI install on first use.
