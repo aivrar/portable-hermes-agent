@@ -124,7 +124,7 @@ jobs:
   # (including PRs) get balanced slicing.
   save-durations:
     needs: test
-    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
+    if: needs.test.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download all slice durations
@@ -132,22 +132,40 @@ jobs:
         with:
           pattern: test-durations-slice-*
           path: durations
-          merge-multiple: true
 
       - name: Merge into single durations file
         run: |
-          python3 -c "
-          import json, glob, os
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
           merged = {}
-          for f in glob.glob('durations/*test_durations.json'):
-            with open(f) as fh:
-              merged.update(json.load(fh))
-          with open('test_durations.json', 'w') as fh:
+
+          def load_duration_objects(path):
+            text = path.read_text(encoding='utf-8')
+            decoder = json.JSONDecoder()
+            index = 0
+            while index < len(text):
+              while index < len(text) and text[index].isspace():
+                index += 1
+              if index >= len(text):
+                break
+              data, index = decoder.raw_decode(text, index)
+              if not isinstance(data, dict):
+                raise TypeError(f'{path} contained {type(data).__name__}, expected object')
+              yield data
+
+          for path in sorted(Path('durations').glob('**/test_durations.json')):
+            for data in load_duration_objects(path):
+              merged.update(data)
+
+          with open('test_durations.json', 'w', encoding='utf-8') as fh:
             json.dump(merged, fh, indent=2, sort_keys=True)
           print(f'Merged {len(merged)} file durations')
-          "
+          PY
 
       - name: Save merged duration cache
+        if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test_durations.json
