@@ -5,7 +5,7 @@ import ast
 
 def _parse_setup_imports():
     """Parse setup.py and return top-level import names."""
-    with open("hermes_cli/setup.py") as f:
+    with open("hermes_cli/setup.py", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     names = set()
     for node in ast.walk(tree):

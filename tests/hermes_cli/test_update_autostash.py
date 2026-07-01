@@ -39,6 +39,17 @@ def _patch_managed_uv(request):
          patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
 
+
+def _without_windows_git_config(cmd):
+    cmd = list(cmd)
+    if cmd[:3] == ["git", "-c", "windows.appendAtomically=false"]:
+        return ["git", *cmd[3:]]
+    return cmd
+
+
+def _git_cmd(cmd, *args):
+    return _without_windows_git_config(cmd) == ["git", *args]
+
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
 
@@ -407,13 +418,14 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        normalized = _without_windows_git_config(cmd)
+        if normalized == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if normalized == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if normalized == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if normalized == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -456,13 +468,14 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin", "main"]:
+        normalized = _without_windows_git_config(cmd)
+        if normalized == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+        if normalized == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+        if normalized == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+        if normalized == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -491,6 +504,7 @@ def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
         return None
 
     monkeypatch.setattr(hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat)
+    monkeypatch.setattr(hermes_main, "_verify_console_scripts_installed", lambda *a, **kw: None)
 
     hermes_main._install_python_dependencies_with_optional_fallback(
         ["/usr/bin/uv", "pip"],
@@ -580,7 +594,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert _without_windows_git_config(reset_calls[0]) == ["git", "reset", "--hard", "origin/main"]
 
     out = capsys.readouterr().out
     assert "Fast-forward not possible" in out
@@ -700,8 +714,8 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     hermes_main.cmd_update(SimpleNamespace())
 
     fetch_calls = [c for c in recorded if "fetch" in c]
-    assert fetch_calls == [["git", "fetch", "origin", "main"]]
-    assert ["git", "fetch", "origin"] not in recorded
+    assert [_without_windows_git_config(c) for c in fetch_calls] == [["git", "fetch", "origin", "main"]]
+    assert ["git", "fetch", "origin"] not in [_without_windows_git_config(c) for c in recorded]
 
 
 # ---------------------------------------------------------------------------

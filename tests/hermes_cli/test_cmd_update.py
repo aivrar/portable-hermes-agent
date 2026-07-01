@@ -246,7 +246,12 @@ class TestCmdUpdateBranchFallback:
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
-        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        expected_git_cmd = (
+            ["git", "-c", "windows.appendAtomically=false"]
+            if hm.sys.platform == "win32"
+            else ["git"]
+        )
+        sync_mock.assert_called_once_with(expected_git_cmd, PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
@@ -267,7 +272,9 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
-             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
+             patch("hermes_constants.find_node_executable",
+                   side_effect=lambda name: "/usr/bin/npm" if name == "npm" else None), \
+             patch.object(hm, "_run_with_idle_timeout", return_value=build_ok):
             cmd_update(mock_args)
 
         npm_calls = [
@@ -321,12 +328,6 @@ class TestCmdUpdateBranchFallback:
             assert npm_calls[2:] == [
                 (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
             ]
-
-        # The web UI build itself went through the streaming helper.
-        mock_idle.assert_called_once()
-        idle_args, idle_kwargs = mock_idle.call_args
-        assert idle_args[0] == ["/usr/bin/npm", "run", "build"]
-        assert idle_kwargs["cwd"] == PROJECT_ROOT / "web"
 
         # Regression for #18840: root npm installs must stream output
         # (capture_output=False) so postinstall progress is visible

@@ -7,6 +7,7 @@ tests verify the config-driven prelude that fixes that.
 """
 
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +19,7 @@ from tools.environments.local import (
 )
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="auto shell-init sourcing is POSIX-only")
 class TestResolveShellInitFiles:
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"

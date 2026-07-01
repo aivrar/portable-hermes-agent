@@ -89,6 +89,9 @@ class TestCwdHandling:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
         monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+        monkeypatch.setattr(_tt_mod.os.path, "abspath", lambda p: p)
+        monkeypatch.setattr(_tt_mod.os.path, "isabs", lambda p: str(p).startswith("/"))
+        monkeypatch.setattr(_tt_mod.os.path, "isdir", lambda p: p == "/Users/someone/projects")
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/workspace"
         assert config["host_cwd"] == "/Users/someone/projects"
@@ -118,6 +121,9 @@ class TestCwdHandling:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(_tt_mod.os.path, "abspath", lambda p: p)
+        monkeypatch.setattr(_tt_mod.os.path, "isabs", lambda p: str(p).startswith("/"))
+        monkeypatch.setattr(_tt_mod.os.path, "isdir", lambda p: p == "/home/user/project")
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/workspace"
         assert config["host_cwd"] == "/home/user/project"

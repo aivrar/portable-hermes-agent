@@ -1,6 +1,7 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import socket
 import struct
 import time
 import wave
@@ -73,6 +74,11 @@ def mock_sd(monkeypatch):
 # ============================================================================
 
 class TestPulseSocketReachable:
+    pytestmark = pytest.mark.skipif(
+        not hasattr(socket, "AF_UNIX"),
+        reason="PulseAudio Unix socket checks require socket.AF_UNIX",
+    )
+
     def test_no_env_no_socket(self, monkeypatch):
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)

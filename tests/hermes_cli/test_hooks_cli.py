@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shlex
+import shutil
+import subprocess
+from functools import lru_cache
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,9 +31,49 @@ def _isolated_home(tmp_path, monkeypatch):
 
 def _hook_script(tmp_path: Path, body: str, name: str = "hook.sh") -> Path:
     p = tmp_path / name
-    p.write_text(body)
+    p.write_text(body, newline="\n")
     p.chmod(0o755)
     return p
+
+
+@lru_cache(maxsize=1)
+def _bash_uses_wsl_mounts() -> bool:
+    if os.name != "nt":
+        return False
+    bash_path = (shutil.which("bash") or "").replace("\\", "/").lower()
+    if "/windows/system32/bash" in bash_path or "/windowsapps/" in bash_path:
+        return True
+    try:
+        result = subprocess.run(
+            ["bash", "-lc", "case \"$PWD\" in /mnt/*) echo wsl;; *) echo other;; esac"],
+            cwd=str(Path.cwd()),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return result.stdout.strip() == "wsl"
+
+
+def _bash_path(path: Path) -> str:
+    raw = str(path)
+    if os.name == "nt":
+        drive, tail = os.path.splitdrive(raw)
+        if drive:
+            tail = tail.replace("\\", "/")
+            drive_letter = drive[:1].lower()
+            if _bash_uses_wsl_mounts():
+                return f"/mnt/{drive_letter}{tail}"
+            return f"/{drive_letter}{tail}"
+    return raw
+
+
+def _hook_command(script: Path) -> str:
+    if os.name == "nt":
+        return f"bash {shlex.quote(_bash_path(script))}"
+    return str(script)
 
 
 def _run(sub_args: SimpleNamespace) -> str:
@@ -89,9 +134,9 @@ class TestHooksTest:
         capture = tmp_path / "captured.json"
         script = _hook_script(
             tmp_path,
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            f"#!/usr/bin/env bash\ncat - > {_bash_path(capture)}\nprintf '{{}}\\n'\n",
         )
-        cfg = {"hooks": {"subagent_stop": [{"command": str(script)}]}}
+        cfg = {"hooks": {"subagent_stop": [{"command": _hook_command(script)}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             _run(SimpleNamespace(
                 hooks_action="test", event="subagent_stop",
@@ -121,7 +166,7 @@ class TestHooksTest:
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(block_script)},
+                    {"matcher": "terminal", "command": _hook_command(block_script)},
                 ],
             },
         }
@@ -140,7 +185,7 @@ class TestHooksTest:
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(script)},
+                    {"matcher": "terminal", "command": _hook_command(script)},
                 ],
             }
         }
@@ -206,8 +251,9 @@ class TestHooksDoctor:
             tmp_path,
             "#!/usr/bin/env bash\necho 'not json!'\n",
         )
-        shell_hooks._record_approval("on_session_start", str(script))
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        command = _hook_command(script)
+        shell_hooks._record_approval("on_session_start", command)
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "not valid JSON" in out
@@ -223,22 +269,23 @@ class TestHooksDoctor:
             "approvals": [
                 {
                     "event": "on_session_start",
-                    "command": str(script),
+                    "command": _hook_command(script),
                     "approved_at": "2000-01-01T00:00:00Z",
                     "script_mtime_at_approval": "2000-01-01T00:00:00Z",
                 }
             ]
         }))
 
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        cfg = {"hooks": {"on_session_start": [{"command": _hook_command(script)}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "modified since approval" in out
 
     def test_clean_script_runs(self, tmp_path):
         script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
-        shell_hooks._record_approval("on_session_start", str(script))
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        command = _hook_command(script)
+        shell_hooks._record_approval("on_session_start", command)
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "All shell hooks look healthy" in out
@@ -253,9 +300,9 @@ class TestHooksDoctor:
         # Script would touch the sentinel if executed; we assert it wasn't.
         script = _hook_script(
             tmp_path,
-            f"#!/usr/bin/env bash\ntouch {sentinel}\nprintf '{{}}\\n'\n",
+            f"#!/usr/bin/env bash\ntouch {_bash_path(sentinel)}\nprintf '{{}}\\n'\n",
         )
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        cfg = {"hooks": {"on_session_start": [{"command": _hook_command(script)}]}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
 

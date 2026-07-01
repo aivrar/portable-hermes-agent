@@ -490,11 +490,12 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         path.chmod(mode)
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
+        except (AttributeError, PermissionError):
             # Running as the hermes user already — directory is hermes-
             # owned by default. The chown is a no-op in that case, so
             # swallowing this keeps both root and unprivileged callers
-            # on one code path.
+            # on one code path. AttributeError covers non-POSIX dev/test
+            # hosts such as native Windows where os.chown is unavailable.
             pass
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
@@ -516,11 +517,14 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     # invocation context.
     control = supervise / "control"
     if not control.exists():
-        os.mkfifo(control, 0o660)
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(control, 0o660)
+        else:
+            control.touch()
         control.chmod(0o660)
         try:
             os.chown(control, _HERMES_UID, _HERMES_GID)
-        except PermissionError:
+        except (AttributeError, PermissionError):
             pass
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
@@ -536,11 +540,14 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         _mkdir_owned(log_supervise / "event", 0o3730)
         log_control = log_supervise / "control"
         if not log_control.exists():
-            os.mkfifo(log_control, 0o660)
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(log_control, 0o660)
+            else:
+                log_control.touch()
             log_control.chmod(0o660)
             try:
                 os.chown(log_control, _HERMES_UID, _HERMES_GID)
-            except PermissionError:
+            except (AttributeError, PermissionError):
                 pass
 
 

@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+import shlex
 import subprocess
 import sys
 import threading
@@ -11,6 +12,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
+from tools.file_operations import _windows_path_to_bash
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
@@ -53,6 +55,11 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
     return subprocess.Popen(
         [sys.executable, "-c", f"import time; time.sleep({seconds})"],
     )
+
+
+def _shell_python_executable() -> str:
+    python_exe = _windows_path_to_bash(sys.executable) if os.name == "nt" else sys.executable
+    return shlex.quote(python_exe)
 
 
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
@@ -470,6 +477,10 @@ class TestStdinHelpers:
         pty.sendeof.assert_called_once()
         assert result["status"] == "ok"
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="WinPTY through the Bash wrapper does not deliver non-destructive EOF to Windows child processes",
+    )
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -478,11 +489,8 @@ class TestStdinHelpers:
         lockout (#17959). For interactive stdin → PTY mode is now the only
         supported path.
         """
-        session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
-            cwd=str(tmp_path),
-            use_pty=True,
-        )
+        command = f"{_shell_python_executable()} -c \"import sys; print(sys.stdin.read().strip())\""
+        session = registry.spawn_local(command, cwd=str(tmp_path), use_pty=True)
 
         try:
             time.sleep(0.5)
@@ -844,7 +852,7 @@ class TestPopenLeakOnSetupFailure:
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch("os.getpgid", side_effect=ProcessLookupError, create=True), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -876,7 +884,7 @@ class TestPopenLeakOnSetupFailure:
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", return_value=fake_thread), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch("os.getpgid", side_effect=ProcessLookupError, create=True), \
              patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -1131,16 +1139,6 @@ class TestKillProcess:
 
         terminate_calls = []
 
-        class FakeProcess:
-            def __init__(self, pid):
-                self.pid = pid
-            def children(self, recursive=False):
-                return []
-            def terminate(self):
-                terminate_calls.append(("terminate", self.pid))
-
-        import psutil as _psutil
-
         try:
             # Post-#21561: liveness probe routes through
             # ``ProcessRegistry._is_host_pid_alive`` (→
@@ -1150,13 +1148,15 @@ class TestKillProcess:
             # SIGKILL-escalation step (grace=0) so it doesn't call
             # ``psutil.wait_procs`` on the FakeProcess.
             with patch("gateway.status._pid_exists", return_value=True), \
-                 patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
-                              staticmethod(lambda: 0.0)), \
-                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
+                 patch.object(
+                     ProcessRegistry,
+                     "_terminate_host_pid",
+                     side_effect=lambda pid, expected_start=None: terminate_calls.append((pid, expected_start)),
+                 ):
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert ("terminate", 424242) in terminate_calls
+            assert terminate_calls == [(424242, None)]
         finally:
             registry._running.pop(s.id, None)
 

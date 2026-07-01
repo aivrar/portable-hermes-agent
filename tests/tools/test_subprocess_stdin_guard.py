@@ -28,6 +28,8 @@ def test_all_tui_subprocess_calls_have_stdin():
         [sys.executable, str(SCRIPT)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=30,
     )
     assert result.returncode == 0, (

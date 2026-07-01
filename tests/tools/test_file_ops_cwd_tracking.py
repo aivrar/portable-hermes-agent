@@ -37,6 +37,8 @@ class _FakeEnv:
 
     def execute(self, command: str, cwd: str = None, **kwargs) -> dict:
         import subprocess
+        from tools.environments.local import _find_bash
+
         self.calls.append({"command": command, "cwd": cwd})
         # Simulate cd by updating self.cwd (the real env does the same
         # via _extract_cwd_from_output after a successful command)
@@ -47,7 +49,7 @@ class _FakeEnv:
         # Actually run the command — handle stdin via subprocess
         stdin_data = kwargs.get("stdin_data")
         proc = subprocess.run(
-            ["bash", "-c", command],
+            [_find_bash(), "-c", command],
             cwd=cwd or self.cwd,
             input=stdin_data,
             capture_output=True,
@@ -142,7 +144,9 @@ class TestShellFileOpsCwdTracking:
         class _NoCwdEnv:
             def execute(self, command, cwd=None, **kwargs):
                 import subprocess
-                proc = subprocess.run(["bash", "-c", command], cwd=cwd,
+                from tools.environments.local import _find_bash
+
+                proc = subprocess.run([_find_bash(), "-c", command], cwd=cwd,
                                       capture_output=True, text=True)
                 return {"output": proc.stdout, "returncode": proc.returncode}
 

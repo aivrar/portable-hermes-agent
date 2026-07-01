@@ -121,7 +121,7 @@ class TestSourceLinesAreGuarded:
     def _read_file(rel_path: str) -> str:
         import os
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(base, rel_path)) as f:
+        with open(os.path.join(base, rel_path), encoding="utf-8") as f:
             return f.read()
 
     def test_web_tools_guarded(self):

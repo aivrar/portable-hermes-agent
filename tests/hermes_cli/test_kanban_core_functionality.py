@@ -1273,10 +1273,16 @@ def test_migration_renames_legacy_event_kinds(tmp_path, monkeypatch):
 
 def test_list_profiles_on_disk(tmp_path, monkeypatch):
     """list_profiles_on_disk returns the implicit default profile plus
-    named profiles under ~/.hermes/profiles/ that contain a config.yaml."""
+    named profiles under the platform default profiles dir."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_HOME", raising=False)
-    profiles = tmp_path / ".hermes" / "profiles"
+    if os.name == "nt":
+        local_appdata = tmp_path / "AppData" / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        default_root = local_appdata / "hermes"
+    else:
+        default_root = tmp_path / ".hermes"
+    profiles = default_root / "profiles"
     profiles.mkdir(parents=True)
     for name in ("researcher", "writer"):
         d = profiles / name
@@ -3810,6 +3816,7 @@ def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(
         caller = inspect.currentframe().f_back  # type: ignore[union-attr]
         code = caller.f_code if caller is not None else None
         filename = code.co_filename if code is not None else ""
+        filename = filename.replace("\\", "/")
         # The kanban dispatcher/notifier watcher loops were extracted from
         # gateway/run.py into gateway/kanban_watchers.py (god-file Phase 3),
         # so accept either filename for the time-travel mock.
@@ -4532,14 +4539,9 @@ def test_reclaim_task_clears_failure_counter(kanban_home):
 
 def test_dispatch_once_integrates_stale_detection(kanban_home, monkeypatch):
     """dispatch_once with stale_timeout_seconds reclaims stale running tasks."""
-    import hermes_cli.kanban_db as _kb
-
-    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
-
     with kb.connect() as conn:
         t = kb.create_task(conn, title="stale-dispatch", assignee="worker")
         kb.claim_task(conn, t)
-        kb._set_worker_pid(conn, t, 99999)  # fake PID — avoid killing test
 
         five_hours_ago = int(time.time()) - (5 * 3600)
         with kb.write_txn(conn):

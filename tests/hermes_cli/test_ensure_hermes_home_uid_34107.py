@@ -27,6 +27,7 @@ import pytest
 
 
 class TestResolveHermesUidGid:
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX UID/GID parsing is disabled on Windows")
     def test_returns_parsed_values_when_both_set(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -43,6 +44,7 @@ class TestResolveHermesUidGid:
         assert uid is None
         assert gid is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX UID/GID parsing is disabled on Windows")
     def test_uid_only_returns_gid_none(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.delenv("HERMES_GID", raising=False)
@@ -51,6 +53,7 @@ class TestResolveHermesUidGid:
         assert uid == 1000
         assert gid is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX UID/GID parsing is disabled on Windows")
     def test_invalid_uid_returns_none_for_that_field(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "not-a-number")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -67,6 +70,7 @@ class TestResolveHermesUidGid:
         assert uid is None
         assert gid is None
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX UID/GID parsing is disabled on Windows")
     def test_whitespace_padded_values(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", " 1000 ")
         monkeypatch.setenv("HERMES_GID", "  911")
@@ -90,6 +94,7 @@ class TestResolveHermesUidGid:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.chown is unavailable on Windows")
 class TestChownToHermesUid:
     def test_calls_os_chown_when_both_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")

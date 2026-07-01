@@ -118,6 +118,26 @@ class TestDeletion:
         delete.assert_not_called()
 
 
+class TestRemotePathInference:
+    def test_infer_host_path_uses_posix_remote_parent(self, tmp_path):
+        host_file = tmp_path / "host" / "skills" / "existing.py"
+        host_file.parent.mkdir(parents=True)
+        host_file.write_text("existing", encoding="utf-8")
+        mapping = [(str(host_file), "/root/.hermes/skills/existing.py")]
+        mgr = FileSyncManager(
+            get_files_fn=lambda: mapping,
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+        )
+
+        result = mgr._infer_host_path(
+            "/root/.hermes/skills/nested/new_skill.py",
+            file_mapping=mapping,
+        )
+
+        assert result == str(tmp_path / "host" / "skills" / "nested" / "new_skill.py")
+
+
 class TestTransactionalRollback:
     def test_upload_failure_rolls_back(self, tmp_files):
         call_count = 0

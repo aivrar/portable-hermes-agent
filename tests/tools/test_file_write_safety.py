@@ -4,6 +4,7 @@ Based on PR #1085 by ismoilh (salvaged).
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -224,6 +225,8 @@ class TestAtomicWrite:
         assert os.stat(target).st_ino != ino_before
 
     def test_overwrite_preserves_mode(self, ops, tmp_path: Path):
+        if sys.platform == "win32":
+            pytest.skip("POSIX mode preservation is not meaningful on Windows")
         target = tmp_path / "perms.txt"
         target.write_text("old")
         os.chmod(target, 0o640)
@@ -232,6 +235,8 @@ class TestAtomicWrite:
         assert (os.stat(target).st_mode & 0o777) == 0o640
 
     def test_failed_write_leaves_original_intact(self, ops, tmp_path: Path):
+        if sys.platform == "win32":
+            pytest.skip("Windows chmod does not make directories non-writable like POSIX")
         # A read-only parent directory means the temp file can't be created,
         # so the write fails BEFORE any rename. The original must survive
         # byte-for-byte and no temp file may be left behind.
@@ -263,6 +268,8 @@ class TestAtomicWrite:
         assert target.read_text(encoding="utf-8") == tricky
 
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
+        if sys.platform == "win32":
+            pytest.skip("POSIX mode preservation is not meaningful on Windows")
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n")
         os.chmod(target, 0o600)

@@ -86,9 +86,17 @@ def quoted_mkdir_command(dirs: list[str]) -> str:
     return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
 
 
+def remote_parent_dir(remote_path: str) -> str:
+    """Return the parent directory for a POSIX remote/container path."""
+    stripped = remote_path.rstrip("/")
+    if not stripped:
+        return "."
+    return posixpath.dirname(stripped) or "."
+
+
 def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     """Extract sorted unique parent directories from (host, remote) pairs."""
-    return sorted({posixpath.dirname(remote) for _, remote in files})
+    return sorted({remote_parent_dir(remote) for _, remote in files})
 
 
 def _sha256_file(path: str) -> str:
@@ -395,9 +403,10 @@ class FileSyncManager:
         """
         mapping = file_mapping if file_mapping is not None else []
         for host, remote in mapping:
-            remote_dir = str(Path(remote).parent)
+            remote_dir = remote_parent_dir(remote)
             if remote_path.startswith(remote_dir + "/"):
                 host_dir = str(Path(host).parent)
                 suffix = remote_path[len(remote_dir):]
-                return host_dir + suffix
+                parts = [part for part in suffix.lstrip("/").split("/") if part]
+                return str(Path(host_dir, *parts)) if parts else host_dir
         return None

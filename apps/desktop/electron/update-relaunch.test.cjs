@@ -19,8 +19,6 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
 
@@ -37,7 +35,7 @@ const {
 } = require('./update-relaunch.cjs')
 
 const ROOT = '/home/u/.hermes/hermes-agent'
-const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
+const UNPACKED = path.posix.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
 
 // ---------------------------------------------------------------------------
 // 1) The execPath split — the heart of the GUI/backend skew guard.
@@ -49,7 +47,7 @@ test('unpackedDirName maps platform to the electron-builder dir', () => {
 })
 
 test('resolveUnpackedRelease returns the dir for a binary UNDER release/<plat>-unpacked', () => {
-  const exec = path.join(UNPACKED, 'hermes')
+  const exec = path.posix.join(UNPACKED, 'hermes')
   assert.equal(resolveUnpackedRelease(exec, ROOT, 'linux'), UNPACKED)
   // The unpacked dir itself also counts.
   assert.equal(resolveUnpackedRelease(UNPACKED, ROOT, 'linux'), UNPACKED)
@@ -68,12 +66,12 @@ test('resolveUnpackedRelease is null for AppImage / .deb / .rpm / dev / unresolv
   )
   // empty / missing
   assert.equal(resolveUnpackedRelease('', ROOT, 'linux'), null)
-  assert.equal(resolveUnpackedRelease(path.join(UNPACKED, 'hermes'), '', 'linux'), null)
+  assert.equal(resolveUnpackedRelease(path.posix.join(UNPACKED, 'hermes'), '', 'linux'), null)
 })
 
 test('resolveUnpackedRelease is not fooled by a sibling prefix dir', () => {
   // `.../release/linux-unpacked-evil` must NOT match `.../release/linux-unpacked`.
-  const sneaky = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked-evil', 'hermes')
+  const sneaky = path.posix.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked-evil', 'hermes')
   assert.equal(resolveUnpackedRelease(sneaky, ROOT, 'linux'), null)
 })
 
@@ -204,14 +202,8 @@ test('buildRelaunchScript embeds pid/exec/args/env/cwd and is valid bash', () =>
   assert.match(script, /cd '\/home\/u\/work dir'/)
   assert.match(script, /exec '.*\/linux-unpacked\/Hermes' 'hermes:\/\/open\/agent\/42' '--note=it'\\''s fine'/)
 
-  // It must be syntactically valid bash (`bash -n`). Write to a temp file and lint.
-  const tmp = path.join(os.tmpdir(), `hermes-relaunch-test-${Date.now()}.sh`)
-  fs.writeFileSync(tmp, script)
-  try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
-  } finally {
-    fs.rmSync(tmp, { force: true })
-  }
+  // It must be syntactically valid bash (`bash -n`).
+  execFileSync('bash', ['-n'], { input: script, stdio: 'pipe' })
 })
 
 test('buildRelaunchScript with no args/env still lints clean', () => {
@@ -222,13 +214,7 @@ test('buildRelaunchScript with no args/env still lints clean', () => {
     env: {},
     cwd: ''
   })
-  const tmp = path.join(os.tmpdir(), `hermes-relaunch-test2-${Date.now()}.sh`)
-  fs.writeFileSync(tmp, script)
-  try {
-    execFileSync('bash', ['-n', tmp], { stdio: 'pipe' })
-  } finally {
-    fs.rmSync(tmp, { force: true })
-  }
+  execFileSync('bash', ['-n'], { input: script, stdio: 'pipe' })
   // exec line has no trailing args.
   assert.match(script, /exec '\/opt\/Hermes\/Hermes'\n/)
 })

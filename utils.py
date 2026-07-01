@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+_WINDOWS_TRANSIENT_REPLACE_WINERRORS = {5, 32, 33}
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -83,28 +85,44 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
-    try:
-        os.replace(tmp_str, real_path)
-    except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
-            raise
-        logger.debug(
-            "atomic_replace: %s -> %s failed with %s; falling back to copy",
-            tmp_str,
-            real_path,
-            errno.errorcode.get(exc.errno, exc.errno),
-        )
-        shutil.copyfile(tmp_str, real_path)
+    for attempt in range(20):
         try:
-            shutil.copystat(tmp_str, real_path)
-        except OSError:
-            pass
-        try:
-            with open(real_path, "rb") as f:
-                os.fsync(f.fileno())
-        except OSError:
-            pass
-        os.unlink(tmp_str)
+            os.replace(tmp_str, real_path)
+            break
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            transient_windows_error = (
+                os.name == "nt"
+                and (
+                    exc.errno in (errno.EACCES, errno.EPERM)
+                    or winerror in _WINDOWS_TRANSIENT_REPLACE_WINERRORS
+                )
+            )
+            if transient_windows_error and attempt < 19:
+                time.sleep(min(0.001 * (2 ** attempt), 0.05))
+                continue
+            if exc.errno not in (errno.EXDEV, errno.EBUSY):
+                raise
+            logger.debug(
+                "atomic_replace: %s -> %s failed with %s; falling back to copy",
+                tmp_str,
+                real_path,
+                errno.errorcode.get(exc.errno, exc.errno),
+            )
+            shutil.copyfile(tmp_str, real_path)
+            try:
+                shutil.copystat(tmp_str, real_path)
+            except OSError:
+                pass
+            try:
+                with open(real_path, "rb") as f:
+                    os.fsync(f.fileno())
+            except OSError:
+                pass
+            os.unlink(tmp_str)
+            break
+    else:
+        raise RuntimeError("atomic replace retry loop exhausted")
     return real_path
 
 

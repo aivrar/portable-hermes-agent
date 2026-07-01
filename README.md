@@ -58,6 +58,24 @@ If you already have Git installed, the installer detects it and uses that instea
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
+### Portable Folder Mode
+
+This branch also supports a source-checkout portable mode that keeps runtime
+state beside the folder at `<portable-root>/.hermes`:
+
+```powershell
+python -m hermes_cli.main portable status
+python -m hermes_cli.main portable init --apply
+scripts\portable\hermes-portable.ps1 -Status
+```
+
+Portable mode is an overlay on current upstream Hermes. It does not fork the
+agent loop, register extra model tools, or set YOLO mode. See
+[docs/portable-mode.md](docs/portable-mode.md) for install commands, migration,
+local extension readiness checks, `update --backup` portable runtime backups
+for `.hermes/` (including `.hermes/extensions/`), and the Electron desktop
+handoff.
+
 After installation:
 
 ```bash

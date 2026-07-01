@@ -15,11 +15,17 @@ from tools.tirith_security import check_command_security, ensure_installed
 
 
 @pytest.fixture(autouse=True)
-def _reset_resolved_path():
+def _reset_resolved_path(monkeypatch, request):
     """Pre-set cached path to skip auto-install in scan tests.
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
     """
+    if "TestUnsupportedPlatform" not in request.node.nodeid:
+        monkeypatch.setattr(
+            _tirith_mod,
+            "_detect_target",
+            lambda: "x86_64-unknown-linux-gnu",
+        )
     _tirith_mod._resolved_path = "tirith"
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
@@ -1174,7 +1180,9 @@ class TestHermesHomeIsolation:
         from tools.tirith_security import _failure_marker_path
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/hermes"}):
             result = _failure_marker_path()
-        assert result == "/custom/hermes/.tirith-install-failed"
+        assert os.path.normpath(result) == os.path.normpath(
+            "/custom/hermes/.tirith-install-failed"
+        )
 
     def test_conftest_isolation_prevents_real_home_writes(self):
         """The conftest autouse fixture sets HERMES_HOME; verify it's active."""
@@ -1182,17 +1190,28 @@ class TestHermesHomeIsolation:
         assert hermes_home is not None, "HERMES_HOME should be set by conftest"
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
-    def test_get_hermes_home_fallback(self):
+    def test_get_hermes_home_fallback(self, tmp_path):
         """Without HERMES_HOME set, falls back to the active OS home."""
         from tools.tirith_security import _get_hermes_home
-        with patch.dict(os.environ, {}, clear=True):
+        fallback_home = tmp_path / "home"
+        fallback_home.mkdir()
+        if os.name == "nt":
+            fallback_local_appdata = fallback_home / "AppData" / "Local"
+            fallback_env = {
+                "USERPROFILE": str(fallback_home),
+                "LOCALAPPDATA": str(fallback_local_appdata),
+            }
+            expected = fallback_local_appdata / "hermes"
+        else:
+            fallback_env = {"HOME": str(fallback_home)}
+            expected = fallback_home / ".hermes"
+        with patch.dict(os.environ, fallback_env, clear=True):
             # Remove HERMES_HOME entirely. With HOME also absent, expanduser
             # falls back to the account database; compute expected under the
             # same environment instead of after patch.dict restores HOME.
             os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
             result = _get_hermes_home()
-        assert result == expected
+        assert os.path.normpath(result) == os.path.normpath(str(expected))
 
 
 # ---------------------------------------------------------------------------

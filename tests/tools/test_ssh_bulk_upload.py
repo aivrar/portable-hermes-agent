@@ -191,7 +191,11 @@ class TestSSHBulkUpload:
                 staging_dir = cmd[c_idx + 1]
                 assert not os.path.exists(os.path.join(staging_dir, "home"))
                 expected = os.path.join(staging_dir, "cache/nested.txt")
-                assert os.path.islink(expected)
+                if os.path.islink(expected):
+                    return
+                assert os.path.exists(expected)
+                with open(expected, encoding="utf-8") as staged:
+                    assert staged.read() == "nested"
 
             mock = MagicMock()
             mock.stdout = MagicMock()

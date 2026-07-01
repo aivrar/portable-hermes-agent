@@ -13,6 +13,7 @@ from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
     iter_sync_files,
+    remote_parent_dir,
     quoted_mkdir_command,
     quoted_rm_command,
     unique_parent_dirs,
@@ -158,7 +159,7 @@ class SSHEnvironment(BaseEnvironment):
 
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via scp over ControlMaster."""
-        parent = str(Path(remote_path).parent)
+        parent = remote_parent_dir(remote_path)
         mkdir_cmd = self._build_ssh_command()
         mkdir_cmd.append(f"mkdir -p {shlex.quote(parent)}")
         subprocess.run(

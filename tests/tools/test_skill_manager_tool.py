@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -42,6 +43,15 @@ description: A test skill for unit testing.
 
 Step 1: Do the thing.
 """
+
+
+def _symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError) as exc:
+        if os.name == "nt":
+            pytest.skip(f"Symlink creation unavailable on this Windows host: {exc}")
+        raise
 
 VALID_SKILL_CONTENT_2 = """\
 ---
@@ -1111,7 +1121,7 @@ class TestDeleteSkillRmtreeGuard:
         skills = tmp_path / "skills"
         skills.mkdir()
         evil = skills / "evil-skill"
-        evil.symlink_to(victim, target_is_directory=True)
+        _symlink_or_skip(evil, victim, target_is_directory=True)
         try:
             with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
                  patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \

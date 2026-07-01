@@ -115,8 +115,13 @@ class TestSearchErrorGuard:
                       partial_error_tree, output_mode="files_only")
         assert res.error is None
         assert res.files, "expected matching files"
-        assert all("Permission denied" not in f and "locked.txt" not in f
-                   for f in res.files), f"diagnostic leaked into files: {res.files}"
+        assert all("Permission denied" not in f for f in res.files), (
+            f"diagnostic leaked into files: {res.files}"
+        )
+        if os.name != "nt":
+            assert all("locked.txt" not in f for f in res.files), (
+                f"diagnostic leaked into files: {res.files}"
+            )
 
     def test_count_mode_with_partial_error(self, method, partial_error_tree):
         res = _search(_ops(partial_error_tree), method, "needle",

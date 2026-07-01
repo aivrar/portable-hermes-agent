@@ -13,6 +13,33 @@ import pytest
 from hermes_cli import main as cli_main
 
 
+@pytest.fixture(autouse=True)
+def _gui_module_patch_target_is_stable(monkeypatch):
+    monkeypatch.setitem(sys.modules, "hermes_cli.main", cli_main)
+
+
+@pytest.fixture(autouse=True)
+def _node_resolver_follows_test_which():
+    """Keep cmd_gui's shared Node resolver under each test's shutil.which mock."""
+    with patch(
+        "hermes_constants.find_node_executable",
+        side_effect=lambda command: cli_main.shutil.which(command),
+    ):
+        yield
+
+
+def _which_npm_only(command: str) -> str | None:
+    return "/usr/bin/npm" if command == "npm" else None
+
+
+def _which_sudo_only(command: str) -> str | None:
+    return "/usr/bin/sudo" if command == "sudo" else None
+
+
+def _which_node_only(command: str) -> str | None:
+    return "/usr/bin/node" if command == "node" else None
+
+
 def _ns(**kw):
     defaults = dict(
         skip_build=False,
@@ -60,7 +87,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
@@ -88,7 +115,7 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
 
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
@@ -162,7 +189,7 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     sandbox.chmod(0o755)
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_sudo_only), \
          patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -181,9 +208,12 @@ def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):
     target = tmp_path / "dangerous"
     target.write_text("pwned", encoding="utf-8")
     sandbox = packaged_exe.parent / "chrome-sandbox"
-    sandbox.symlink_to(target)
+    try:
+        sandbox.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_sudo_only), \
          patch("hermes_cli.main.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -211,7 +241,7 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_sudo_only), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -266,7 +296,7 @@ def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch)
     build_ok = subprocess.CompletedProcess(["npm", "run", "build"], 0)
     launch_ok = subprocess.CompletedProcess(["npm", "exec", "--", "electron", "."], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
@@ -328,7 +358,7 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok) as mock_install, \
          patch("hermes_cli.main._desktop_build_needed", return_value=False), \
          patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
@@ -532,7 +562,7 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
             return pack_ok
         return launch_ok
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
@@ -566,7 +596,7 @@ def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch,
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
@@ -606,7 +636,7 @@ def test_gui_retries_pack_under_mirror_even_when_prefetch_blocked(tmp_path, monk
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
@@ -641,7 +671,7 @@ def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeyp
     pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
@@ -668,7 +698,7 @@ def test_gui_install_failure_hard_fails_when_electron_not_staged(tmp_path, monke
 
     install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
          patch("hermes_cli.main.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
@@ -692,7 +722,7 @@ def test_gui_install_failure_hard_fails_when_electron_dist_exists(tmp_path, monk
 
     install_fail = subprocess.CompletedProcess(["npm", "ci"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
          patch("hermes_cli.main._electron_dist_ok", return_value=True), \
          patch("hermes_cli.main.subprocess.run") as mock_run, \
@@ -722,7 +752,7 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
@@ -752,7 +782,7 @@ def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsy
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
     pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_npm_only), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[]) as mock_purge, \
@@ -836,7 +866,7 @@ def test_redownload_electron_dist_missing_installer(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_main.sys, "platform", "linux")
     (tmp_path / "node_modules" / "electron").mkdir(parents=True)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_node_only), \
          patch("hermes_cli.main.subprocess.run") as mock_run:
         assert cli_main._redownload_electron_dist(tmp_path, {}) is False
     mock_run.assert_not_called()
@@ -867,7 +897,7 @@ def test_redownload_electron_dist_runs_installer_with_mirror(tmp_path, monkeypat
         binp.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_node_only), \
          patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
         ok = cli_main._redownload_electron_dist(
             tmp_path, {"PATH": "/x"}, mirror="https://mirror.example/electron/"
@@ -890,7 +920,7 @@ def test_redownload_electron_dist_returns_false_when_download_fails(tmp_path, mo
     electron.mkdir(parents=True)
     (electron / "install.js").write_text("// stub", encoding="utf-8")
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+    with patch("hermes_cli.main.shutil.which", side_effect=_which_node_only), \
          patch("hermes_cli.main.subprocess.run",
                return_value=subprocess.CompletedProcess(["node"], 1)):
         assert cli_main._redownload_electron_dist(tmp_path, {}) is False

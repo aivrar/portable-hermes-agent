@@ -21,6 +21,7 @@ Three independent fixes that were salvaged together:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +33,15 @@ from tools.skills_hub import (
     uninstall_skill,
 )
 from tools.skills_guard import content_hash
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError) as exc:
+        if os.name == "nt":
+            pytest.skip(f"Symlink creation unavailable on this Windows host: {exc}")
+        raise
 
 
 # =============================================================================
@@ -133,7 +143,7 @@ class TestUninstallPathTraversal:
         skills_dir, hub_dir, victim = hub_setup
         # Create a "skill" that's actually a symlink to victim
         evil_link = skills_dir / "trapdoor"
-        evil_link.symlink_to(victim)
+        _symlink_or_skip(evil_link, victim)
 
         self._write_lock(hub_dir, {
             "trap": {

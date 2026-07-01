@@ -18,14 +18,18 @@ def conn(tmp_path):
         c.close()
 
 
+def _norm(path: str) -> str:
+    return pdb._normalize_path(path)
+
+
 def test_record_and_list_discovered_repos(conn):
     n = pdb.record_discovered_repos(conn, [("/www/alpha", "alpha"), ("/www/beta", None)])
     assert n == 2
 
     rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn)}
-    assert rows["/www/alpha"] == "alpha"
+    assert rows[_norm("/www/alpha")] == "alpha"
     # Label defaults to the basename when not given.
-    assert rows["/www/beta"] == "beta"
+    assert rows[_norm("/www/beta")] == "beta"
 
 
 def test_record_discovered_repos_upserts(conn):
@@ -42,7 +46,7 @@ def test_record_discovered_repos_replace_drops_stale_rows(conn):
     pdb.record_discovered_repos(conn, [("/www/alpha", "fresh")], replace=True)
 
     rows = {r["root"]: r["label"] for r in pdb.list_discovered_repos(conn)}
-    assert rows == {"/www/alpha": "fresh"}
+    assert rows == {_norm("/www/alpha"): "fresh"}
 
 
 def test_create_get_list(conn):
@@ -53,8 +57,8 @@ def test_create_get_list(conn):
     assert proj.slug == "hermes-agent"
     assert proj.name == "Hermes Agent"
     # First folder becomes primary.
-    assert proj.primary_path == "/tmp/hermes"
-    assert [f.path for f in proj.folders] == ["/tmp/hermes"]
+    assert proj.primary_path == _norm("/tmp/hermes")
+    assert [f.path for f in proj.folders] == [_norm("/tmp/hermes")]
     assert proj.folders[0].is_primary is True
 
     # Lookup by slug too.
@@ -81,13 +85,13 @@ def test_add_remove_folder_and_primary_repoint(conn):
     pdb.add_folder(conn, pid, "/c", is_primary=True)
 
     proj = pdb.get_project(conn, pid)
-    assert proj.primary_path == "/c"
-    assert {f.path for f in proj.folders} == {"/a", "/b", "/c"}
+    assert proj.primary_path == _norm("/c")
+    assert {f.path for f in proj.folders} == {_norm("/a"), _norm("/b"), _norm("/c")}
 
     # Removing the primary repoints to the oldest remaining folder.
     pdb.remove_folder(conn, pid, "/c")
     proj = pdb.get_project(conn, pid)
-    assert proj.primary_path == "/a"
+    assert proj.primary_path == _norm("/a")
 
     # Removing the last folder clears the primary.
     pdb.remove_folder(conn, pid, "/a")
@@ -107,7 +111,7 @@ def test_paths_normalized(conn):
     pid = pdb.create_project(conn, name="P", folders=["/a/b/../c/"])
     proj = pdb.get_project(conn, pid)
     # Trailing slash stripped, .. collapsed.
-    assert proj.primary_path == "/a/c"
+    assert proj.primary_path == _norm("/a/c")
 
 
 def test_project_for_path_longest_prefix(conn):

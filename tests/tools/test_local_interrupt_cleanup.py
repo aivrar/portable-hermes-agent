@@ -66,6 +66,8 @@ def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
 
 
 def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
+    if not hasattr(os, "getpgid") or not hasattr(os, "killpg"):
+        pytest.skip("POSIX process groups are unavailable on this platform")
     """If the shell wrapper exits before cleanup, still kill its process group.
 
     Without the cached pgid fallback, ``os.getpgid(proc.pid)`` raises for the
@@ -124,6 +126,8 @@ def test_kill_process_uses_windows_tree_kill(monkeypatch):
 
 
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
+    if local_mod._IS_WINDOWS:
+        pytest.skip("POSIX process-group interrupt cleanup is covered separately from Windows tree kill")
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""
     env = LocalEnvironment(cwd="/tmp")

@@ -7,6 +7,9 @@ implementation in this same file once that phase ships.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from hermes_cli.service_manager import (
@@ -101,7 +104,7 @@ def _patch_s6_paths(
     real_is_dir = _Path.is_dir
 
     def fake_read_text(self, *args, **kwargs):  # type: ignore[override]
-        if str(self) == "/proc/1/comm":
+        if self.as_posix() == "/proc/1/comm":
             if isinstance(comm, OSError):
                 raise comm
             if comm is None:
@@ -110,7 +113,7 @@ def _patch_s6_paths(
         return real_read_text(self, *args, **kwargs)
 
     def fake_is_dir(self):  # type: ignore[override]
-        if str(self) == "/run/s6/basedir":
+        if self.as_posix() == "/run/s6/basedir":
             return basedir_is_dir
         return real_is_dir(self)
 
@@ -450,27 +453,33 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
-    )
+    if os.name != "nt":
+        assert stat.S_IMODE(event.stat().st_mode) == 0o3730, (
+            f"event/ mode = {oct(event.stat().st_mode)}, want 03730"
+        )
 
     # supervise/ dir.
     supervise = svc_dir / "supervise"
     assert supervise.is_dir(), "missing supervise/"
-    assert stat.S_IMODE(supervise.stat().st_mode) == 0o755
+    if os.name != "nt":
+        assert stat.S_IMODE(supervise.stat().st_mode) == 0o755
 
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
+    if os.name != "nt":
+        assert stat.S_IMODE(supervise_event.stat().st_mode) == 0o3730
 
     # supervise/control FIFO.
     control = supervise / "control"
     assert control.exists(), "missing supervise/control FIFO"
-    assert stat.S_ISFIFO(control.stat().st_mode), (
-        "supervise/control must be a FIFO"
-    )
-    assert stat.S_IMODE(control.stat().st_mode) == 0o660
+    if os.name != "nt":
+        assert stat.S_ISFIFO(control.stat().st_mode), (
+            "supervise/control must be a FIFO"
+        )
+        assert stat.S_IMODE(control.stat().st_mode) == 0o660
+    else:
+        assert control.is_file()
 
 
 def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
@@ -497,10 +506,15 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     log_control = log_supervise / "control"
 
     assert log_event.is_dir()
-    assert stat.S_IMODE(log_event.stat().st_mode) == 0o3730
+    if os.name != "nt":
+        assert stat.S_IMODE(log_event.stat().st_mode) == 0o3730
     assert log_supervise.is_dir()
     assert log_supervise_event.is_dir()
-    assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
+    assert log_control.exists()
+    if os.name != "nt":
+        assert stat.S_ISFIFO(log_control.stat().st_mode)
+    else:
+        assert log_control.is_file()
 
 
 def test_seed_supervise_skeleton_skips_when_no_log_subservice(tmp_path) -> None:
@@ -545,7 +559,8 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
 
     run_path = svc_dir / "run"
     assert run_path.is_file()
-    assert run_path.stat().st_mode & 0o111  # executable
+    if os.name != "nt":
+        assert run_path.stat().st_mode & 0o111  # executable
     run_text = run_path.read_text()
     assert "export HOME=/opt/data" in run_text
     assert "hermes -p coder gateway run" in run_text
@@ -621,13 +636,14 @@ def test_s6_register_staging_dir_is_dotfile_hidden_from_svscan(
 
     assert seen, "_seed_supervise_skeleton was never called during register"
     staging = seen[0]
-    staging_name = staging.rsplit("/", 1)[-1]
+    staging_path = Path(staging)
+    staging_name = staging_path.name
     assert staging_name.startswith("."), (
         f"staging dir must be a dotfile so s6-svscan skips it mid-build; "
         f"got {staging_name!r}"
     )
     # Sibling of the live slot, in the same scandir.
-    assert staging == str(s6_scandir / ".gateway-coder.tmp")
+    assert staging_path == s6_scandir / ".gateway-coder.tmp"
     # And the published (renamed) live slot is the dotless canonical name.
     assert (s6_scandir / "gateway-coder").is_dir()
 
@@ -738,7 +754,8 @@ def test_s6_register_writes_finish_script(
 
     finish_path = s6_scandir / "gateway-coder" / "finish"
     assert finish_path.is_file()
-    assert finish_path.stat().st_mode & 0o111  # executable
+    if os.name != "nt":
+        assert finish_path.stat().st_mode & 0o111  # executable
     assert "78" in finish_path.read_text()
     assert "125" in finish_path.read_text()
 

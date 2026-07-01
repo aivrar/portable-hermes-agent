@@ -50,9 +50,10 @@ class TestConfigureWindowsStdio:
         yield
         sys.modules.pop("hermes_cli.stdio", None)
 
-    def test_no_op_on_posix(self):
+    def test_no_op_on_posix(self, monkeypatch):
         from hermes_cli import stdio
 
+        monkeypatch.setattr(stdio.sys, "platform", "linux")
         assert stdio.is_windows() is False
         result = stdio.configure_windows_stdio()
         assert result is False
@@ -287,6 +288,8 @@ class TestSigkillFallback:
 
     def test_getattr_fallback_prefers_sigkill_when_present(self):
         """On POSIX the fallback is a no-op: real SIGKILL wins."""
+        if not hasattr(signal, "SIGKILL"):
+            pytest.skip("SIGKILL is POSIX-only")
         result = getattr(signal, "SIGKILL", signal.SIGTERM)
         assert result == signal.SIGKILL
 
@@ -294,6 +297,7 @@ class TestSigkillFallback:
         "module_path, line_pattern",
         [
             ("hermes_cli.kanban_db", 'getattr(signal, "SIGKILL", signal.SIGTERM)'),
+            ("hermes_cli.main", 'getattr(_signal, "SIGKILL", _signal.SIGTERM)'),
         ],
     )
     def test_module_uses_getattr_fallback(self, module_path, line_pattern):

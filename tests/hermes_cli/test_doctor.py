@@ -170,20 +170,28 @@ class TestDoctorToolAvailabilityOverrides:
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
+        import importlib
+
+        honcho_client = importlib.import_module("plugins.memory.honcho.client")
         fake_config = SimpleNamespace(enabled=True, api_key="***")
 
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            honcho_client.HonchoClientConfig,
+            "from_global_config",
             lambda: fake_config,
         )
 
         assert doctor._honcho_is_configured_for_doctor()
 
     def test_reports_not_configured_without_api_key(self, monkeypatch):
+        import importlib
+
+        honcho_client = importlib.import_module("plugins.memory.honcho.client")
         fake_config = SimpleNamespace(enabled=True, api_key="")
 
         monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            honcho_client.HonchoClientConfig,
+            "from_global_config",
             lambda: fake_config,
         )
 

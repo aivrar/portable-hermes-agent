@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+import posixpath
 import re
 import subprocess
 import shutil
@@ -185,7 +186,7 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
     try:
         for entry in os.listdir(homebrew_opt):
             if entry.startswith("node") and entry != "node":
-                bin_dir = os.path.join(homebrew_opt, entry, "bin")
+                bin_dir = posixpath.join(homebrew_opt, entry, "bin")
                 if os.path.isdir(bin_dir):
                     dirs.append(bin_dir)
     except OSError:

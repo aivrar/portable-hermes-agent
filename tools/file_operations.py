@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import shutil
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -54,6 +55,61 @@ WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[\\/]*(.*)$")
+_MSYS_DRIVE_PATH_RE = re.compile(r"^/([A-Za-z])(?:/(.*))?$")
+_WSL_DRIVE_PATH_RE = re.compile(r"^/mnt/([A-Za-z])(?:/(.*))?$")
+_WINDOWS_BASH_DRIVE_ROOT: str | None = None
+
+
+def _windows_bash_drive_root() -> str:
+    """Return the drive mount root used by the Windows bash executable."""
+    global _WINDOWS_BASH_DRIVE_ROOT
+    if os.name != "nt":
+        return ""
+    if _WINDOWS_BASH_DRIVE_ROOT is not None:
+        return _WINDOWS_BASH_DRIVE_ROOT
+    bash_path = ""
+    try:
+        from tools.environments.local import _find_bash
+
+        bash_path = _find_bash()
+    except Exception:
+        bash_path = shutil.which("bash") or ""
+    normalized = bash_path.replace("/", "\\").lower()
+    if "\\windows\\system32\\bash.exe" in normalized or "\\wsl.exe" in normalized:
+        _WINDOWS_BASH_DRIVE_ROOT = "/mnt"
+    else:
+        _WINDOWS_BASH_DRIVE_ROOT = ""
+    return _WINDOWS_BASH_DRIVE_ROOT
+
+
+def _windows_path_to_bash(path: str) -> str:
+    """Translate a native Windows absolute path for Git Bash commands."""
+    if os.name != "nt" or not path:
+        return path
+    match = _WINDOWS_DRIVE_PATH_RE.match(path)
+    if match:
+        drive = match.group(1).lower()
+        tail = match.group(2).replace("\\", "/").strip("/")
+        root = _windows_bash_drive_root()
+        return f"{root}/{drive}/{tail}" if tail else f"{root}/{drive}"
+    if path.startswith("\\\\"):
+        return "//" + path.lstrip("\\").replace("\\", "/")
+    return path
+
+
+def _bash_path_to_windows(path: str) -> str:
+    """Translate a Git Bash / MSYS absolute path back to Windows form."""
+    if os.name != "nt" or not path:
+        return path
+    match = _WSL_DRIVE_PATH_RE.match(path) or _MSYS_DRIVE_PATH_RE.match(path)
+    if not match:
+        return path
+    drive = match.group(1).upper()
+    tail = match.group(2)
+    if not tail:
+        return f"{drive}:\\"
+    return f"{drive}:\\" + tail.replace("/", "\\")
 
 
 def _strip_terminal_fence_leaks(text: str) -> str:
@@ -931,8 +987,24 @@ class ShellFileOperations(FileOperations):
     
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands."""
+        arg = _windows_path_to_bash(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
+
+    def _escape_search_pattern_arg(self, pattern: str) -> str:
+        """Quote a search pattern without treating it as a filesystem path.
+
+        Git Bash/MSYS argument conversion can collapse backslashes when it
+        launches native Windows tools such as rg.exe. Search patterns are not
+        paths, so preserve literal backslashes by doubling them for that bridge.
+        """
+        if os.name == "nt":
+            pattern = pattern.replace("\\", "\\\\")
+        return "'" + pattern.replace("'", "'\"'\"'") + "'"
+
+    def _host_path_from_shell(self, path: str) -> str:
+        """Return shell-emitted paths in the host's native path form."""
+        return _bash_path_to_windows(path)
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
@@ -950,17 +1022,16 @@ class ShellFileOperations(FileOperations):
         renamed and the original (if any) is intact.
         """
         q_path = self._escape_shell_arg(path)
-        parent = os.path.dirname(path) or "."
-        q_parent = self._escape_shell_arg(parent)
         # template basename: hidden so it doesn't show up in casual `ls`,
         # carries a marker so an orphaned temp (only possible on a hard
         # crash *between* cat and mv) is identifiable.
-        tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
+        tmpl = ".hermes-tmp.XXXXXX"
 
         # One shell script, fully quoted. Notes:
-        #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
-        #    same-FS atomic; we fall back to a PID-stamped name if the
-        #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
+        #  - `mktemp "$d/.hermes-tmp.XXXXXX"` lands the temp in the target's
+        #    own dir so `mv` is same-FS atomic. We avoid `mktemp -p .` because
+        #    Git Bash can fail that form for relative targets on Windows.
+        #    Fall back to a PID-stamped name if mktemp is unavailable.
         #  - `chmod --reference` is GNU-only, so we read the octal mode with
         #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
         #    silent best-effort — a perms-copy failure must not abort the
@@ -971,9 +1042,10 @@ class ShellFileOperations(FileOperations):
         #  - we `cat >` the temp, then `mv -f` it over the target.
         script = (
             "set -e; "
-            f"d={q_parent}; t={q_path}; "
-            'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
-            '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
+            f"t={q_path}; "
+            'd="$(dirname -- "$t")"; '
+            '[ "$d" = "." ] && d="$(pwd -P)"; '
+            f'tmp="$(mktemp "$d/{tmpl}" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
             "trap 'rm -f \"$tmp\"' EXIT; "
@@ -2080,9 +2152,9 @@ class ShellFileOperations(FileOperations):
                 continue
             parts = line.split(' ', 1)
             if len(parts) == 2 and parts[0].replace('.', '').isdigit():
-                files.append(parts[1])
+                files.append(self._host_path_from_shell(parts[1]))
             else:
-                files.append(line)
+                files.append(self._host_path_from_shell(line))
 
         # For explicit hidden roots, find's path-based filtering excludes every
         # file under the hidden path. Apply descendant filtering after command
@@ -2132,7 +2204,7 @@ class ShellFileOperations(FileOperations):
         )
         result = self._exec(cmd_sorted, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
-        all_files = [f for f in stdout.strip().split('\n') if f]
+        all_files = [self._host_path_from_shell(f) for f in stdout.strip().split('\n') if f]
 
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
@@ -2143,7 +2215,7 @@ class ShellFileOperations(FileOperations):
             )
             result = self._exec(cmd_plain, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
-            all_files = [f for f in stdout.strip().split('\n') if f]
+            all_files = [self._host_path_from_shell(f) for f in stdout.strip().split('\n') if f]
 
         page = all_files[offset:offset + limit]
 
@@ -2193,7 +2265,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")  # Count per file
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_search_pattern_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
@@ -2323,7 +2395,7 @@ class ShellFileOperations(FileOperations):
             cmd_parts.append("-c")
         
         # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
+        cmd_parts.append(self._escape_search_pattern_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
         # Fetch generously so we can compute total before slicing

@@ -48,11 +48,20 @@ logger = logging.getLogger(__name__)
 # Marker comments wrapping the managed section so re-runs can detect
 # what's ours and what's user-edited. Both must appear or strip is a no-op.
 MIGRATION_MARKER = (
-    "# managed by hermes-agent — `hermes codex-runtime migrate` regenerates this section"
+    "# managed by hermes-agent - `hermes codex-runtime migrate` regenerates this section"
 )
 MIGRATION_END_MARKER = (
     "# end hermes-agent managed section"
 )
+
+
+def _is_migration_start_marker(line: str) -> bool:
+    """Recognize current and older start markers for idempotent rewrites."""
+    return (
+        line == MIGRATION_MARKER
+        or line.startswith("# managed by hermes-agent ")
+        and "`hermes codex-runtime migrate` regenerates this section" in line
+    )
 
 
 @dataclass
@@ -420,7 +429,7 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     saw_end_marker = False
     for line in lines:
         line_stripped_nl = line.rstrip("\n")
-        if line_stripped_nl == MIGRATION_MARKER:
+        if _is_migration_start_marker(line_stripped_nl):
             in_managed = True
             saw_end_marker = False
             continue

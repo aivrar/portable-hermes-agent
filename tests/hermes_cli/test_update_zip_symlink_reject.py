@@ -32,6 +32,15 @@ def _build_normal_zip(zip_path: str) -> None:
         zf.writestr("hermes-agent-main/README.md", "ok\n")
 
 
+def _build_zip_with_portable_runtime_names(zip_path: str) -> None:
+    """Write a ZIP that would replace portable runtime dirs if not preserved."""
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("hermes-agent-main/README.md", "ok\n")
+        zf.writestr("hermes-agent-main/extensions/upstream.txt", "upstream\n")
+        zf.writestr("hermes-agent-main/python_embedded/upstream.txt", "upstream\n")
+        zf.writestr("hermes-agent-main/.hermes/upstream.txt", "upstream\n")
+
+
 def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
     """A symlink member in the update ZIP must raise before extractall."""
     zip_path = tmp_path / "evil.zip"
@@ -129,3 +138,47 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
     assert (fake_root / "README.md").read_text() == "ok\n"
+
+
+def test_update_via_zip_preserves_portable_runtime_dirs(tmp_path, monkeypatch):
+    """ZIP fallback must not replace folder-local portable payloads."""
+    zip_path = tmp_path / "portable-runtime-names.zip"
+    _build_zip_with_portable_runtime_names(str(zip_path))
+
+    fake_root = tmp_path / "install_dir"
+    local_extension = fake_root / "extensions" / "local.txt"
+    local_python = fake_root / "python_embedded" / "python.exe"
+    local_home = fake_root / ".hermes" / "config.yaml"
+    local_extension.parent.mkdir(parents=True)
+    local_python.parent.mkdir(parents=True)
+    local_home.parent.mkdir(parents=True)
+    local_extension.write_text("local extension\n", encoding="utf-8")
+    local_python.write_text("local python\n", encoding="utf-8")
+    local_home.write_text("model: local/model\n", encoding="utf-8")
+
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    args = type("Args", (), {})()
+
+    def fake_urlretrieve(url, dest):
+        with open(zip_path, "rb") as src, open(dest, "wb") as dst:
+            dst.write(src.read())
+        return dest, None
+
+    with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve), \
+         patch("subprocess.run") as fake_run, \
+         patch("subprocess.check_call"):
+        fake_run.return_value = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        try:
+            hermes_main._update_via_zip(args)
+        except SystemExit:
+            pass
+
+    assert (fake_root / "README.md").read_text(encoding="utf-8") == "ok\n"
+    assert local_extension.read_text(encoding="utf-8") == "local extension\n"
+    assert local_python.read_text(encoding="utf-8") == "local python\n"
+    assert local_home.read_text(encoding="utf-8") == "model: local/model\n"
+    assert not (fake_root / "extensions" / "upstream.txt").exists()
+    assert not (fake_root / "python_embedded" / "upstream.txt").exists()
+    assert not (fake_root / ".hermes" / "upstream.txt").exists()

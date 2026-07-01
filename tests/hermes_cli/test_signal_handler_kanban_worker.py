@@ -213,7 +213,7 @@ def test_real_handler_uses_os_exit_for_kanban_workers():
     cli_path = (
         pathlib.Path(__file__).resolve().parent.parent.parent / "cli.py"
     )
-    src = cli_path.read_text()
+    src = cli_path.read_text(encoding="utf-8")
     # Locate the handler body.
     start = src.find("def _signal_handler_q(signum, frame):")
     assert start != -1, "cli.py is missing _signal_handler_q"

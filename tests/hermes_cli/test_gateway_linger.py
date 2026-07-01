@@ -1,8 +1,17 @@
 """Tests for gateway linger auto-enable behavior on headless Linux installs."""
 
 from types import SimpleNamespace
+import sys
+
+import pytest
 
 import hermes_cli.gateway as gateway
+
+
+@pytest.fixture(autouse=True)
+def _posix_gateway_shims(monkeypatch):
+    if sys.platform == "win32":
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 1000, raising=False)
 
 
 class TestEnsureLingerEnabled:

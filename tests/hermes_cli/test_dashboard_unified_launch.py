@@ -26,6 +26,22 @@ def _args(**kw):
     return types.SimpleNamespace(**defaults)
 
 
+def _capture_reexec(main_mod, monkeypatch, execs):
+    def fake_exec(exe, argv, env):
+        execs.append((exe, argv, env))
+        raise SystemExit(0)  # execvpe never returns
+
+    class FakeProcess:
+        def __init__(self, argv, *, env=None, **_kwargs):
+            execs.append((argv[0], argv, env))
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+    monkeypatch.setattr(main_mod.subprocess, "Popen", FakeProcess)
+
+
 class TestUnifiedDashboardRouting:
     def test_profile_launch_attaches_to_running_dashboard(self, main_mod, monkeypatch):
         monkeypatch.setattr(
@@ -63,12 +79,7 @@ class TestUnifiedDashboardRouting:
         )
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
         execs = []
-
-        def fake_exec(exe, argv, env):
-            execs.append((exe, argv, env))
-            raise SystemExit(0)  # execvpe never returns
-
-        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+        _capture_reexec(main_mod, monkeypatch, execs)
 
         with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
@@ -104,12 +115,7 @@ class TestUnifiedDashboardRouting:
         )
         monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
         execs = []
-
-        def fake_exec(exe, argv, env):
-            execs.append((exe, argv, env))
-            raise SystemExit(0)
-
-        monkeypatch.setattr(main_mod.os, "execvpe", fake_exec)
+        _capture_reexec(main_mod, monkeypatch, execs)
 
         with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
@@ -119,7 +125,7 @@ class TestUnifiedDashboardRouting:
         # get_default_hermes_root() strips the trailing profiles/<name>, so the
         # child binds /opt/data — where the real default/oracle/saga profiles
         # and the .install_method stamp actually live.
-        assert env.get("HERMES_HOME") == "/opt/data"
+        assert env.get("HERMES_HOME", "").replace("\\", "/") == "/opt/data"
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

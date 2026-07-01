@@ -242,7 +242,7 @@ class TestUtilities:
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         # Mock os.name and uname for non-macOS, non-Windows
         monkeypatch.setattr(os, "name", "posix")
-        monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Linux"})())
+        monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Linux"})(), raising=False)
         assert _can_open_browser() is False
 
     def test_can_open_browser_true_with_display(self, monkeypatch):

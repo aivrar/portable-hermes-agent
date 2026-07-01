@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+import tools.environments.local as local_mod
 from tools.environments.local import _find_bash, _find_shell
 
 
@@ -20,6 +21,8 @@ class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
     def test_returns_shell_env_when_set_and_exists(self, tmp_path):
+        if sys.platform == "win32":
+            pytest.skip("$SHELL preference is POSIX-only; Windows uses Git Bash")
         """When $SHELL points to an existing allowlisted executable, _find_shell returns it."""
         fake_zsh = tmp_path / "zsh"
         fake_zsh.touch()
@@ -55,6 +58,8 @@ class TestFindShellPrefersUserShell:
             assert _find_shell() == _find_bash()
 
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
+        if sys.platform == "win32":
+            pytest.skip("$SHELL preference is POSIX-only; Windows uses Git Bash")
         """Every allowlisted POSIX-sh-family shell is honoured."""
         for name in ("bash", "dash", "sh", "ksh"):
             fake = tmp_path / name
@@ -114,6 +119,24 @@ class TestFindBashUnchanged:
         # over bash the way _find_shell does.
         assert isinstance(result, str)
         assert len(result) > 0
+
+    def test_windows_prefers_git_for_windows_over_wsl_bash(self, monkeypatch, tmp_path):
+        git_bash = tmp_path / "Git" / "bin" / "bash.exe"
+        git_bash.parent.mkdir(parents=True)
+        git_bash.touch()
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(tmp_path))
+        monkeypatch.setenv("SystemRoot", r"C:\Windows")
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(
+            local_mod.shutil,
+            "which",
+            lambda name: r"C:\Windows\System32\bash.exe" if name == "bash" else None,
+        )
+
+        assert local_mod._find_bash() == str(git_bash)
 
 
 @pytest.mark.skipif(

@@ -7,8 +7,13 @@ SETUP_SCRIPT = REPO_ROOT / "setup-hermes.sh"
 
 
 def test_setup_hermes_script_is_valid_shell():
-    result = subprocess.run(["bash", "-n", str(SETUP_SCRIPT)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
+    script = SETUP_SCRIPT.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    result = subprocess.run(
+        ["bash", "-n", "-s"],
+        input=script.encode("utf-8"),
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
 
 
 def test_setup_hermes_script_has_termux_path():

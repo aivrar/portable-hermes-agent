@@ -491,7 +491,7 @@ class TestGitEnvIsolation:
             tmp_path / "store", str(tmp_path),
             index_file=tmp_path / "store" / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        assert env["GIT_INDEX_FILE"].replace("\\", "/").endswith("indexes/abc")
 
     def test_expands_tilde_in_work_tree(self, fake_home, tmp_path):
         work = fake_home / "work"
@@ -677,7 +677,10 @@ class TestSecurity:
 
         result = mgr.restore(str(work_dir), target_hash, file_path="/etc/passwd")
         assert result["success"] is False
-        assert "got absolute path" in result["error"]
+        assert (
+            "got absolute path" in result["error"]
+            or "escapes the working directory" in result["error"]
+        )
 
         result = mgr.restore(str(work_dir), target_hash, file_path="../outside_file.txt")
         assert result["success"] is False

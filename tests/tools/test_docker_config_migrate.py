@@ -38,6 +38,8 @@ def _run_migration(hermes_home: Path, **env_overrides: str) -> subprocess.Comple
         cwd=str(REPO_ROOT),
         env=env,
         capture_output=True,
+        encoding="utf-8",
+        errors="replace",
         text=True,
     )
 

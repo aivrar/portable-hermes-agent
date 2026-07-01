@@ -11,15 +11,26 @@ The fix switches ``_drain()`` to select()-based non-blocking reads and
 stops draining shortly after bash exits even if the pipe hasn't EOF'd.
 """
 import subprocess
+import shlex
+import sys
 import time
 
 import pytest
 
 from tools.environments.local import LocalEnvironment
+from tools.file_operations import _windows_path_to_bash
 
 
 def _pkill(pattern: str) -> None:
     subprocess.run(f"pkill -9 -f {pattern!r} 2>/dev/null", shell=True)
+
+
+def _python_cmd() -> str:
+    return shlex.quote(_windows_path_to_bash(sys.executable))
+
+
+def _timing_limit(posix_seconds: float, windows_seconds: float) -> float:
+    return windows_seconds if sys.platform == "win32" else posix_seconds
 
 
 @pytest.fixture
@@ -35,15 +46,17 @@ class TestBackgroundChildDoesNotHang:
     """Regression guard for issue #8340."""
 
     def test_plain_background_returns_promptly(self, local_env):
+        if sys.platform == "win32":
+            pytest.skip("Git Bash waits for plain backgrounded Windows executables; setsid/disown covers Windows")
         """``cmd &`` with no output redirection must not hang on pipe inherit."""
         marker = "hermes_8340_plain_bg"
-        cmd = f'python3 -c "import time; time.sleep(60)" & echo {marker}'
+        cmd = f'{_python_cmd()} -c "import time; time.sleep(60)" & echo {marker}'
         try:
             t0 = time.monotonic()
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, (
+            assert elapsed < _timing_limit(4.0, 8.0), (
                 f"terminal_tool hung for {elapsed:.1f}s — drain thread "
                 f"is still blocking on backgrounded child's inherited pipe fd"
             )
@@ -55,7 +68,7 @@ class TestBackgroundChildDoesNotHang:
     def test_setsid_disown_pattern_returns_promptly(self, local_env):
         """The exact pattern from the issue: setsid ... & disown."""
         cmd = (
-            'setsid python3 -c "import time; time.sleep(60)" '
+            f'setsid {_python_cmd()} -c "import time; time.sleep(60)" '
             '> /dev/null 2>&1 < /dev/null & disown; echo started'
         )
         try:
@@ -63,7 +76,7 @@ class TestBackgroundChildDoesNotHang:
             result = local_env.execute(cmd, timeout=15)
             elapsed = time.monotonic() - t0
 
-            assert elapsed < 4.0, f"setsid+disown path hung for {elapsed:.1f}s"
+            assert elapsed < _timing_limit(4.0, 8.0), f"setsid+disown path hung for {elapsed:.1f}s"
             assert result["returncode"] == 0
             assert "started" in result["output"]
         finally:
@@ -77,7 +90,7 @@ class TestBackgroundChildDoesNotHang:
         elapsed = time.monotonic() - t0
 
         # Loop body sleeps ~0.6s total — elapsed should be close to that.
-        assert 0.5 < elapsed < 3.0
+        assert 0.5 < elapsed < _timing_limit(3.0, 6.0)
         assert result["returncode"] == 0
         for expected in ("tick 1", "tick 2", "tick 3", "done"):
             assert expected in result["output"], f"missing {expected!r}"
@@ -97,7 +110,7 @@ class TestBackgroundChildDoesNotHang:
         result = local_env.execute("sleep 30", timeout=2)
         elapsed = time.monotonic() - t0
 
-        assert elapsed < 4.0
+        assert elapsed < _timing_limit(4.0, 8.0)
         assert result["returncode"] == 124
         assert "timed out" in result["output"].lower()
 
@@ -120,7 +133,7 @@ class TestBackgroundChildDoesNotHang:
         # read boundaries, and most boundaries will land in the middle of the
         # 3-byte UTF-8 encoding of U+65E5.
         cmd = (
-            'python3 -c \'import sys; '
+            f'{_python_cmd()} -c \'import sys; '
             'sys.stdout.buffer.write(chr(0x65e5).encode("utf-8") * 10000); '
             'sys.stdout.buffer.write(b"\\n")\''
         )
@@ -141,7 +154,7 @@ class TestBackgroundChildDoesNotHang:
         """
         # Write a deliberate invalid UTF-8 lead byte sandwiched between valid ASCII
         cmd = (
-            'python3 -c \'import sys; '
+            f'{_python_cmd()} -c \'import sys; '
             'sys.stdout.buffer.write(b"before "); '
             'sys.stdout.buffer.write(b"\\xff\\xfe"); '
             'sys.stdout.buffer.write(b" after\\n")\''

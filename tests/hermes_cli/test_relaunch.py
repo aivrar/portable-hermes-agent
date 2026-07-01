@@ -8,12 +8,12 @@ from hermes_cli import relaunch as relaunch_mod
 
 
 class TestResolveHermesBin:
-    def test_prefers_absolute_argv0_when_executable(self, monkeypatch):
-        fake = "/nix/store/abc/bin/hermes"
-        monkeypatch.setattr(sys, "argv", [fake])
-        monkeypatch.setattr(relaunch_mod.os.path, "isfile", lambda p: p == fake)
-        monkeypatch.setattr(relaunch_mod.os, "access", lambda p, mode: p == fake)
-        assert relaunch_mod.resolve_hermes_bin() == fake
+    def test_prefers_absolute_argv0_when_executable(self, monkeypatch, tmp_path):
+        fake = tmp_path / "hermes"
+        fake.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(sys, "argv", [str(fake)])
+        monkeypatch.setattr(relaunch_mod.os, "access", lambda p, mode: p == str(fake))
+        assert relaunch_mod.resolve_hermes_bin() == str(fake)
 
     def test_resolves_relative_argv0(self, monkeypatch, tmp_path):
         fake = tmp_path / "hermes"
@@ -148,6 +148,7 @@ class TestRelaunch:
 
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
         monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "linux")
 
         with pytest.raises(SystemExit):
             relaunch_mod.relaunch(["--resume", "abc"])

@@ -38,6 +38,15 @@ def _init_git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
+def _git_path(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def _skip_windows_posix_reaper() -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX waitpid zombie reaping is a no-op on Windows")
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
@@ -2135,7 +2144,7 @@ def test_worktree_workspace_repo_root_anchor_materializes_linked_worktree(kanban
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {expected}" in listed
+    assert f"worktree {_git_path(expected)}" in listed
     assert f"branch refs/heads/wt/{t}" in listed
 
 
@@ -2219,7 +2228,7 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
+    assert f"worktree {_git_path(target)}" in listed
     assert f"branch refs/heads/{branch}" in listed
 
 
@@ -2258,7 +2267,7 @@ def test_dispatch_worktree_task_persists_materialized_workspace_and_branch(kanba
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {expected}" in listed
+    assert f"worktree {_git_path(expected)}" in listed
     assert f"branch refs/heads/wt/{tid}" in listed
 
 
@@ -2317,8 +2326,9 @@ def test_dispatch_worktree_task_rerun_reuses_existing_linked_worktree_and_branch
         capture_output=True,
         text=True,
     ).stdout
-    assert listed.count(f"worktree {expected}\n") == 1
-    assert f"worktree {expected}/.worktrees/{tid}" not in listed
+    expected_git_path = _git_path(expected)
+    assert listed.count(f"worktree {expected_git_path}\n") == 1
+    assert f"worktree {expected_git_path}/.worktrees/{tid}" not in listed
     assert f"branch refs/heads/{actual_branch}" in listed
 
 
@@ -3250,15 +3260,17 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
+def test_resolve_hermes_argv_prefers_path_shim(monkeypatch, tmp_path):
     """When `hermes` is on PATH, use the shim — preserves familiar ps output."""
     import shutil
     import hermes_cli.kanban_db as kb
 
+    shim = tmp_path / "bin" / "hermes"
     monkeypatch.delenv("HERMES_BIN", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(shutil, "which", lambda name: str(shim))
     argv = kb._resolve_hermes_argv()
-    assert argv == ["/usr/local/bin/hermes"]
+    assert argv == [str(shim)]
 
 
 def test_resolve_hermes_argv_absolutizes_relative_exe_shim(monkeypatch, tmp_path):
@@ -3317,6 +3329,7 @@ def test_resolve_hermes_argv_hermes_bin_bare_name_uses_path(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(path_hermes.parent))
     monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
 
     assert kb._resolve_hermes_argv() == [str(path_hermes)]
 
@@ -4558,6 +4571,7 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 def test_reap_worker_zombies_returns_count():
     """reap_worker_zombies() returns the list of reaped PIDs."""
+    _skip_windows_posix_reaper()
     from unittest.mock import patch
 
     fake_pids = [12345, 67890, 11111]
@@ -4598,6 +4612,7 @@ def test_reap_worker_zombies_noop_no_children():
 
 def test_reap_worker_zombies_records_exit_status():
     """reap_worker_zombies() calls _record_worker_exit for each reaped pid."""
+    _skip_windows_posix_reaper()
     from unittest.mock import patch
 
     calls = []
@@ -4630,6 +4645,7 @@ def test_reap_worker_zombies_handles_waitpid_os_error():
 
 def test_zombie_reaper_runs_despite_board_connect_failure():
     """reap_worker_zombies runs even when a board tick raises an error."""
+    _skip_windows_posix_reaper()
     from unittest.mock import patch
 
     call_count = [0]
@@ -4656,6 +4672,7 @@ def test_zombie_reaper_runs_despite_board_connect_failure():
 
 def test_zombie_reaper_survives_all_boards_failing():
     """reap_worker_zombies runs each tick regardless of board tick failures."""
+    _skip_windows_posix_reaper()
     from unittest.mock import patch
 
     total_reaped = 0
@@ -4687,6 +4704,7 @@ def test_zombie_reaper_survives_all_boards_failing():
 
 def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
     """The reaper inside dispatch_once still works after refactor to reap_worker_zombies()."""
+    _skip_windows_posix_reaper()
     from unittest.mock import patch
 
     call_count = [0]

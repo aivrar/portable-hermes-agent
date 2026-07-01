@@ -161,7 +161,7 @@ class TestAtomicJsonWrite:
 
         # os.chmod's effect is platform-dependent (Windows only honors the
         # write bit), so only assert the durable mode on POSIX.
-        if hasattr(os, "fchmod"):
+        if os.name != "nt" and hasattr(os, "fchmod"):
             actual = stat_mod.S_IMODE(target.stat().st_mode)
             assert actual == 0o600
 

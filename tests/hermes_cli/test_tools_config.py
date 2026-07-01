@@ -1248,6 +1248,21 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     from unittest.mock import patch as mock_patch
 
     fake_toolsets = dict(TOOLSETS)
+    fake_toolsets["web"] = {
+        "description": "web",
+        "tools": ["web_search", "web_extract"],
+        "includes": [],
+    }
+    fake_toolsets["terminal"] = {
+        "description": "terminal",
+        "tools": ["terminal", "process"],
+        "includes": [],
+    }
+    fake_toolsets["_test_configurable_toolset"] = {
+        "description": "test configurable",
+        "tools": ["_test_configurable_tool"],
+        "includes": [],
+    }
     fake_toolsets["_test_platform_tool"] = {
         "description": "test",
         "tools": ["_test_special_tool"],
@@ -1255,21 +1270,31 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
     fake_toolsets["hermes-_test_platform"] = {
         "description": "test composite",
-        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "tools": [
+            "web_search",
+            "web_extract",
+            "_test_configurable_tool",
+            "_test_special_tool",
+        ],
         "includes": [],
     }
 
     test_platforms = {
         "_test_platform": {"label": "Test", "default_toolset": "hermes-_test_platform"},
     }
+    test_configurable = [
+        ("web", "Web", "web_search, web_extract"),
+        ("_test_configurable_toolset", "Test Configurable", "_test_configurable_tool"),
+    ]
 
     with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
-        with mock_patch("toolsets.TOOLSETS", fake_toolsets):
+        with mock_patch("hermes_cli.tools_config.CONFIGURABLE_TOOLSETS", test_configurable), \
+             mock_patch("toolsets.TOOLSETS", fake_toolsets):
             enabled = _get_platform_tools({}, "_test_platform")
 
     assert "_test_platform_tool" in enabled
     assert "web" in enabled
-    assert "terminal" in enabled
+    assert "_test_configurable_toolset" in enabled
 
 
 def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():

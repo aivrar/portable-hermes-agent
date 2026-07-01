@@ -10,6 +10,7 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -104,6 +105,12 @@ def _named_actions(actions: list[ReconcileAction]) -> list[ReconcileAction]:
     return [a for a in actions if a.profile != "default"]
 
 
+def _assert_executable_on_posix(path: Path) -> None:
+    """Windows chmod does not preserve POSIX executable bits in st_mode."""
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o111
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -122,7 +129,7 @@ def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     )]
     svc = scandir / "gateway-coder"
     assert (svc / "run").exists()
-    assert (svc / "run").stat().st_mode & 0o111  # executable
+    _assert_executable_on_posix(svc / "run")
     assert (svc / "type").read_text().strip() == "longrun"
     # Auto-start means no down-marker.
     assert not (svc / "down").exists()
@@ -140,7 +147,7 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
 
     finish = scandir / "gateway-coder" / "finish"
     assert finish.exists()
-    assert finish.stat().st_mode & 0o111  # executable
+    _assert_executable_on_posix(finish)
     text = finish.read_text()
     assert "78" in text
     assert "125" in text

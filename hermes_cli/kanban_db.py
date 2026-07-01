@@ -5782,6 +5782,38 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
             _recent_worker_exits.pop(_pid, None)
 
 
+def _classify_wait_status(raw: int) -> "tuple[str, Optional[int]]":
+    """Classify a raw POSIX wait status with a portable integer fallback."""
+    try:
+        if os.WIFEXITED(raw):
+            code = os.WEXITSTATUS(raw)
+            if code == 0:
+                return ("clean_exit", 0)
+            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                return ("rate_limited", code)
+            return ("nonzero_exit", code)
+        if os.WIFSIGNALED(raw):
+            return ("signaled", os.WTERMSIG(raw))
+    except Exception:
+        pass
+
+    # Windows builds may expose the WIF* helpers but not classify a synthetic
+    # POSIX wait status such as ``exit_code << 8``. The registry stores raw
+    # wait statuses from POSIX reaping, and tests/feeders may use the same
+    # conventional encoding on any platform.
+    if raw == 0:
+        return ("clean_exit", 0)
+    if raw > 0 and raw & 0xFF == 0:
+        code = (raw >> 8) & 0xFF
+        if code == 0:
+            return ("clean_exit", 0)
+        if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+            return ("rate_limited", code)
+        return ("nonzero_exit", code)
+
+    return ("unknown", None)
+
+
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     """Classify a recently-reaped worker by pid.
 
@@ -5810,19 +5842,7 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
-    try:
-        if os.WIFEXITED(raw):
-            code = os.WEXITSTATUS(raw)
-            if code == 0:
-                return ("clean_exit", 0)
-            if code == KANBAN_RATE_LIMIT_EXIT_CODE:
-                return ("rate_limited", code)
-            return ("nonzero_exit", code)
-        if os.WIFSIGNALED(raw):
-            return ("signaled", os.WTERMSIG(raw))
-    except Exception:
-        pass
-    return ("unknown", None)
+    return _classify_wait_status(raw)
 
 
 def reap_worker_zombies() -> "list[int]":

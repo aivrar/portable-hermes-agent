@@ -20,6 +20,14 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+def _is_windows_system_bash(path: str | None) -> bool:
+    if not path:
+        return False
+    system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    expected = os.path.join(system_root, "System32", "bash.exe")
+    return os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(expected))
+
+
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
@@ -378,17 +386,18 @@ def _find_bash() -> str:
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "usr", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
         os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_windows_system_bash(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

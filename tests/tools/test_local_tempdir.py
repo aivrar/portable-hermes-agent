@@ -1,8 +1,12 @@
+import sys
 from unittest.mock import patch
+
+import pytest
 
 from tools.environments.local import LocalEnvironment
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows stores terminal artifacts under HERMES_HOME cache")
 class TestLocalTempDir:
     def test_uses_os_tmpdir_for_session_artifacts(self, monkeypatch):
         monkeypatch.setenv("TMPDIR", "/data/data/com.termux/files/usr/tmp")

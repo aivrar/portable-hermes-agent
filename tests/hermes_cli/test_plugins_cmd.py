@@ -257,7 +257,10 @@ class TestResolveSubdirWithin:
         clone.mkdir()
         outside = tmp_path / "outside"
         outside.mkdir()
-        (clone / "link").symlink_to(outside)
+        try:
+            (clone / "link").symlink_to(outside)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
         with pytest.raises(PluginOperationError, match="escapes the repository"):
             _resolve_subdir_within(clone, "link")
 
@@ -758,7 +761,8 @@ class TestCursesRadiolist:
     def test_keyboard_interrupt_returns_cancel_value(self):
         from hermes_cli.curses_ui import curses_radiolist
 
-        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+        curses = pytest.importorskip("curses")
+        with patch("sys.stdin") as mock_stdin, patch.object(curses, "wrapper", side_effect=KeyboardInterrupt):
             mock_stdin.isatty.return_value = True
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
             assert result == -1
@@ -837,7 +841,7 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        source = open(ra_module.__file__, encoding="utf-8").read()
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source

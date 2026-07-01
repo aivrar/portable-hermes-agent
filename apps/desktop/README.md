@@ -32,6 +32,16 @@ hermes desktop
 
 It builds and launches the GUI against your existing install — same config, keys, sessions, and skills. On first launch Hermes walks you through picking a provider and model; nothing else to configure.
 
+For a source-checkout portable folder, generate the pinned desktop launch
+command from the repo root:
+
+```bash
+python -m hermes_cli.main portable desktop-command
+```
+
+This keeps Electron on the upstream desktop path while using the folder-local
+portable `HERMES_HOME`.
+
 ### Prebuilt installers
 
 Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/).

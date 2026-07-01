@@ -648,9 +648,10 @@ class TestSearchFilesFallbackHiddenPaths:
         env.cwd = "/"
 
         def execute(command, **kwargs):
+            from tools.environments.local import _find_bash
+
             completed = subprocess.run(
-                command,
-                shell=True,
+                [_find_bash(), "-c", command],
                 text=True,
                 capture_output=True,
             )

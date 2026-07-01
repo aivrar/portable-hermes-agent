@@ -35,13 +35,20 @@ def _make_hermes_node(hermes_home: Path) -> Path:
     return node_bin
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+
 def test_removes_symlinks_pointing_into_hermes_node(fake_home):
     hermes_home = fake_home / ".hermes"
     node_bin = _make_hermes_node(hermes_home)
     local_bin = fake_home / ".local" / "bin"
 
     for name in ("node", "npm", "npx"):
-        (local_bin / name).symlink_to(node_bin / name)
+        _symlink_or_skip(local_bin / name, node_bin / name)
 
     removed = uninstall.remove_node_symlinks(hermes_home)
 
@@ -61,7 +68,7 @@ def test_leaves_unrelated_symlinks_untouched(fake_home):
     nvm_bin = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
     nvm_bin.mkdir(parents=True)
     (nvm_bin / "node").write_text("#!/bin/sh\n")
-    (local_bin / "node").symlink_to(nvm_bin / "node")
+    _symlink_or_skip(local_bin / "node", nvm_bin / "node")
 
     removed = uninstall.remove_node_symlinks(hermes_home)
 
@@ -104,7 +111,7 @@ def test_removes_dangling_symlink_into_hermes_node(fake_home):
     local_bin = fake_home / ".local" / "bin"
 
     # Create the symlink, then delete the target so it dangles.
-    (local_bin / "node").symlink_to(node_bin / "node")
+    _symlink_or_skip(local_bin / "node", node_bin / "node")
     assert (local_bin / "node").is_symlink()
 
     removed = uninstall.remove_node_symlinks(hermes_home)
@@ -120,8 +127,8 @@ def test_only_some_links_present(fake_home):
     local_bin = fake_home / ".local" / "bin"
 
     # Only npm and npx are Hermes-managed; node is a real user binary.
-    (local_bin / "npm").symlink_to(node_bin / "npm")
-    (local_bin / "npx").symlink_to(node_bin / "npx")
+    _symlink_or_skip(local_bin / "npm", node_bin / "npm")
+    _symlink_or_skip(local_bin / "npx", node_bin / "npx")
     (local_bin / "node").write_text("#!/bin/sh\n")
 
     removed = uninstall.remove_node_symlinks(hermes_home)
@@ -145,7 +152,7 @@ def test_removes_fhs_symlinks_in_usr_local_bin(fake_home, tmp_path, monkeypatch)
     fhs_bin = tmp_path / "usr_local_bin"
     fhs_bin.mkdir()
     for name in ("node", "npm", "npx"):
-        (fhs_bin / name).symlink_to(node_bin / name)
+        _symlink_or_skip(fhs_bin / name, node_bin / name)
 
     # Ensure ~/.local/bin has NO symlinks (simulate pure FHS install).
     local_bin = fake_home / ".local" / "bin"

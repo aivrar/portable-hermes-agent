@@ -7,8 +7,16 @@ host systemd/launchd/windows code path.
 """
 from __future__ import annotations
 
+import signal
+
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _signal_pause_shim(monkeypatch: pytest.MonkeyPatch) -> None:
+    if not hasattr(signal, "pause"):
+        monkeypatch.setattr(signal, "pause", lambda: None, raising=False)
 
 
 class _CallRecorder:

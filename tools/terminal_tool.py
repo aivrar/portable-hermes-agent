@@ -1229,10 +1229,10 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
         return False
     if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
         return True
-    # Relative paths (".", "src/") can't be a container workdir either. Windows
-    # drive paths are absolute on Windows but os.path.isabs() is False on a
-    # POSIX host, so they're already caught by the prefix check above.
-    if not os.path.isabs(cwd):
+    # Relative paths (".", "src/") can't be a container workdir either.
+    # Container cwd values are POSIX paths even when Hermes itself runs on
+    # Windows, so a leading "/" is valid regardless of host os.path semantics.
+    if not (cwd.startswith("/") or os.path.isabs(cwd)):
         return True
     return False
 

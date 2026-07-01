@@ -68,6 +68,10 @@ def _make_hermes_tree(root: Path) -> None:
     (root / "logs" / "agent.log").write_text("log line\n")
 
 
+def _profile_wrapper_path(wrapper_dir: Path, name: str) -> Path:
+    return wrapper_dir / (f"{name}.bat" if os.name == "nt" else name)
+
+
 def _symlink_file_or_skip(link: Path, target: Path) -> None:
     try:
         link.symlink_to(target)
@@ -1261,11 +1265,11 @@ class TestProfileRestoration:
         assert (hermes_home / "profiles" / "researcher" / "config.yaml").exists()
 
         # Wrapper scripts should be created
-        assert (wrapper_dir / "coder").exists()
-        assert (wrapper_dir / "researcher").exists()
+        assert _profile_wrapper_path(wrapper_dir, "coder").exists()
+        assert _profile_wrapper_path(wrapper_dir, "researcher").exists()
 
         # Wrappers should contain the right content
-        coder_wrapper = (wrapper_dir / "coder").read_text()
+        coder_wrapper = _profile_wrapper_path(wrapper_dir, "coder").read_text()
         assert "hermes -p coder" in coder_wrapper
 
     def test_import_skips_profile_dirs_without_config(self, tmp_path, monkeypatch):
@@ -1291,8 +1295,8 @@ class TestProfileRestoration:
         run_import(args)
 
         # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        assert _profile_wrapper_path(wrapper_dir, "valid").exists()
+        assert not _profile_wrapper_path(wrapper_dir, "empty").exists()
 
     def test_import_without_profiles_module(self, tmp_path, monkeypatch):
         """Import gracefully handles missing profiles module (fresh install)."""
@@ -1858,7 +1862,10 @@ class TestQuickSnapshotProjectsKanban:
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        assert any(
+            s.replace("\\", "/").endswith("boards/work/kanban.db")
+            for s in called["db"]
+        ), called["db"]
         copy = hermes_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -2060,6 +2067,69 @@ class TestRunPreUpdateBackup:
         # Actual backup was created
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
+
+    def test_backup_flag_creates_portable_runtime_backup_when_active(self, tmp_path, monkeypatch, capsys):
+        portable_root = tmp_path / "portable"
+        hermes_home = portable_root / ".hermes"
+        hermes_home.mkdir(parents=True)
+        _make_hermes_tree(hermes_home)
+        legacy_extension = portable_root / "extensions" / "local-service" / "README.md"
+        legacy_extension.parent.mkdir(parents=True)
+        legacy_extension.write_text("local extension\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli import main as main_mod
+
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", portable_root)
+        main_mod._run_pre_update_backup(Namespace(no_backup=False, backup=True))
+
+        out = capsys.readouterr().out
+        assert "Creating pre-update backup" in out
+        assert "Portable runtime backup" in out
+
+        normal_backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
+        portable_backups = list((hermes_home / "backups").glob("portable-runtime-*.zip"))
+        assert len(normal_backups) == 1
+        assert len(portable_backups) == 1
+
+        with zipfile.ZipFile(portable_backups[0]) as archive:
+            names = set(archive.namelist())
+        assert ".hermes/config.yaml" in names
+        assert "extensions/local-service/README.md" in names
+        assert not any(name.startswith(".hermes/backups/") for name in names)
+
+    def test_invalid_backup_keep_still_creates_portable_runtime_backup(self, tmp_path, monkeypatch, capsys):
+        import yaml
+
+        portable_root = tmp_path / "portable"
+        hermes_home = portable_root / ".hermes"
+        hermes_home.mkdir(parents=True)
+        _make_hermes_tree(hermes_home)
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {
+                "pre_update_backup": True,
+                "backup_keep": "not-an-int",
+            },
+        }))
+        legacy_extension = portable_root / "extensions" / "local-service" / "README.md"
+        legacy_extension.parent.mkdir(parents=True)
+        legacy_extension.write_text("local extension\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        from hermes_cli import main as main_mod
+
+        monkeypatch.setattr(main_mod, "PROJECT_ROOT", portable_root)
+        main_mod._run_pre_update_backup(Namespace(no_backup=False, backup=False))
+
+        out = capsys.readouterr().out
+        assert "Backup failed" in out
+        assert "Portable runtime backup" in out
+        assert list((hermes_home / "backups").glob("portable-runtime-*.zip"))
 
     def test_default_disabled_is_silent(self, hermes_home, capsys):
         """With the default (``pre_update_backup: false``), ``hermes update``
@@ -2468,7 +2538,8 @@ class TestMemoryProviderExternalPaths:
         assert restored.exists()
         assert restored.read_text() == '{"peer":"bob"}'
         # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        if os.name != "nt":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
 

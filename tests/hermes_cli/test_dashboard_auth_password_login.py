@@ -140,6 +140,26 @@ class PasswordProvider(DashboardAuthProvider):
 
 
 @pytest.fixture
+def dashboard_host_state():
+    prev_host = getattr(web_server.app.state, "bound_host", None)
+    prev_port = getattr(web_server.app.state, "bound_port", None)
+    prev_required = getattr(web_server.app.state, "auth_required", None)
+    web_server.app.state.bound_host = "fly-app.fly.dev"
+    web_server.app.state.bound_port = 443
+    yield
+    web_server.app.state.bound_host = prev_host
+    web_server.app.state.bound_port = prev_port
+    web_server.app.state.auth_required = prev_required
+
+
+@pytest.fixture(autouse=True)
+def _dashboard_auth_state_isolation(dashboard_host_state):
+    yield
+    clear_providers()
+    _reset_password_rate_limit()
+
+
+@pytest.fixture
 def pw_provider():
     return PasswordProvider()
 
@@ -149,18 +169,12 @@ def gated_app(pw_provider):
     clear_providers()
     register_provider(pw_provider)
     _reset_password_rate_limit()
-    prev_host = getattr(web_server.app.state, "bound_host", None)
-    prev_port = getattr(web_server.app.state, "bound_port", None)
     prev_required = getattr(web_server.app.state, "auth_required", None)
-    web_server.app.state.bound_host = "fly-app.fly.dev"
-    web_server.app.state.bound_port = 443
     web_server.app.state.auth_required = True
     client = TestClient(web_server.app, base_url="https://fly-app.fly.dev")
     yield client
     clear_providers()
     _reset_password_rate_limit()
-    web_server.app.state.bound_host = prev_host
-    web_server.app.state.bound_port = prev_port
     web_server.app.state.auth_required = prev_required
 
 

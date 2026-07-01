@@ -7,6 +7,7 @@ and shell completion generation.
 
 import json
 import io
+import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -180,7 +181,8 @@ class TestCreateProfile:
             for line in content.splitlines()
         )
         mode = stat.S_IMODE(env_path.stat().st_mode)
-        assert mode == 0o600
+        if os.name != "nt":
+            assert mode == 0o600
 
     def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
         tmp_path = profile_env
@@ -520,7 +522,8 @@ class TestBackfillProfileEnvs:
         assert sorted(backfilled) == ["old1", "old2"]
         for p in (p1, p2):
             assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
-            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+            if os.name != "nt":
+                assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
 
     def test_never_overwrites_existing_profile_env(self, profile_env):
         tmp_path = profile_env

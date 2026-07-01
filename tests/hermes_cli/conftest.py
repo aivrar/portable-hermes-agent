@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 
@@ -54,3 +56,70 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
         lambda *_a, **_k: [],
         raising=False,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_kanban_worker_exit_state():
+    """Keep kanban worker-exit side channels scoped to a single test."""
+    kb = sys.modules.get("hermes_cli.kanban_db")
+    if kb is None:
+        yield
+        return
+
+    def reset() -> None:
+        exits = getattr(kb, "_recent_worker_exits", None)
+        if isinstance(exits, dict):
+            exits.clear()
+        detector = getattr(kb, "detect_crashed_workers", None)
+        for attr in ("_last_auto_blocked", "_last_rate_limited"):
+            if detector is not None and hasattr(detector, attr):
+                delattr(detector, attr)
+
+    reset()
+    try:
+        yield
+    finally:
+        reset()
+
+
+@pytest.fixture(autouse=True)
+def _reset_kanban_route_env(monkeypatch):
+    """Prevent board/db routing env vars from leaking between tests."""
+    for name in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_KANBAN_BOARD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_discovery_caches():
+    """Prevent model catalog/recommendation caches from leaking across tests."""
+    models = sys.modules.get("hermes_cli.models")
+    if models is None:
+        yield
+        return
+
+    def reset() -> None:
+        if hasattr(models, "_openrouter_catalog_cache"):
+            models._openrouter_catalog_cache = None
+        if hasattr(models, "_free_tier_cache"):
+            models._free_tier_cache = None
+        for name in (
+            "_nous_recommended_cache",
+            "_pricing_cache",
+            "_copilot_context_cache",
+        ):
+            cache = getattr(models, name, None)
+            if isinstance(cache, dict):
+                cache.clear()
+        if hasattr(models, "_copilot_context_cache_time"):
+            models._copilot_context_cache_time = 0.0
+
+    reset()
+    try:
+        yield
+    finally:
+        reset()

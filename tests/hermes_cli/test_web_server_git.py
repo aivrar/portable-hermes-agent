@@ -116,7 +116,7 @@ def test_commit_with_nothing_staged_commits_all_changes(client, repo):
 
 def test_worktrees_and_branch_lifecycle(client, repo):
     worktrees = client.get("/api/git/worktrees", params={"path": str(repo)}).json()["worktrees"]
-    assert any(tree["isMain"] and tree["path"] == str(repo) for tree in worktrees)
+    assert any(tree["isMain"] and Path(tree["path"]) == repo for tree in worktrees)
 
     added = client.post(
         "/api/git/worktree/add", json={"path": str(repo), "branch": "feature/x"}

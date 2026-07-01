@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import posixpath
 import threading
 from pathlib import Path
 
@@ -42,7 +43,11 @@ def _expand_tilde(path: str) -> str:
     except Exception:
         home = None
     if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+        if path == "~":
+            return home
+        if "/" in home and "\\" not in home:
+            return home.rstrip("/") + "/" + path[2:]
+        return os.path.join(home, path[2:])
     return os.path.expanduser(path)
 
 
@@ -199,7 +204,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         container_key = task_id
 
     with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+        cached = _file_ops_cache.get(task_id) or _file_ops_cache.get(container_key)
     if cached is not None:
         env = getattr(cached, "env", None)
         live_cwd = _live_cwd_if_owned(env, task_id)
@@ -216,7 +221,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(task_id) or _active_environments.get(container_key)
         live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
             _remember_last_known_cwd(container_key, live_cwd)
@@ -314,6 +319,25 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     return (_resolve_base_dir(task_id) / p).resolve()
 
 
+def _is_explicit_posix_absolute(filepath: str) -> bool:
+    """Return True for POSIX-style absolute paths on any host platform."""
+    expanded = _expand_tilde(filepath)
+    return expanded.startswith("/") and not expanded.startswith("//")
+
+
+def _resolve_path_for_tool(filepath: str, task_id: str = "default") -> str:
+    """Resolve tool paths while preserving explicit POSIX absolute paths.
+
+    On Windows, ``Path('/tmp/x').resolve()`` becomes a drive-rooted host path
+    such as ``E:\\tmp\\x``. File tools may also target a POSIX shell/backend
+    path, so a user-supplied single-slash absolute path must remain ``/tmp/x``.
+    """
+    expanded = _expand_tilde(filepath)
+    if os.name == "nt" and _is_explicit_posix_absolute(expanded):
+        return posixpath.normpath(expanded)
+    return str(_resolve_path_for_task(filepath, task_id))
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -330,7 +354,7 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(_expand_tilde(filepath)).is_absolute():
+        if Path(_expand_tilde(filepath)).is_absolute() or _is_explicit_posix_absolute(filepath):
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
@@ -342,8 +366,8 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # Inside the workspace — expected.
         except ValueError:
             return (
-                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
-                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"Relative path {filepath!r} resolved to '{str(resolved)}', which is "
+                f"OUTSIDE the active workspace ('{str(root)}'). The edit will land in "
                 f"a different directory than the terminal's cwd. If this is not "
                 f"intended (e.g. a git-worktree session writing into the main "
                 f"checkout), pass an absolute path under the workspace instead."
@@ -354,6 +378,21 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
+    posix_candidate = posixpath.normpath(_expand_tilde(path).replace("\\", "/"))
+    if posix_candidate in _BLOCKED_DEVICE_PATHS:
+        return True
+    # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio.
+    if posix_candidate.startswith("/proc/") and posix_candidate.endswith(
+        ("/fd/0", "/fd/1", "/fd/2")
+    ):
+        return True
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
+    # command-line args, and memory layout from the host process (issue #4427).
+    if posix_candidate.startswith("/proc/") and posix_candidate.endswith(
+        ("/environ", "/cmdline", "/maps")
+    ):
+        return True
+
     normalized = os.path.normpath(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
@@ -379,6 +418,8 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     the final resolved path so aliases to devices cannot bypass the guard.
     """
     expanded = _expand_tilde(filepath)
+    if _is_blocked_device_path(expanded):
+        return True
     if base_dir is not None and not os.path.isabs(expanded):
         expanded = os.path.join(os.fspath(base_dir), expanded)
     normalized = os.path.normpath(expanded)
@@ -443,18 +484,23 @@ def _get_hermes_config_resolved() -> str | None:
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = _resolve_path_for_tool(filepath, task_id)
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    posix_normalized = posixpath.normpath(_expand_tilde(filepath).replace("\\", "/"))
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if resolved.startswith(prefix) or normalized.startswith(prefix) or posix_normalized.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if (
+        resolved in _SENSITIVE_EXACT_PATHS
+        or normalized in _SENSITIVE_EXACT_PATHS
+        or posix_normalized in _SENSITIVE_EXACT_PATHS
+    ):
         return _err
     # Prevent agents from modifying the Hermes config file directly.
     # approvals.mode and other security settings live here; a malicious or
@@ -546,7 +592,7 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     # in a session that cd'd into ``~/.hermes/profiles/other/`` is
     # classified against the right base.
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = _resolve_path_for_tool(filepath, task_id)
     except (OSError, ValueError):
         resolved = filepath
 
@@ -1442,7 +1488,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _resolved = _resolve_path_for_tool(path, task_id)
         except Exception:
             _resolved = None
 
@@ -1567,7 +1613,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                _r = _resolve_path_for_tool(_p, task_id)
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1589,7 +1635,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    _r = _resolve_path_for_tool(_p, task_id)
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r

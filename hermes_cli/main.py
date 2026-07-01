@@ -303,6 +303,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.portable import build_portable_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -6131,9 +6132,10 @@ def _kill_stale_dashboard_processes(
             pending = still_pending
 
         # SIGKILL any survivors.
+        _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
         for pid in pending:
             try:
-                os.kill(pid, _signal.SIGKILL)
+                os.kill(pid, _sigkill)
                 killed.append(pid)
             except ProcessLookupError:
                 killed.append(pid)
@@ -6268,8 +6270,20 @@ def _update_via_zip(args):
                     extracted = candidate
                     break
 
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        # Copy updated files over existing installation, preserving runtime
+        # state.  The portable entries are intentionally included even though
+        # upstream source ZIPs do not currently ship them: if a future upstream
+        # archive adds a same-named directory, the ZIP fallback must not replace
+        # a user's folder-local portable payload.
+        preserve = {
+            "venv",
+            "node_modules",
+            ".git",
+            ".env",
+            ".hermes",
+            "extensions",
+            "python_embedded",
+        }
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -8616,6 +8630,68 @@ def _ensure_fhs_path_guard() -> None:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
 
+def _portable_update_root_if_active() -> Path | None:
+    try:
+        from hermes_cli.portable import portable_home_for_root
+
+        expected_home = portable_home_for_root(PROJECT_ROOT)
+        active_home = os.environ.get("HERMES_HOME")
+        if not active_home:
+            from hermes_constants import get_hermes_home
+
+            active_home = str(get_hermes_home())
+        if Path(active_home).expanduser().resolve() == expected_home:
+            return PROJECT_ROOT
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Could not detect portable update root: %s", exc
+        )
+    return None
+
+
+def _run_portable_pre_update_backup(*, keep) -> None:
+    root = _portable_update_root_if_active()
+    if root is None:
+        return
+    try:
+        keep_int = int(keep)
+    except (TypeError, ValueError):
+        keep_int = 5
+
+    try:
+        from hermes_cli.portable import create_portable_runtime_backup
+    except Exception as exc:
+        print(
+            f"  Portable runtime backup skipped: could not load portable module ({exc})."
+        )
+        return
+
+    print("  Portable runtime backup:")
+    try:
+        result = create_portable_runtime_backup(root, keep=keep_int)
+    except Exception as exc:
+        print(f"    skipped: {exc}")
+        return
+
+    if not result.get("created"):
+        print(f"    skipped: {result.get('reason') or 'no portable runtime files found'}")
+        return
+
+    size_bytes = result.get("bytes") or 0
+    size_str = f"{size_bytes} B"
+    for unit in ("KB", "MB", "GB"):
+        if size_bytes < 1024:
+            break
+        size_bytes /= 1024
+        size_str = f"{size_bytes:.1f} {unit}"
+
+    included = ", ".join(result.get("included") or [])
+    print(f"    Saved:    {result['path']} ({size_str})")
+    print(f"    Included: {included}")
+    if result.get("pruned"):
+        print(f"    Pruned old portable backups: {result['pruned']}")
+
+
 def _run_pre_update_backup(args) -> None:
     """Create a full zip backup of HERMES_HOME before running the update.
 
@@ -8665,6 +8741,7 @@ def _run_pre_update_backup(args) -> None:
         print(
             f"⚠ Pre-update backup: could not load backup module ({exc}); continuing update."
         )
+        _run_portable_pre_update_backup(keep=keep)
         print()
         return
 
@@ -8675,6 +8752,7 @@ def _run_pre_update_backup(args) -> None:
     except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
+        _run_portable_pre_update_backup(keep=keep)
         print()
         return
 
@@ -8682,6 +8760,7 @@ def _run_pre_update_backup(args) -> None:
 
     if out_path is None:
         print("  ⚠ Backup skipped (no files found or write failed); continuing update.")
+        _run_portable_pre_update_backup(keep=keep)
         print()
         return
 
@@ -8714,6 +8793,7 @@ def _run_pre_update_backup(args) -> None:
     print(f"  Restore:  hermes import {out_path}")
     print(f"  Disable:  omit --backup (backups are off by default)")
     print(f"            set updates.pre_update_backup: false in config.yaml")
+    _run_portable_pre_update_backup(keep=keep)
     print()
 
 
@@ -11926,7 +12006,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "model", "pairing", "pets", "plugins", "portable", "portal", "postinstall", "profile",
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
@@ -12603,6 +12683,13 @@ def main():
     # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
     # =========================================================================
     build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
+
+    # =========================================================================
+    # portable command  (folder-local Windows/portable distribution helpers)
+    # =========================================================================
+    from hermes_cli.portable import cmd_portable
+
+    build_portable_parser(subparsers, cmd_portable=cmd_portable)
 
     # =========================================================================
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)

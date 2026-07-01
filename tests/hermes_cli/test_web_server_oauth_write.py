@@ -33,7 +33,8 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
 
     assert oauth_file.exists()
     mode = oauth_file.stat().st_mode & 0o777
-    assert mode == 0o600
+    if os.name != 'nt':
+        assert mode == 0o600
 
 
 def test_dashboard_oauth_write_uses_atomic_replace_and_cleans_temp_files(oauth_file, monkeypatch):

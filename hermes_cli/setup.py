@@ -1966,13 +1966,21 @@ def setup_gateway(config: dict):
 
     platforms = _all_platforms()
 
+    def _is_progress(status: str) -> bool:
+        s = status.lower()
+        return not (
+            s == "not configured"
+            or s.startswith("partially")
+            or s.startswith("plugin disabled")
+        )
+
     # Build checklist, pre-selecting already-configured platforms.
     items = []
     pre_selected = []
     for i, plat in enumerate(platforms):
         status = _platform_status(plat)
         items.append(f"{plat['emoji']} {plat['label']}  ({status})")
-        if status == "configured":
+        if _is_progress(status):
             pre_selected.append(i)
 
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
@@ -1988,14 +1996,6 @@ def setup_gateway(config: dict):
     # Count any platform (built-in or plugin) the user configured during this
     # setup pass — reuses ``_platform_status`` so plugin platforms like IRC
     # are picked up without another hard-coded env-var list.
-    def _is_progress(status: str) -> bool:
-        s = status.lower()
-        return not (
-            s == "not configured"
-            or s.startswith("partially")
-            or s.startswith("plugin disabled")
-        )
-
     any_messaging = any(
         _is_progress(_platform_status(p)) for p in _all_platforms()
     )

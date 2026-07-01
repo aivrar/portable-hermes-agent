@@ -9,6 +9,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 """
 
 import os
+import sys
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -450,6 +451,8 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/sbin" in _SANE_PATH
 
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         """When PATH is minimal, _make_run_env appends missing sane entries."""
         from tools.environments.local import _SANE_PATH, _make_run_env
         minimal_env = {"PATH": "/some/custom/bin"}
@@ -461,6 +464,8 @@ class TestSanePathIncludesHomebrew:
             assert entry in path_entries
 
     def test_make_run_env_fills_missing_homebrew_when_usr_bin_present(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         """macOS launchd PATH can include /usr/bin while missing Homebrew."""
         from tools.environments.local import _make_run_env
         launchd_env = {"PATH": "/usr/local/bin:/usr/bin:/bin"}
@@ -471,6 +476,8 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/sbin" in path_entries
 
     def test_make_run_env_does_not_duplicate_existing_sane_entries(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         from tools.environments.local import _make_run_env
         existing_env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"}
         with patch.dict(os.environ, existing_env, clear=True):
@@ -481,6 +488,8 @@ class TestSanePathIncludesHomebrew:
         assert path_entries.count("/usr/bin") == 1
 
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         """The literal macOS launchd PATH is the production trigger for #35613."""
         from tools.environments.local import _make_run_env
         launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
@@ -493,6 +502,8 @@ class TestSanePathIncludesHomebrew:
         assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
 
     def test_make_run_env_collapses_duplicate_caller_entries(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         """Duplicates already present in the caller PATH are de-duplicated."""
         from tools.environments.local import _make_run_env
         dup_env = {"PATH": "/usr/bin:/usr/bin:/custom/bin:/custom/bin:/bin"}
@@ -505,6 +516,8 @@ class TestSanePathIncludesHomebrew:
         assert path_entries[:3] == ["/usr/bin", "/custom/bin", "/bin"]
 
     def test_make_run_env_strips_empty_path_entries(self):
+        if sys.platform == "win32":
+            pytest.skip("POSIX PATH normalization is disabled on Windows")
         """Leading/trailing/double colons (== CWD on POSIX) are dropped."""
         from tools.environments.local import _make_run_env
         empty_env = {"PATH": "/usr/bin::/bin:"}
@@ -579,6 +592,8 @@ class TestHermesBinDirOnPath:
     def test_prepend_adds_missing_dir_at_front(self, monkeypatch):
         from tools.environments import local as local_mod
         self._reset_cache()
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod.os, "pathsep", ":")
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
         out = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
         assert out.split(os.pathsep)[0] == "/opt/hermes/bin"
@@ -587,6 +602,8 @@ class TestHermesBinDirOnPath:
     def test_prepend_is_idempotent(self, monkeypatch):
         from tools.environments import local as local_mod
         self._reset_cache()
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod.os, "pathsep", ":")
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
         once = local_mod._prepend_hermes_bin_dir("/usr/bin:/bin")
         twice = local_mod._prepend_hermes_bin_dir(once)
@@ -606,6 +623,7 @@ class TestHermesBinDirOnPath:
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        monkeypatch.setattr(local_mod.os, "pathsep", ":")
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
             result = _make_run_env({})
         entries = result["PATH"].split(os.pathsep)

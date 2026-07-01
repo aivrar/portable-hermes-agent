@@ -100,7 +100,7 @@ def test_validate_critical_files_syntax_detects_conflict_markers(tmp_path):
     ok, failing_path, error = hermes_main._validate_critical_files_syntax(tmp_path)
 
     assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/config.py")
+    assert failing_path is not None and failing_path.replace("\\", "/").endswith("hermes_cli/config.py")
     assert error is not None
     # The error mentions either the syntax error itself or the file path —
     # either is enough proof we caught the bad commit.
@@ -113,7 +113,7 @@ def test_validate_critical_files_syntax_detects_break_in_main_py(tmp_path):
     ok, failing_path, _ = hermes_main._validate_critical_files_syntax(tmp_path)
 
     assert ok is False
-    assert failing_path is not None and failing_path.endswith("hermes_cli/main.py")
+    assert failing_path is not None and failing_path.replace("\\", "/").endswith("hermes_cli/main.py")
 
 
 def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):

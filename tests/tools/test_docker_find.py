@@ -65,6 +65,7 @@ class TestFindDocker:
         fake_binary.chmod(0o644)  # not executable
 
         with patch.dict(os.environ, {"HERMES_DOCKER_BINARY": str(fake_binary)}), \
+             patch("tools.environments.docker.os.access", return_value=False), \
              patch("tools.environments.docker.shutil.which", return_value="/usr/bin/docker"):
             result = docker_mod.find_docker()
         assert result == "/usr/bin/docker"

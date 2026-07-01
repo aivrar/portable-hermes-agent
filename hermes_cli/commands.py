@@ -1384,8 +1384,9 @@ class SlashCommandCompleter(Completer):
 
         Returns the path-like token under the cursor, or None if the
         current word doesn't look like a path.  A word is path-like when
-        it starts with ``./``, ``../``, ``~/``, ``/``, or contains a
-        ``/`` separator (e.g. ``src/main.py``).
+        it starts with ``./``, ``../``, ``~/``, ``/`` (or the Windows
+        backslash variants), or contains a path separator (e.g.
+        ``src/main.py`` or ``src\\main.py``).
 
         Tokens containing a ``://`` scheme separator (e.g. URLs like
         ``https://example.com/x``) are excluded even though they contain a
@@ -1407,8 +1408,12 @@ class SlashCommandCompleter(Completer):
         # useful completion. Skip any token with a scheme separator.
         if "://" in word:
             return None
-        # Only trigger path completion for path-like tokens
-        if word.startswith(("./", "../", "~/", "/")) or "/" in word:
+        # Only trigger path completion for path-like tokens. Accept native
+        # Windows separators too so ``C:\Users\me\`` and ``.\src`` complete in
+        # PowerShell/cmd while POSIX-style paths keep the existing behavior.
+        if word.startswith(("./", "../", "~/", "/", ".\\", "..\\", "~\\", "\\")):
+            return word
+        if "/" in word or "\\" in word:
             return word
         return None
 
@@ -1417,7 +1422,7 @@ class SlashCommandCompleter(Completer):
         """Yield Completion objects for file paths matching *word*."""
         expanded = os.path.expanduser(word)
         # Split into directory part and prefix to match inside it
-        if expanded.endswith("/"):
+        if expanded.endswith(("/", "\\")):
             search_dir = expanded
             prefix = ""
         else:

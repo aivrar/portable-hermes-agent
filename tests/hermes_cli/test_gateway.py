@@ -10,6 +10,14 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
+@pytest.fixture(autouse=True)
+def _posix_gateway_shims(monkeypatch):
+    if sys.platform == "win32":
+        monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(gateway.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway

@@ -54,6 +54,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -64,6 +65,16 @@ from typing import Dict, List, Optional, Set, Tuple
 from utils import env_int
 
 logger = logging.getLogger(__name__)
+
+
+def _rmtree_force_writable(path: Path) -> None:
+    """Remove a tree, retrying read-only files as writable."""
+    def _onerror(func, target, _exc_info):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(path, onerror=_onerror)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1645,7 +1656,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_force_writable(base)
         out["bytes_freed"] = size
         out["deleted"] = True
     except OSError as exc:

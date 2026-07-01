@@ -10,6 +10,15 @@ import hermes_cli.gateway as gateway
 import hermes_constants
 
 
+@pytest.fixture(autouse=True)
+def _systemctl_available(monkeypatch):
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda cmd: "/bin/systemctl" if cmd == "systemctl" else None,
+    )
+
+
 # =============================================================================
 # is_wsl() in hermes_constants
 # =============================================================================

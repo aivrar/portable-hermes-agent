@@ -128,6 +128,8 @@ class TestAbiStamp:
         assert (target / ld._TARGET_STAMP_NAME).read_text().strip() == ld._python_abi_tag()
 
     def test_readonly_target_reports_error(self, tmp_path):
+        if sys.platform == "win32":
+            pytest.skip("Windows chmod does not make the parent non-writable like POSIX")
         # A path under a non-writable parent should surface a clean error,
         # not raise.
         ro_parent = tmp_path / "ro"

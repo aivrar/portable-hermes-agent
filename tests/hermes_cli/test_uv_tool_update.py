@@ -267,7 +267,11 @@ class TestCmdUpdatePipInstallLayouts:
         from hermes_cli import main as hm
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        monkeypatch.setattr(hm.sys, "prefix", "/home/u/.local/pipx/venvs/hermes-agent")
+        monkeypatch.setattr(
+            hm.sys,
+            "prefix",
+            hm.os.path.join("C:\\Users\\u", ".local", "pipx", "venvs", "hermes-agent"),
+        )
         monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
 
         def _which(name):

@@ -7,10 +7,41 @@ Covers:
 """
 
 import time
+import sys
+import types
 from unittest.mock import MagicMock, patch
 
 
 from hermes_cli.main import _session_browse_picker
+
+
+_KEY_DOWN = 258
+_KEY_UP = 259
+
+
+def _fake_curses_module():
+    return types.SimpleNamespace(
+        KEY_UP=_KEY_UP,
+        KEY_DOWN=_KEY_DOWN,
+        KEY_ENTER=343,
+        KEY_BACKSPACE=263,
+        A_NORMAL=0,
+        A_BOLD=1,
+        A_DIM=2,
+        COLOR_GREEN=2,
+        COLOR_YELLOW=3,
+        COLOR_CYAN=4,
+        COLOR_WHITE=7,
+        COLORS=8,
+        error=Exception,
+        wrapper=lambda _func: None,
+        curs_set=lambda _value: None,
+        has_colors=lambda: False,
+        start_color=lambda: None,
+        use_default_colors=lambda: None,
+        init_pair=lambda *_args: None,
+        color_pair=lambda _idx: 0,
+    )
 
 
 # ─── Sample session data ──────────────────────────────────────────────────────
@@ -253,8 +284,11 @@ class TestCursesBrowse:
         mock_stdscr.getmaxyx.return_value = (30, 120)
         mock_stdscr.getch.side_effect = key_sequence
 
+        fake_curses = _fake_curses_module()
         # Capture what curses.wrapper receives and call it with our mock
-        with patch("curses.wrapper") as mock_wrapper:
+        with patch.dict(sys.modules, {"curses": fake_curses}):
+            mock_wrapper = MagicMock()
+            fake_curses.wrapper = mock_wrapper
             # When wrapper is called, invoke the function with our mock stdscr
             def run_inner(func):
                 try:
@@ -263,9 +297,7 @@ class TestCursesBrowse:
                     pass  # key sequence exhausted
 
             mock_wrapper.side_effect = run_inner
-            with patch("curses.curs_set"):
-                with patch("curses.has_colors", return_value=False):
-                    return _session_browse_picker(sessions)
+            return _session_browse_picker(sessions)
 
     def test_enter_selects_first_session(self):
         sessions = _make_sessions(3)
@@ -273,21 +305,18 @@ class TestCursesBrowse:
         assert result == sessions[0]["id"]
 
     def test_down_then_enter_selects_second(self):
-        import curses
         sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [curses.KEY_DOWN, 10])
+        result = self._run_with_keys(sessions, [_KEY_DOWN, 10])
         assert result == sessions[1]["id"]
 
     def test_down_down_enter_selects_third(self):
-        import curses
         sessions = _make_sessions(5)
-        result = self._run_with_keys(sessions, [curses.KEY_DOWN, curses.KEY_DOWN, 10])
+        result = self._run_with_keys(sessions, [_KEY_DOWN, _KEY_DOWN, 10])
         assert result == sessions[2]["id"]
 
     def test_up_wraps_to_last(self):
-        import curses
         sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [curses.KEY_UP, 10])
+        result = self._run_with_keys(sessions, [_KEY_UP, 10])
         assert result == sessions[2]["id"]
 
     def test_escape_cancels(self):

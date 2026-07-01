@@ -813,6 +813,34 @@ def _command_script_path(command: str) -> str:
     return parts[0]
 
 
+def _host_stat_path(path: str) -> str:
+    """Return a host-visible path for local filesystem checks.
+
+    On Windows a hook may legitimately be configured as ``bash /mnt/c/...``
+    (WSL) or ``bash /c/...`` (Git Bash). Those paths are valid to the
+    interpreter, but Python's Windows filesystem APIs cannot stat them
+    directly. Convert only drive-mounted paths whose drive exists locally.
+    """
+    expanded = os.path.expanduser(path)
+    if not IS_WINDOWS:
+        return expanded
+
+    normalized = expanded.replace("\\", "/")
+    match = re.match(r"^/mnt/([A-Za-z])(?:/(.*))?$", normalized)
+    if match is None:
+        match = re.match(r"^/([A-Za-z])(?:/(.*))?$", normalized)
+    if match is None:
+        return expanded
+
+    drive = match.group(1).upper()
+    root = f"{drive}:\\"
+    if not Path(root).exists():
+        return expanded
+
+    tail = (match.group(2) or "").replace("/", "\\")
+    return root + tail
+
+
 # ---------------------------------------------------------------------------
 # Helpers for accept-hooks resolution
 # ---------------------------------------------------------------------------
@@ -863,7 +891,7 @@ def script_mtime_iso(command: str) -> Optional[str]:
     if not path:
         return None
     try:
-        expanded = os.path.expanduser(path)
+        expanded = _host_stat_path(path)
         return datetime.fromtimestamp(
             os.path.getmtime(expanded), tz=timezone.utc,
         ).isoformat().replace("+00:00", "Z")
@@ -882,7 +910,7 @@ def script_is_executable(command: str) -> bool:
     path = _command_script_path(command)
     if not path:
         return False
-    expanded = os.path.expanduser(path)
+    expanded = _host_stat_path(path)
     if not os.path.isfile(expanded):
         return False
     try:

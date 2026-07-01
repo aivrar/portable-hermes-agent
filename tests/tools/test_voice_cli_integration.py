@@ -4,10 +4,15 @@ state management, streaming TTS activation, voice message prefix, _vprint."""
 import ast
 import queue
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _read_source(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8")
 
 
 def _make_voice_cli(**overrides):
@@ -443,8 +448,7 @@ class TestVprintForceParameter:
     def test_error_messages_use_force_in_run_agent(self):
         """Verify that critical error _vprint calls in run_agent.py
         include force=True."""
-        with open("run_agent.py", "r") as f:
-            source = f.read()
+        source = _read_source("run_agent.py")
 
         tree = ast.parse(source)
 
@@ -502,8 +506,7 @@ class TestEdgeTTSLazyImport:
         reference bare 'edge_tts' module name."""
         import ast as _ast
 
-        with open("tools/tts_tool.py") as f:
-            tree = _ast.parse(f.read())
+        tree = _ast.parse(_read_source("tools/tts_tool.py"))
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.AsyncFunctionDef) and node.name == "_generate_edge_tts":
@@ -540,8 +543,7 @@ class TestStreamingTTSOutputStreamCleanup:
         output_stream even on exception."""
         import ast as _ast
 
-        with open("tools/tts_tool.py") as f:
-            tree = _ast.parse(f.read())
+        tree = _ast.parse(_read_source("tools/tts_tool.py"))
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
@@ -565,8 +567,7 @@ class TestCtrlCResetsContinuousMode:
     def test_ctrl_c_handler_resets_voice_continuous(self):
         """Source check: Ctrl+C voice cancel block must set
         _voice_continuous = False."""
-        with open("cli.py") as f:
-            source = f.read()
+        source = _read_source("cli.py")
 
         # Find the Ctrl+C handler's voice cancel block
         lines = source.split("\n")
@@ -610,8 +611,7 @@ class TestVoiceStatusUsesConfigKey:
 
     def test_show_voice_status_not_hardcoded(self):
         """Source check: _show_voice_status must not hardcode Ctrl+B."""
-        with open("cli.py") as f:
-            source = f.read()
+        source = _read_source("cli.py")
 
         lines = source.split("\n")
         in_method = False
@@ -628,8 +628,7 @@ class TestVoiceStatusUsesConfigKey:
 
     def test_show_voice_status_reads_config(self):
         """Source check: _show_voice_status must use load_config()."""
-        with open("cli.py") as f:
-            source = f.read()
+        source = _read_source("cli.py")
 
         lines = source.split("\n")
         in_method = False
@@ -656,8 +655,7 @@ class TestChatTTSCleanupOnException:
         text_queue, stop_event, and tts_thread."""
         import ast as _ast
 
-        with open("cli.py") as f:
-            tree = _ast.parse(f.read())
+        tree = _ast.parse(_read_source("cli.py"))
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "chat":
@@ -689,8 +687,7 @@ class TestBrowserToolSignalHandlerRemoved:
     def test_no_signal_handler_registration(self):
         """Source check: browser_tool.py must not call signal.signal()
         for SIGINT or SIGTERM."""
-        with open("tools/browser_tool.py") as f:
-            source = f.read()
+        source = _read_source("tools/browser_tool.py")
 
         lines = source.split("\n")
         for i, line in enumerate(lines, 1):
@@ -721,8 +718,7 @@ class TestKeyHandlerNeverBlocks:
         directly — it must wrap it in a Thread to avoid blocking the UI."""
         import ast as _ast
 
-        with open("cli.py") as f:
-            tree = _ast.parse(f.read())
+        tree = _ast.parse(_read_source("cli.py"))
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "handle_voice_record":
@@ -741,8 +737,7 @@ class TestKeyHandlerNeverBlocks:
     def test_processing_guard_in_start_path(self):
         """Source check: key handler must check _voice_processing before
         starting a new recording."""
-        with open("cli.py") as f:
-            source = f.read()
+        source = _read_source("cli.py")
 
         lines = source.split("\n")
         in_handler = False
@@ -767,8 +762,7 @@ class TestKeyHandlerNeverBlocks:
     def test_processing_set_atomically_with_recording_false(self):
         """Source check: _voice_stop_and_transcribe must set _voice_processing = True
         in the same lock block where it sets _voice_recording = False."""
-        with open("cli.py") as f:
-            source = f.read()
+        source = _read_source("cli.py")
 
         lines = source.split("\n")
         in_method = False

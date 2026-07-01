@@ -4,6 +4,37 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_file_tool_state():
+    from tools import file_tools
+    from tools import terminal_tool
+
+    with file_tools._file_ops_lock:
+        previous_cache = dict(file_tools._file_ops_cache)
+        previous_last_known = dict(file_tools._last_known_cwd)
+        file_tools._file_ops_cache.clear()
+        file_tools._last_known_cwd.clear()
+    with terminal_tool._env_lock:
+        previous_active_envs = dict(terminal_tool._active_environments)
+        previous_overrides = dict(terminal_tool._task_env_overrides)
+        terminal_tool._active_environments.clear()
+        terminal_tool._task_env_overrides.clear()
+    try:
+        yield
+    finally:
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache.clear()
+            file_tools._file_ops_cache.update(previous_cache)
+            file_tools._last_known_cwd.clear()
+            file_tools._last_known_cwd.update(previous_last_known)
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.clear()
+            terminal_tool._active_environments.update(previous_active_envs)
+            terminal_tool._task_env_overrides.clear()
+            terminal_tool._task_env_overrides.update(previous_overrides)
 
 
 class TestResolvePath:
