@@ -62,6 +62,12 @@ No API key? No problem. The chat works offline using a built-in 1,054-line user 
 ```batch
 install.bat
 ```
+PowerShell users can run:
+
+```powershell
+.\scripts\install.ps1
+```
+
 Downloads embedded Python 3.13, all dependencies, LM Studio SDK, and Node.js tools. No admin rights needed.
 
 ### 2. Launch
