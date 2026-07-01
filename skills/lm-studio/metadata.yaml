@@ -1,0 +1,6 @@
+name: lm-studio
+description: Control LM Studio from chat — load/unload local AI models, select GPU, set context length, browse GGUF files, check VRAM
+category: extensions
+version: "1.0"
+author: hermes
+tags: [lm-studio, local, models, gguf, gpu, vram, inference, private]

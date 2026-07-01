@@ -40,10 +40,11 @@ def _is_registry_register_call(node: ast.AST) -> bool:
 
 
 def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a top-level ``registry.register(...)`` call.
+    """Return True when the module contains module-scope tool registration.
 
-    Only inspects module-body statements so that helper modules which happen
-    to call ``registry.register()`` inside a function are not picked up.
+    Module-scope loops and conditionals are allowed because several built-in
+    tool modules register a list of schemas that way. Function and class bodies
+    are intentionally ignored so helper modules are not picked up accidentally.
     """
     try:
         source = module_path.read_text(encoding="utf-8")
@@ -51,7 +52,14 @@ def _module_registers_tools(module_path: Path) -> bool:
     except (OSError, SyntaxError):
         return False
 
-    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+    def contains_register_call(node: ast.AST) -> bool:
+        if _is_registry_register_call(node):
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return False
+        return any(contains_register_call(child) for child in ast.iter_child_nodes(node))
+
+    return any(contains_register_call(stmt) for stmt in tree.body)
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:

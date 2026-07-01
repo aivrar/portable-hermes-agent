@@ -319,12 +319,15 @@ TODO_SCHEMA = {
 # --- Registry ---
 from tools.registry import registry, tool_error
 
+_default_todo_store = TodoStore()
+
 registry.register(
     name="todo",
     toolset="todo",
     schema=TODO_SCHEMA,
     handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+        todos=args.get("todos"), merge=args.get("merge", False),
+        store=kw.get("store") or _default_todo_store),
     check_fn=check_todo_requirements,
     emoji="📋",
 )

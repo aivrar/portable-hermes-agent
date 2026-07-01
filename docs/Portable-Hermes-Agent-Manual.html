@@ -1,0 +1,1849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hermes Agent - Complete User Guide</title>
+<style>
+  @media print {
+    body { font-size: 11pt; }
+    h1 { page-break-before: always; }
+    h1:first-of-type { page-break-before: avoid; }
+    table { page-break-inside: avoid; }
+  }
+
+  body {
+    font-family: 'Segoe UI', Calibri, Arial, sans-serif;
+    max-width: 800px;
+    margin: 40px auto;
+    padding: 0 30px;
+    color: #1a1a1a;
+    line-height: 1.6;
+    font-size: 14px;
+  }
+
+  h1 {
+    color: #1a5276;
+    border-bottom: 3px solid #2980b9;
+    padding-bottom: 8px;
+    margin-top: 40px;
+    font-size: 28px;
+  }
+
+  h2 {
+    color: #2471a3;
+    border-bottom: 1px solid #aed6f1;
+    padding-bottom: 5px;
+    margin-top: 35px;
+    font-size: 22px;
+  }
+
+  h3 {
+    color: #2e86c1;
+    margin-top: 25px;
+    font-size: 17px;
+  }
+
+  h4 {
+    color: #5499c7;
+    margin-top: 18px;
+    font-size: 15px;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+
+  th {
+    background: #2c3e50;
+    color: white;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+  }
+
+  td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #d5dbdb;
+  }
+
+  tr:nth-child(even) {
+    background: #f4f6f7;
+  }
+
+  tr:hover {
+    background: #eaf2f8;
+  }
+
+  code {
+    background: #f0f3f4;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 13px;
+    color: #c0392b;
+  }
+
+  pre {
+    background: #2c3e50;
+    color: #ecf0f1;
+    padding: 14px 18px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+
+  pre code {
+    background: none;
+    color: inherit;
+    padding: 0;
+  }
+
+  blockquote {
+    border-left: 4px solid #2980b9;
+    margin: 12px 0;
+    padding: 8px 16px;
+    background: #eaf2f8;
+    color: #2c3e50;
+  }
+
+  ul, ol {
+    padding-left: 24px;
+  }
+
+  li {
+    margin: 4px 0;
+  }
+
+  hr {
+    border: none;
+    border-top: 2px solid #d5dbdb;
+    margin: 30px 0;
+  }
+
+  strong {
+    color: #1a5276;
+  }
+
+  a {
+    color: #2980b9;
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  /* Title page styling */
+  h1:first-of-type {
+    text-align: center;
+    font-size: 36px;
+    border-bottom: none;
+    margin-top: 80px;
+    margin-bottom: 5px;
+  }
+</style>
+</head>
+<body>
+
+<div style="text-align:center; margin-bottom: 60px;">
+  <p style="font-size: 18px; color: #5d6d7e;">Complete User Guide</p>
+  <p style="font-size: 14px; color: #95a5a6;">Version 0.4.0 &mdash; March 2026</p>
+</div>
+
+<h1>Hermes Agent - Complete User Guide</h1>
+<p>Welcome to Hermes Agent! This is a comprehensive guide that covers everything from your very first launch to building advanced automation pipelines. Whether you're completely new to AI or an experienced developer, this guide will walk you through every feature in detail.</p>
+<p>No technical background is required. Every step is explained as if you've never done this before.</p>
+<hr />
+<h2>Part 1: What is Hermes Agent?</h2>
+<h3>The Big Picture</h3>
+<p>Hermes Agent is a personal AI assistant that runs as a desktop application on your Windows computer. Unlike web-based AI chatbots (like ChatGPT), Hermes runs locally and can actually interact with your computer — reading files, running commands, browsing the web, generating images and music, and automating tasks.</p>
+<p>Think of it as having a smart assistant sitting at your computer who can:</p>
+<ul>
+<li><strong>Answer questions</strong> — about anything, using the latest AI models</li>
+<li><strong>Search the web</strong> — find information, read articles, research topics</li>
+<li><strong>Work with files</strong> — read, write, edit, and organize files on your computer</li>
+<li><strong>Browse websites</strong> — navigate pages, fill forms, take screenshots</li>
+<li><strong>Generate images</strong> — create artwork, logos, illustrations from text descriptions</li>
+<li><strong>Generate music</strong> — compose songs, sound effects, jingles from descriptions</li>
+<li><strong>Generate speech</strong> — convert text to natural-sounding audio with voice cloning</li>
+<li><strong>Run code</strong> — write and execute Python scripts, automate repetitive tasks</li>
+<li><strong>Control local AI models</strong> — load, manage, and switch between AI models on your GPU</li>
+<li><strong>Build custom tools</strong> — create new capabilities on the fly</li>
+<li><strong>Automate workflows</strong> — chain multiple actions into repeatable pipelines</li>
+<li><strong>Control smart home devices</strong> — via Home Assistant integration</li>
+<li><strong>Send messages</strong> — via Telegram, Discord, email, and more</li>
+</ul>
+<h3>How It Works</h3>
+<p>Hermes connects to an AI model (either online or running locally on your GPU) and uses that model as its "brain" to understand your requests and decide what to do. The model can call "tools" — specialized functions that perform actions like searching the web, reading files, or generating images.</p>
+<p>You type a message in plain English, and Hermes figures out what tools to use, in what order, to accomplish your request. It shows you what it's doing at each step.</p>
+<h3>What You Need</h3>
+<p><strong>Minimum requirements:</strong>
+- Windows 10 or 11
+- Internet connection (for cloud AI models)
+- A free OpenRouter API key (takes 2 minutes to get)</p>
+<p><strong>For local AI models (optional):</strong>
+- NVIDIA GPU with 8GB+ VRAM (RTX 3060 or better)
+- LM Studio (free download from lmstudio.ai)</p>
+<p><strong>For extensions (optional):</strong>
+- NVIDIA GPU with 4-6GB+ VRAM for TTS, Music, or Image generation</p>
+<hr />
+<h2>Part 2: First Launch — Getting Started</h2>
+<h3>Step 1: Launch Hermes</h3>
+<p>Double-click <code>hermes.bat</code> or <code>hermes_gui.bat</code> to start the application. The main window will open centered on your screen.</p>
+<p>You'll see:
+- A <strong>sidebar</strong> on the left (for conversation sessions)
+- A <strong>chat area</strong> in the center (where you'll talk to Hermes)
+- An <strong>input box</strong> at the bottom (where you type messages)
+- A <strong>menu bar</strong> at the top (File, Tools, Help)
+- A <strong>status bar</strong> at the bottom (shows current model and status)</p>
+<h3>Step 2: Connect to an AI Model</h3>
+<p>Hermes needs a connection to an AI model to function. You have two paths:</p>
+<h4>Path A: Cloud AI via OpenRouter (Easiest — 2 minutes, no GPU needed)</h4>
+<p>OpenRouter is a service that gives you access to dozens of AI models through a single API key. Many models are completely free.</p>
+<ol>
+<li>The <strong>API Setup Wizard</strong> will open automatically on first launch</li>
+<li>If it doesn't, go to <strong>File &gt; API Key Setup</strong></li>
+<li>Click the <strong>OpenRouter</strong> row</li>
+<li>Click <strong>"Get Key"</strong> — this opens the OpenRouter website in your browser</li>
+<li>On the OpenRouter website:</li>
+<li>Click <strong>Sign Up</strong> (you can use Google, GitHub, or email)</li>
+<li>No credit card is required</li>
+<li>After signing in, you'll see a <strong>Dashboard</strong></li>
+<li>Click <strong>"Create Key"</strong> (or go to the Keys page)</li>
+<li>A key will appear that starts with <code>sk-or-...</code></li>
+<li>Click the copy button next to the key</li>
+<li>Go back to the Hermes wizard</li>
+<li>The key should auto-paste (Hermes watches your clipboard)</li>
+<li>If it didn't, click <strong>"Paste from Clipboard"</strong></li>
+<li>Click <strong>"Save &amp; Next"</strong></li>
+<li>You're connected! Start chatting.</li>
+</ol>
+<p><strong>Which model should I use?</strong></p>
+<p>The default model is <code>google/gemini-2.5-flash</code> which is:
+- Completely free (no cost per message)
+- Very fast (responds in 1-3 seconds)
+- Smart enough for most tasks</p>
+<p>Other good free options:
+- <code>deepseek/deepseek-chat-v3</code> — excellent at reasoning and coding
+- <code>meta-llama/llama-4-maverick</code> — Meta's latest open model</p>
+<p>If you want the most capable models (small cost per message):
+- <code>anthropic/claude-sonnet-4</code> — excellent at writing and analysis
+- <code>google/gemini-2.5-pro</code> — great at complex reasoning
+- <code>openai/gpt-4o</code> — OpenAI's flagship model</p>
+<p>You can change your model anytime in <strong>File &gt; Settings &gt; Model</strong> tab.</p>
+<h4>Path B: Local AI via LM Studio (Private — needs NVIDIA GPU)</h4>
+<p>LM Studio lets you run AI models entirely on your own computer. Nothing is sent to the internet. This is ideal if you care about privacy or want to experiment with open-source models.</p>
+<p><strong>Prerequisites:</strong>
+- NVIDIA GPU with at least 8GB VRAM (RTX 3060 or better)
+- LM Studio installed (free from https://lmstudio.ai)</p>
+<p><strong>Setup steps:</strong></p>
+<ol>
+<li><strong>Download and install LM Studio</strong> from https://lmstudio.ai</li>
+<li><strong>Open LM Studio</strong> and let it detect your GPU</li>
+<li><strong>Download a model:</strong></li>
+<li>In LM Studio, go to the <strong>Discover</strong> tab</li>
+<li>Search for a model (recommendations below)</li>
+<li>Click <strong>Download</strong> — it will download the model file (1-10 GB depending on model)</li>
+<li>Wait for the download to complete</li>
+<li><strong>Start the server:</strong></li>
+<li>Go to the <strong>Developer</strong> tab in LM Studio</li>
+<li>Click <strong>Start Server</strong></li>
+<li>Note the port number (default is 1234, yours might be different)</li>
+<li>The server status should show "Running"</li>
+<li><strong>Configure Hermes:</strong></li>
+<li>In Hermes, go to <strong>File &gt; Settings</strong></li>
+<li>In the <strong>Model</strong> tab, type the model name</li>
+<li>Click <strong>Save &amp; Close</strong></li>
+<li>Or, go to <strong>Tools &gt; LM Studio</strong> to use the visual model manager</li>
+</ol>
+<p><strong>Recommended starter models by GPU size:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Your GPU</th>
+<th>Recommended Model</th>
+<th>VRAM Used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>8 GB (RTX 3060/4060)</td>
+<td>Qwen 2.5 7B Q4</td>
+<td>~5 GB</td>
+</tr>
+<tr>
+<td>8 GB</td>
+<td>Phi-4 Mini Q8</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td>12 GB (RTX 3060 12GB)</td>
+<td>Llama 3.1 8B Q6</td>
+<td>~7 GB</td>
+</tr>
+<tr>
+<td>12 GB</td>
+<td>Qwen 2.5 14B Q4</td>
+<td>~9 GB</td>
+</tr>
+<tr>
+<td>24 GB (RTX 3090/4090)</td>
+<td>Qwen 2.5 32B Q4</td>
+<td>~20 GB</td>
+</tr>
+<tr>
+<td>24 GB</td>
+<td>Llama 3.1 70B Q2</td>
+<td>~22 GB</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What do Q4, Q6, Q8 mean?</strong>
+These are quantization levels — how much the model is compressed:
+- <strong>Q4</strong> = smallest file, fastest, slightly less accurate
+- <strong>Q6</strong> = good balance of size and quality
+- <strong>Q8</strong> = largest file, slowest, most accurate
+- <strong>FP16</strong> = uncompressed (rarely needed, very large)</p>
+<p>For most users, Q4 or Q6 is the sweet spot.</p>
+<h4>Path C: Both Cloud and Local (Recommended for power users)</h4>
+<p>You can have both configured and switch between them:
+- Use cloud AI (OpenRouter) for complex tasks that need the smartest models
+- Use local AI (LM Studio) for private conversations or offline work</p>
+<p>To switch, just tell Hermes:
+- "Switch to my local model" — uses LM Studio
+- "Switch to OpenRouter" — uses cloud AI
+- Or use <strong>File &gt; Settings</strong> to change the model</p>
+<h3>Step 3: Set Up Optional API Keys</h3>
+<p>Each key unlocks additional abilities. None of them are required — Hermes works with just the OpenRouter key. You can add these anytime later.</p>
+<table>
+<thead>
+<tr>
+<th>Service</th>
+<th>What It Unlocks</th>
+<th>Free Tier</th>
+<th>How to Get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OpenRouter</strong></td>
+<td>All AI conversations</td>
+<td>Many free models</td>
+<td>openrouter.ai/keys</td>
+</tr>
+<tr>
+<td><strong>Firecrawl</strong></td>
+<td>Web search + page reading</td>
+<td>500 credits/month</td>
+<td>firecrawl.dev</td>
+</tr>
+<tr>
+<td><strong>Serper</strong></td>
+<td>Google-quality search results</td>
+<td>2,500 searches/month</td>
+<td>serper.dev</td>
+</tr>
+<tr>
+<td><strong>FAL.ai</strong></td>
+<td>Image generation (FLUX)</td>
+<td>$10 free credits</td>
+<td>fal.ai/dashboard/keys</td>
+</tr>
+<tr>
+<td><strong>Browserbase</strong></td>
+<td>Cloud browser automation</td>
+<td>1000 sessions/month</td>
+<td>browserbase.com</td>
+</tr>
+</tbody>
+</table>
+<p>To set up any key individually:
+1. Go to <strong>File &gt; API Key Setup</strong>
+2. Click the <strong>"Set up"</strong> link next to any service
+3. Follow the step-by-step instructions</p>
+<hr />
+<h2>Part 3: The Interface in Detail</h2>
+<h3>The Chat Area</h3>
+<p>This is the main workspace. You type messages at the bottom and Hermes responds above.</p>
+<p><strong>Sending messages:</strong>
+- Type your message and press <strong>Enter</strong> to send
+- Press <strong>Shift+Enter</strong> to add a new line without sending
+- Click the <strong>Send</strong> button as an alternative to Enter</p>
+<p><strong>Attaching images:</strong>
+- Click the <strong>paperclip button</strong> next to Send (or press <strong>Ctrl+Shift+I</strong>)
+- Select one or more image files (PNG, JPG, GIF, BMP, WEBP)
+- Thumbnails appear above the input box
+- Click the X on any thumbnail to remove it
+- Type your message about the images and press Enter
+- Requires a vision-capable model (Gemini, GPT-4o, or local LLaVA/Moondream)</p>
+<p><strong>Message types you'll see:</strong>
+- <strong>Your messages</strong> — shown on the right side in a blue-tinted card
+- <strong>Hermes responses</strong> — shown on the left in a green-tinted card, streamed token-by-token in real time
+- <strong>Tool calls</strong> — shown as compact cards showing the tool name and arguments
+- <strong>System messages</strong> — gray informational messages</p>
+<p><strong>Streaming responses:</strong>
+- Hermes streams responses in real time — you see each word as it's generated
+- A blinking cursor shows the response is still being generated
+- The chat auto-scrolls as new text arrives</p>
+<p><strong>Stopping a response:</strong>
+- Press <strong>Escape</strong> or click the <strong>Stop</strong> button to interrupt Hermes mid-response
+- The partial response is kept and a "Generation stopped" message appears
+- You can immediately send a new message</p>
+<h3>The Sidebar</h3>
+<p>The sidebar shows your conversation history. Each conversation is a "session."</p>
+<ul>
+<li><strong>New Chat</strong> — Click the + button or press <strong>Ctrl+N</strong></li>
+<li><strong>Resume a conversation</strong> — Click any session in the list</li>
+<li><strong>Rename a session</strong> — Right-click &gt; Rename</li>
+<li><strong>Delete a session</strong> — Hover to reveal the X button, click to delete (confirmation dialog will appear)</li>
+</ul>
+<p>Sessions are saved automatically. You can close and reopen Hermes without losing conversations. Deleting sessions removes the entry instantly and cleans up the database in the background.</p>
+<h3>The Menu Bar</h3>
+<p><strong>File menu:</strong>
+- <strong>New Chat</strong> (Ctrl+N) — Start a fresh conversation
+- <strong>API Key Setup</strong> — Open the setup wizard for API keys
+- <strong>Settings</strong> (Ctrl+,) — Model selection, API keys
+- <strong>Quit</strong> — Close Hermes</p>
+<p><strong>View menu:</strong>
+- <strong>LM Studio (Local Models)</strong> — Visual model manager for local AI models
+- <strong>Skills Browser</strong> — Browse and install skill packages
+- <strong>Extensions</strong> — Install and manage add-on modules (TTS, Music, ComfyUI)
+- <strong>Toggle Sidebar</strong> — Show or hide the sidebar</p>
+<p><strong>Help menu:</strong>
+- <strong>About</strong> — Version information
+- <strong>Keyboard Shortcuts</strong> — Quick reference</p>
+<h3>The Status Bar</h3>
+<p>At the bottom of the window, shows:
+- <strong>Current model</strong> — which AI model is active
+- <strong>Status</strong> — Ready, Thinking, Error
+- <strong>Token count</strong> — how many tokens the current conversation has used</p>
+<h3>Keyboard Shortcuts</h3>
+<table>
+<thead>
+<tr>
+<th>Shortcut</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Enter</strong></td>
+<td>Send message</td>
+</tr>
+<tr>
+<td><strong>Shift+Enter</strong></td>
+<td>New line (don't send)</td>
+</tr>
+<tr>
+<td><strong>Escape</strong></td>
+<td>Stop/interrupt the AI</td>
+</tr>
+<tr>
+<td><strong>Ctrl+N</strong></td>
+<td>New chat</td>
+</tr>
+<tr>
+<td><strong>Ctrl+,</strong></td>
+<td>Open settings</td>
+</tr>
+<tr>
+<td><strong>Ctrl+Shift+I</strong></td>
+<td>Attach image</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Part 4: Permissions — Keeping You Safe</h2>
+<p>Hermes can interact with your computer, but you control exactly how much access it has. The permission system has five categories, each with five levels.</p>
+<h3>How to Access</h3>
+<p>Go to <strong>Tools &gt; Permissions</strong> to open the permission panel.</p>
+<h3>Permission Categories</h3>
+<h4>File Reading</h4>
+<p>Controls where Hermes can read files from.
+- <strong>Level 0 — Disabled</strong>: Cannot read any files
+- <strong>Level 1 — App Only</strong>: Can only read files inside the Hermes application folder
+- <strong>Level 2 — App + Home</strong> (default): Can read files in the Hermes folder and your user folder (C:\Users\YourName)
+- <strong>Level 3 — Anywhere</strong>: Can read any file on your computer
+- <strong>Level 4 — System</strong>: Can read system files, configuration files, and registry</p>
+<h4>File Writing</h4>
+<p>Controls where Hermes can create or modify files.
+- <strong>Level 0 — Disabled</strong>: Cannot write any files
+- <strong>Level 1 — App Only</strong> (default): Can only write files inside the Hermes folder
+- <strong>Level 2 — App + Home</strong>: Can write in the Hermes folder and your user folder
+- <strong>Level 3 — Anywhere</strong>: Can write files anywhere
+- <strong>Level 4 — System</strong>: Can modify system files (use with extreme caution)</p>
+<h4>Package Installation</h4>
+<p>Controls where software packages (Python libraries, etc.) can be installed.
+- <strong>Level 0 — Disabled</strong>: Cannot install any packages
+- <strong>Level 1 — App Only</strong> (default): Can only install into the portable Python that comes with Hermes
+- <strong>Level 2 — App + User</strong>: Can install to the portable Python and your user-level packages
+- <strong>Level 3 — System-wide</strong>: Can install packages system-wide
+- <strong>Level 4 — Admin</strong>: Can install system services and drivers</p>
+<h4>Command Execution</h4>
+<p>Controls what commands Hermes can run in the terminal.
+- <strong>Level 0 — Disabled</strong>: Cannot run any commands
+- <strong>Level 1 — App Only</strong>: Can only run commands inside the Hermes folder
+- <strong>Level 2 — App + Safe</strong> (default): Can run commands anywhere but no admin/system changes
+- <strong>Level 3 — Unrestricted</strong>: Can run any command
+- <strong>Level 4 — Admin</strong>: Can run elevated/administrator commands</p>
+<h4>File Deletion</h4>
+<p>Controls where Hermes can delete files.
+- <strong>Level 0 — Disabled</strong>: Cannot delete any files
+- <strong>Level 1 — App Only</strong> (default): Can only delete files inside the Hermes folder
+- <strong>Level 2 — App + Home</strong>: Can delete in the Hermes folder and your user folder
+- <strong>Level 3 — Anywhere</strong>: Can delete any file
+- <strong>Level 4 — System</strong>: Can delete system files (dangerous!)</p>
+<h4>Network Access</h4>
+<p>Controls what network resources Hermes can access.
+- <strong>Level 0 — Offline</strong>: No network access at all
+- <strong>Level 1 — Local Only</strong>: Can only access localhost services (LM Studio, extensions)
+- <strong>Level 2 — Web + APIs</strong> (default): Can browse web, call APIs, search online
+- <strong>Level 3 — Full Network</strong>: Can access any network resource, SSH, etc.
+- <strong>Level 4 — Full + Listen</strong>: Can open ports and accept incoming connections</p>
+<h3>Recommended Settings</h3>
+<p><strong>For new users (safe defaults):</strong>
+Everything at Level 1-2. This lets Hermes work within its own folder and browse the web, but can't modify files outside the app.</p>
+<p><strong>For power users:</strong>
+Read=3, Write=2, Execute=3, Network=3. This gives Hermes wide access to help with real work.</p>
+<p><strong>For maximum capability:</strong>
+Everything at Level 3-4. Only do this if you trust the AI model and understand the risks.</p>
+<hr />
+<h2>Part 5: LM Studio — Local AI Models</h2>
+<h3>What is LM Studio?</h3>
+<p>LM Studio is a free application that lets you run AI models directly on your computer using your NVIDIA GPU. Models run entirely locally — no data is sent to the internet.</p>
+<h3>Why Use Local Models?</h3>
+<ul>
+<li><strong>Privacy</strong> — conversations stay on your computer</li>
+<li><strong>No cost</strong> — no per-message fees after downloading the model</li>
+<li><strong>Offline</strong> — works without internet</li>
+<li><strong>Speed</strong> — can be faster than cloud for small models on a good GPU</li>
+<li><strong>Experimentation</strong> — try different models, quantizations, and settings</li>
+</ul>
+<h3>The LM Studio Panel</h3>
+<p>Open via <strong>View &gt; LM Studio (Local Models)</strong> in the menu bar. The panel shows:</p>
+<ul>
+<li><strong>Endpoint field</strong> — the LM Studio server address (default <code>http://localhost:1234</code>), with a Connect button to change it</li>
+<li><strong>Status indicator</strong> — green dot = LM Studio is running and connected</li>
+<li><strong>Model browser</strong> — list of all downloaded models with display names</li>
+<li><strong>GPU selector</strong> — choose which GPU to load the model on</li>
+<li><strong>Context length slider</strong> — minimum 32,768 tokens (Hermes needs ~26K for its tool definitions)</li>
+<li><strong>Load Model / Cancel Load</strong> — load a model onto your GPU, or cancel a load in progress</li>
+<li><strong>Unload</strong> — free GPU memory</li>
+<li><strong>Use for Chat</strong> — switch Hermes to use the loaded model for all conversations</li>
+</ul>
+<h3>Step-by-Step: Loading Your First Local Model</h3>
+<ol>
+<li><strong>Start LM Studio</strong> — open LM Studio on your computer</li>
+<li><strong>Download a model</strong> if you haven't already:</li>
+<li>In LM Studio, go to the Discover tab</li>
+<li>Search for "Qwen 2.5 7B" (good starter model)</li>
+<li>Click Download on a Q4 or Q6 quantization</li>
+<li><strong>Open the LM Studio panel</strong> in Hermes (<strong>Tools &gt; LM Studio</strong>)</li>
+<li><strong>Wait for status</strong> — the green dot should appear showing LM Studio is connected</li>
+<li><strong>Select your model</strong> from the model browser list</li>
+<li><strong>Choose your GPU</strong> — if you have multiple GPUs, pick the one with more VRAM</li>
+<li><strong>Set context length</strong> — leave at 32,768 (minimum required) or increase if your GPU has room</li>
+<li><strong>Click Load Model</strong> — the model loads into your GPU memory (click Cancel Load if it hangs)</li>
+<li><strong>Click Use for Chat</strong> — Hermes switches to using this model</li>
+<li><strong>Start chatting!</strong> — your messages now go to the local model</li>
+</ol>
+<h3>Understanding VRAM (GPU Memory)</h3>
+<p>Your GPU has a fixed amount of VRAM. Models need to fit in VRAM to run:</p>
+<table>
+<thead>
+<tr>
+<th>Model Parameters</th>
+<th>Q4 VRAM</th>
+<th>Q6 VRAM</th>
+<th>Q8 VRAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1-3 Billion</td>
+<td>~2 GB</td>
+<td>~2.5 GB</td>
+<td>~3 GB</td>
+</tr>
+<tr>
+<td>7-8 Billion</td>
+<td>~4 GB</td>
+<td>~6 GB</td>
+<td>~8 GB</td>
+</tr>
+<tr>
+<td>13-14 Billion</td>
+<td>~7 GB</td>
+<td>~10 GB</td>
+<td>~13 GB</td>
+</tr>
+<tr>
+<td>27-34 Billion</td>
+<td>~18 GB</td>
+<td>~24 GB</td>
+<td>~34 GB</td>
+</tr>
+<tr>
+<td>70 Billion</td>
+<td>~40 GB</td>
+<td>~55 GB</td>
+<td>~70 GB</td>
+</tr>
+</tbody>
+</table>
+<p>Context length also uses VRAM. Higher context = more VRAM used.</p>
+<p><strong>Example:</strong> You have an RTX 3060 with 12 GB VRAM.
+- Qwen 2.5 7B Q6 = ~6 GB + ~1 GB for context = fits easily
+- Qwen 2.5 14B Q4 = ~9 GB + ~1 GB for context = fits tightly
+- Llama 3.1 70B = too large, won't fit</p>
+<h3>GPU Isolation (Multi-GPU Systems)</h3>
+<p>If you have multiple GPUs, Hermes loads models on a single GPU to prevent "model splitting" — where a model is spread across GPUs, which hurts performance.</p>
+<p>When you select a GPU in the LM Studio panel or use the <code>lm_studio_load</code> tool, Hermes automatically disables all other GPUs for that load to force single-GPU loading.</p>
+<h3>LM Studio Tools (Available in Chat)</h3>
+<p>When LM Studio is running, these tools become available:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What to Say</th>
+<th>What It Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lm_studio_status</code></td>
+<td>"Check LM Studio"</td>
+<td>Shows if it's running, loaded models, GPU memory</td>
+</tr>
+<tr>
+<td><code>lm_studio_models</code></td>
+<td>"List my local models"</td>
+<td>Shows all downloaded models</td>
+</tr>
+<tr>
+<td><code>lm_studio_load</code></td>
+<td>"Load Qwen 7B on my 3090"</td>
+<td>Loads a model onto a specific GPU</td>
+</tr>
+<tr>
+<td><code>lm_studio_unload</code></td>
+<td>"Unload the current model"</td>
+<td>Frees GPU memory</td>
+</tr>
+<tr>
+<td><code>lm_studio_search</code></td>
+<td>"Search for Llama models"</td>
+<td>Searches HuggingFace for downloadable models</td>
+</tr>
+<tr>
+<td><code>lm_studio_download</code></td>
+<td>"Download that model"</td>
+<td>Downloads a model from HuggingFace</td>
+</tr>
+<tr>
+<td><code>lm_studio_model_info</code></td>
+<td>"What model is loaded?"</td>
+<td>Shows loaded model details (context, config)</td>
+</tr>
+<tr>
+<td><code>lm_studio_tokenize</code></td>
+<td>"How many tokens in this text?"</td>
+<td>Counts tokens in text</td>
+</tr>
+<tr>
+<td><code>lm_studio_embed</code></td>
+<td>"Generate embeddings for this text"</td>
+<td>Creates vector embeddings</td>
+</tr>
+<tr>
+<td><code>lm_studio_chat</code></td>
+<td>"Ask the local model: what is 2+2?"</td>
+<td>Sends a prompt directly to a loaded model</td>
+</tr>
+</tbody>
+</table>
+<h3>Switching Between Cloud and Local</h3>
+<p>You can switch at any time through the UI:</p>
+<p><strong>To local model:</strong>
+1. Open <strong>View &gt; LM Studio (Local Models)</strong>
+2. Load your model and click <strong>Use for Chat</strong>
+3. Hermes automatically switches to local mode</p>
+<p><strong>To cloud (OpenRouter):</strong>
+- Select any cloud model from the sidebar dropdown (e.g. Gemini Flash, Claude Sonnet)
+- Hermes automatically switches back to OpenRouter</p>
+<p>The switch is instant — no need to change settings or edit config files. Hermes tracks which provider is active internally.</p>
+<h3>Troubleshooting LM Studio</h3>
+<p><strong>"LM Studio not running" or "Connection refused":</strong>
+- Make sure LM Studio is open and the server is started (Developer tab)
+- Check the port number — it should match what Hermes expects
+- The port is auto-detected from your <code>OPENAI_BASE_URL</code> in <code>.env</code></p>
+<p><strong>"Model won't load — out of memory":</strong>
+- Try a smaller quantization (Q4 instead of Q8)
+- Reduce context length (4096 instead of 8192)
+- Close other GPU-intensive applications
+- Check GPU memory with the <code>gpu_info</code> tool</p>
+<p><strong>"Responses are very slow":</strong>
+- Reduce context length (smaller = faster)
+- Use a smaller model
+- Make sure no other models are loaded (check with <code>lm_studio_status</code>)</p>
+<p><strong>"Model gives bad/random responses":</strong>
+- Try a different model — quality varies significantly between models
+- Increase context length if conversations are being cut off
+- Make sure you're using an "instruct" or "chat" variant, not a base model</p>
+<hr />
+<h2>Part 6: Extensions — TTS, Music, and Image Generation</h2>
+<p>Hermes supports three powerful extension modules that add local AI generation capabilities. Each extension is a separate server that runs alongside Hermes.</p>
+<h3>How Extensions Work</h3>
+<p>Each extension is:
+- <strong>Portable</strong> — nothing is installed system-wide, everything stays in the <code>extensions/</code> folder
+- <strong>Self-installing</strong> — downloads its own Python environment, dependencies, and model weights
+- <strong>GPU-accelerated</strong> — uses your NVIDIA GPU for fast generation
+- <strong>Server-based</strong> — runs as a local web server that Hermes talks to via tools</p>
+<h3>Managing Extensions</h3>
+<p>Go to <strong>Tools &gt; Extensions</strong> in the menu bar to:
+- See which extensions are installed
+- Install new extensions
+- Start/stop extension servers
+- Check server status</p>
+<hr />
+<h3>Extension 1: TTS Server (Text-to-Speech)</h3>
+<p>The TTS Server converts text to natural-sounding speech. It supports 10 different AI voice models, voice cloning, multi-language support, and emotional expression.</p>
+<p><strong>Server port:</strong> 8200 (configurable via <code>TTS_SERVER_URL</code> environment variable)</p>
+<h4>Installation</h4>
+<ol>
+<li>Go to <strong>Tools &gt; Extensions</strong></li>
+<li>Click <strong>Install</strong> next to "Text-to-Speech Server"</li>
+<li>Wait for the installation to complete (downloads ~2-5 GB depending on models)</li>
+<li>Click <strong>Start</strong> to launch the server</li>
+</ol>
+<p>Or install manually:</p>
+<pre><code>cd extensions/tts-server
+install.bat
+launcher.bat api
+</code></pre>
+<h4>Available TTS Models</h4>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Size</th>
+<th>Best For</th>
+<th>Voice Cloning</th>
+<th>Languages</th>
+<th>GPU VRAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>kokoro</strong></td>
+<td>82M</td>
+<td>Fast English TTS, 54 built-in voices</td>
+<td>No (preset voices only)</td>
+<td>English</td>
+<td>~1 GB</td>
+</tr>
+<tr>
+<td><strong>xtts</strong></td>
+<td>500M</td>
+<td>General purpose, best multilingual</td>
+<td>Yes (from WAV/MP3 reference)</td>
+<td>17 languages</td>
+<td>~2 GB</td>
+</tr>
+<tr>
+<td><strong>dia</strong></td>
+<td>1.6B</td>
+<td>Two-speaker dialogue with emotions</td>
+<td>No (uses [S1]/[S2] tags)</td>
+<td>English</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td><strong>bark</strong></td>
+<td>1B</td>
+<td>Expressive speech with laughter, music, non-verbal sounds</td>
+<td>No (preset voices)</td>
+<td>Multilingual</td>
+<td>~3 GB</td>
+</tr>
+<tr>
+<td><strong>fish</strong></td>
+<td>500M</td>
+<td>Fast voice cloning with minimal reference audio</td>
+<td>Yes (few seconds of audio)</td>
+<td>Multilingual</td>
+<td>~2 GB</td>
+</tr>
+<tr>
+<td><strong>chatterbox</strong></td>
+<td>500M</td>
+<td>Conversational with emotion control</td>
+<td>Yes</td>
+<td>English</td>
+<td>~2 GB</td>
+</tr>
+<tr>
+<td><strong>f5</strong></td>
+<td>300M</td>
+<td>Diffusion-based high-quality cloning</td>
+<td>Yes</td>
+<td>Multilingual</td>
+<td>~2 GB</td>
+</tr>
+<tr>
+<td><strong>qwen</strong></td>
+<td>7B</td>
+<td>Chinese + English bilingual</td>
+<td>Yes</td>
+<td>Chinese, English</td>
+<td>~8 GB</td>
+</tr>
+<tr>
+<td><strong>vibevoice</strong></td>
+<td>1.5B</td>
+<td>Wide emotional range</td>
+<td>Yes</td>
+<td>English</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td><strong>higgs</strong></td>
+<td>3B</td>
+<td>Works on CPU (no GPU needed)</td>
+<td>Yes</td>
+<td>English</td>
+<td>CPU or ~3 GB</td>
+</tr>
+</tbody>
+</table>
+<h4>How to Use TTS</h4>
+<p><strong>Simple text-to-speech:</strong>
+Say: "Read this text aloud: Hello, welcome to Hermes Agent!"
+Or: "Generate speech saying 'The quick brown fox jumps over the lazy dog' using Kokoro"</p>
+<p><strong>With a specific voice:</strong>
+Say: "Generate speech with the af_heart voice: I love this application"</p>
+<p><strong>Dialogue with Dia model:</strong>
+Say: "Generate a dialogue: [S1] Hey, how's it going? [S2] (laughs) I'm doing great! [S1] That's wonderful to hear."</p>
+<p>The <code>[S1]</code> and <code>[S2]</code> tags mark different speakers. Dia automatically uses different voices for each speaker and can express emotions in parentheses.</p>
+<p><strong>Voice cloning (xtts, fish, f5):</strong>
+1. Place a reference audio file (WAV or MP3, 5-30 seconds of clear speech) in:
+   <code>extensions/tts-server/voices/</code>
+2. Say: "Generate speech using xtts with voice 'my_voice.wav': Hello, this is my cloned voice"</p>
+<h4>TTS Tools Reference</h4>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>How to Use It</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tts_server_status</code></td>
+<td>"Is the TTS server running?"</td>
+</tr>
+<tr>
+<td><code>tts_server_generate</code></td>
+<td>"Generate speech: [your text]" with optional model and voice</td>
+</tr>
+<tr>
+<td><code>tts_server_models</code></td>
+<td>"What TTS models are available?"</td>
+</tr>
+<tr>
+<td><code>tts_server_model_load</code></td>
+<td>"Load the xtts model"</td>
+</tr>
+<tr>
+<td><code>tts_server_model_unload</code></td>
+<td>"Unload the TTS model to free GPU memory"</td>
+</tr>
+<tr>
+<td><code>tts_server_voices</code></td>
+<td>"List available voices for Kokoro"</td>
+</tr>
+<tr>
+<td><code>tts_server_jobs</code></td>
+<td>"Show TTS generation jobs"</td>
+</tr>
+</tbody>
+</table>
+<h4>TTS Troubleshooting</h4>
+<p><strong>"TTS server unreachable":</strong>
+- Make sure the TTS server is running (check <strong>Tools &gt; Extensions</strong>)
+- Start it with <code>launcher.bat api</code> in the <code>extensions/tts-server/</code> folder
+- Check that the port (8200) isn't being used by another application</p>
+<p><strong>"Model not loaded":</strong>
+- The server needs to load a model before generating speech
+- Say "Load the kokoro model" or use the <code>tts_server_model_load</code> tool
+- First-time loading downloads model weights (~1-8 GB depending on model)</p>
+<p><strong>"Out of GPU memory":</strong>
+- Unload other models (LM Studio models, other TTS models)
+- Use a smaller model (kokoro is smallest at 82M)
+- Use higgs if you want to run on CPU without GPU</p>
+<p><strong>Audio sounds robotic/bad:</strong>
+- Try a different model — each model has different strengths
+- For English, kokoro and xtts produce the best quality
+- For emotional expression, dia or bark are best
+- Make sure the text is clear and properly punctuated</p>
+<hr />
+<h3>Extension 2: Music Server</h3>
+<p>The Music Server generates music, songs, and sound effects from text descriptions. Describe what you want to hear, and it creates an audio file.</p>
+<p><strong>Server port:</strong> 9150</p>
+<h4>Installation</h4>
+<ol>
+<li>Go to <strong>Tools &gt; Extensions</strong></li>
+<li>Click <strong>Install</strong> next to "Music Generation Server"</li>
+<li>Wait for the installation to complete</li>
+<li>Click <strong>Start</strong> to launch the server</li>
+</ol>
+<p>Or install manually:</p>
+<pre><code>cd extensions/music-server
+install.bat
+launcher.bat api
+</code></pre>
+<h4>Available Music Models</h4>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Best For</th>
+<th>Duration</th>
+<th>GPU VRAM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>musicgen</strong></td>
+<td>General music from text prompts</td>
+<td>5-30 sec</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td><strong>musicgen-large</strong></td>
+<td>Higher quality music</td>
+<td>5-30 sec</td>
+<td>~8 GB</td>
+</tr>
+<tr>
+<td><strong>stable_audio</strong></td>
+<td>High-quality, longer music</td>
+<td>5-90 sec</td>
+<td>~6 GB</td>
+</tr>
+<tr>
+<td><strong>ace_step</strong></td>
+<td>Fast music with style control</td>
+<td>5-60 sec</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td><strong>riffusion</strong></td>
+<td>Spectrogram-based (unique sound)</td>
+<td>5-15 sec</td>
+<td>~4 GB</td>
+</tr>
+<tr>
+<td><strong>audioldm2</strong></td>
+<td>Music + sound effects</td>
+<td>5-30 sec</td>
+<td>~6 GB</td>
+</tr>
+</tbody>
+</table>
+<h4>How to Generate Music</h4>
+<p><strong>Simple prompt:</strong>
+Say: "Generate 30 seconds of upbeat electronic dance music with synths and a driving beat"</p>
+<p><strong>Specific genre:</strong>
+Say: "Generate a calm acoustic guitar melody with light percussion, 20 seconds"</p>
+<p><strong>Sound effects:</strong>
+Say: "Generate the sound of rain falling on a tin roof with distant thunder"</p>
+<p><strong>With model selection:</strong>
+Say: "Generate music using stable_audio: epic orchestral film soundtrack, 60 seconds"</p>
+<h4>Music Tools Reference</h4>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>How to Use It</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>music_status</code></td>
+<td>"Is the music server running?"</td>
+</tr>
+<tr>
+<td><code>music_generate</code></td>
+<td>"Generate music: [description]" with optional model and duration</td>
+</tr>
+<tr>
+<td><code>music_models</code></td>
+<td>"What music models are available?"</td>
+</tr>
+<tr>
+<td><code>music_model_load</code></td>
+<td>"Load the musicgen model"</td>
+</tr>
+<tr>
+<td><code>music_model_unload</code></td>
+<td>"Unload the music model"</td>
+</tr>
+<tr>
+<td><code>music_outputs</code></td>
+<td>"Show my generated music files"</td>
+</tr>
+<tr>
+<td><code>music_install</code></td>
+<td>"Install the stable_audio model"</td>
+</tr>
+</tbody>
+</table>
+<h4>Music Tips</h4>
+<ul>
+<li><strong>Be descriptive</strong> — "upbeat jazz with saxophone solo and walking bass" works better than "jazz music"</li>
+<li><strong>Specify instruments</strong> — mention specific instruments for better results</li>
+<li><strong>Set duration</strong> — start with 10-15 seconds to test, then increase</li>
+<li><strong>Try different models</strong> — each model has a different sound character</li>
+<li>Generated audio files are saved in <code>extensions/music-server/output/</code></li>
+</ul>
+<h4>Music Troubleshooting</h4>
+<p><strong>"Music server unreachable":</strong>
+- Start the server with <code>launcher.bat api</code> in <code>extensions/music-server/</code>
+- Check that port 9150 isn't in use</p>
+<p><strong>"No music model loaded":</strong>
+- Say "Load the musicgen model" before generating
+- First-time loading downloads model weights</p>
+<p><strong>Generated music sounds bad:</strong>
+- Try a more specific prompt
+- Try a different model
+- Some models work better for certain genres</p>
+<hr />
+<h3>Extension 3: ComfyUI (Image Generation)</h3>
+<p>ComfyUI is a powerful image generation system based on Stable Diffusion. It can create images, edit photos, generate video frames, and more using a visual workflow editor.</p>
+<p><strong>Management API port:</strong> 5000
+<strong>ComfyUI instance ports:</strong> 8188+</p>
+<h4>Installation</h4>
+<ol>
+<li>Go to <strong>Tools &gt; Extensions</strong></li>
+<li>Click <strong>Install</strong> next to "ComfyUI Image Generator"</li>
+<li>Wait for the installation to complete (downloads ~3-5 GB for base install)</li>
+<li>Click <strong>Start</strong> to launch the management server</li>
+</ol>
+<p>Or install manually:</p>
+<pre><code>cd extensions/comfyui
+install.bat
+launcher.bat
+</code></pre>
+<h4>How ComfyUI Works</h4>
+<p>ComfyUI has two layers:
+1. <strong>Management Server</strong> (port 5000) — manages instances, models, and custom nodes
+2. <strong>ComfyUI Instances</strong> (port 8188+) — the actual image generation servers</p>
+<p>Each GPU can run its own instance. If you have two GPUs, you can have two instances generating images simultaneously.</p>
+<h4>Available Model Types</h4>
+<table>
+<thead>
+<tr>
+<th>Category</th>
+<th>Examples</th>
+<th>What It Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Checkpoints</strong></td>
+<td>SD 1.5, SDXL, Flux</td>
+<td>Base image generation models</td>
+</tr>
+<tr>
+<td><strong>LoRAs</strong></td>
+<td>Style LoRAs, Character LoRAs</td>
+<td>Fine-tuned additions for specific styles</td>
+</tr>
+<tr>
+<td><strong>VAEs</strong></td>
+<td>SDXL VAE, SD VAE</td>
+<td>Encoder/decoder for better image quality</td>
+</tr>
+<tr>
+<td><strong>ControlNet</strong></td>
+<td>Canny, Depth, Pose</td>
+<td>Guide generation with reference images</td>
+</tr>
+<tr>
+<td><strong>Upscalers</strong></td>
+<td>RealESRGAN, SwinIR</td>
+<td>Increase image resolution</td>
+</tr>
+</tbody>
+</table>
+<p>The model registry has 100+ pre-defined models you can download with one click.</p>
+<h4>How to Generate Images</h4>
+<p><strong>Simple prompt:</strong>
+Say: "Generate an image of a sunset over mountains with dramatic clouds"</p>
+<p><strong>With settings:</strong>
+Say: "Generate a 1024x768 image of a cyberpunk city at night, 30 steps, high detail"</p>
+<p><strong>Through the web UI:</strong>
+1. Open your browser to <code>http://localhost:8188</code>
+2. You'll see the visual workflow editor
+3. Build or load a workflow
+4. Click "Queue Prompt" to generate</p>
+<h4>ComfyUI Tools Reference</h4>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>How to Use It</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>comfyui_status</code></td>
+<td>"Is ComfyUI running?"</td>
+</tr>
+<tr>
+<td><code>comfyui_instances</code></td>
+<td>"List ComfyUI instances"</td>
+</tr>
+<tr>
+<td><code>comfyui_instance_start</code></td>
+<td>"Start a ComfyUI instance on GPU 0"</td>
+</tr>
+<tr>
+<td><code>comfyui_instance_stop</code></td>
+<td>"Stop the ComfyUI instance"</td>
+</tr>
+<tr>
+<td><code>comfyui_generate</code></td>
+<td>"Generate an image: [description]"</td>
+</tr>
+<tr>
+<td><code>comfyui_models</code></td>
+<td>"List available ComfyUI models"</td>
+</tr>
+<tr>
+<td><code>comfyui_nodes</code></td>
+<td>"List installed ComfyUI nodes"</td>
+</tr>
+</tbody>
+</table>
+<h4>ComfyUI Troubleshooting</h4>
+<p><strong>"ComfyUI unreachable":</strong>
+- Start the management server with <code>launcher.bat</code> in <code>extensions/comfyui/</code>
+- Check that ports 5000 and 8188 aren't in use</p>
+<p><strong>"No checkpoints installed":</strong>
+- You need to download at least one checkpoint model
+- Say "List ComfyUI models" to see what's available in the registry
+- Download via the management API or web UI</p>
+<p><strong>Images look bad or distorted:</strong>
+- Try different prompts — be more specific
+- Increase step count (20-30 is usually good)
+- Try a different checkpoint model
+- Adjust CFG scale (7-9 is typical)</p>
+<hr />
+<h2>Part 7: All Tools — Complete Reference</h2>
+<p>Hermes has 100 tools organized into categories. Each tool is a specific capability that Hermes can use to accomplish your requests. You don't need to remember tool names — just describe what you want and Hermes will pick the right tool.</p>
+<h3>Web and Search Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>web_search</strong></td>
+<td>Search the web for information</td>
+<td>Firecrawl API key</td>
+</tr>
+<tr>
+<td><strong>web_extract</strong></td>
+<td>Read and extract content from a web page URL</td>
+<td>Firecrawl API key</td>
+</tr>
+<tr>
+<td><strong>serper_search</strong></td>
+<td>Google-quality search with knowledge graphs and direct answers</td>
+<td>Serper API key</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "Search for the best restaurants in Portland"
+- "Read this article: [URL]"
+- "Find recent news about artificial intelligence"</p>
+<h3>File Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>read_file</strong></td>
+<td>Read contents of any file</td>
+<td>File Read permission</td>
+</tr>
+<tr>
+<td><strong>write_file</strong></td>
+<td>Create or overwrite a file</td>
+<td>File Write permission</td>
+</tr>
+<tr>
+<td><strong>patch</strong></td>
+<td>Make targeted edits to a file</td>
+<td>File Write permission</td>
+</tr>
+<tr>
+<td><strong>search_files</strong></td>
+<td>Find files by name or search contents</td>
+<td>File Read permission</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "Read the file at C:\Users\me\notes.txt"
+- "Create a new Python script called hello.py"
+- "Find all PDF files in my Documents folder"
+- "Replace 'old text' with 'new text' in config.json"</p>
+<h3>Terminal and System Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>terminal</strong></td>
+<td>Run shell commands</td>
+<td>Execute permission</td>
+</tr>
+<tr>
+<td><strong>process</strong></td>
+<td>List, monitor, or kill processes</td>
+<td>Execute permission</td>
+</tr>
+<tr>
+<td><strong>run_python</strong></td>
+<td>Execute Python code directly</td>
+<td>None (uses built-in Python)</td>
+</tr>
+<tr>
+<td><strong>gpu_info</strong></td>
+<td>Show GPU status (memory, temp, usage)</td>
+<td>NVIDIA GPU</td>
+</tr>
+<tr>
+<td><strong>execute_code</strong></td>
+<td>Run sandboxed code that can call other tools</td>
+<td>Execute permission</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "Run 'dir /s *.txt' to find all text files"
+- "What processes are using the most CPU?"
+- "Run this Python code: print('hello')"
+- "How much GPU memory is free?"</p>
+<h3>Vision and Image Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vision_analyze</strong></td>
+<td>Analyze/describe an image using AI vision</td>
+<td>Vision-capable model</td>
+</tr>
+<tr>
+<td><strong>image_generate</strong></td>
+<td>Generate images from text descriptions</td>
+<td>FAL.ai API key</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "What's in this image?" (with image attached)
+- "Generate an image of a golden retriever wearing sunglasses"</p>
+<h3>Browser Automation Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>browser_navigate</strong></td>
+<td>Open a URL in a controlled browser</td>
+<td>Network permission</td>
+</tr>
+<tr>
+<td><strong>browser_snapshot</strong></td>
+<td>Screenshot + accessibility tree of current page</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_click</strong></td>
+<td>Click a page element</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_type</strong></td>
+<td>Type text into a form field</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_scroll</strong></td>
+<td>Scroll the page</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_back</strong></td>
+<td>Go to previous page</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_press</strong></td>
+<td>Press a keyboard key</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_close</strong></td>
+<td>Close the browser</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_get_images</strong></td>
+<td>Extract all images from a page</td>
+<td>Active browser</td>
+</tr>
+<tr>
+<td><strong>browser_vision</strong></td>
+<td>Analyze screenshot with AI vision</td>
+<td>Active browser + vision model</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "Go to google.com and search for weather in my city"
+- "Navigate to that product page and read the reviews"
+- "Take a screenshot of the current page"</p>
+<h3>Text-to-Speech Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>text_to_speech</strong></td>
+<td>Built-in TTS using Edge/ElevenLabs/OpenAI</td>
+<td>None (Edge TTS is built-in)</td>
+</tr>
+</tbody>
+</table>
+<p>Plus all the TTS Server tools (see Extension 1 section above).</p>
+<h3>LM Studio Tools</h3>
+<p>See Part 5 for complete details on all 10 LM Studio tools.</p>
+<h3>AI and Reasoning Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>mixture_of_agents</strong></td>
+<td>Ask multiple AI models and synthesize answers</td>
+<td>OpenRouter key</td>
+</tr>
+<tr>
+<td><strong>delegate_task</strong></td>
+<td>Spawn a sub-agent for isolated tasks</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>switch_model</strong></td>
+<td>Change the active AI model</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Example requests:</strong>
+- "Use mixture of agents to analyze this complex problem from multiple angles"
+- "Delegate this research task to a sub-agent"
+- "Switch to the Claude Sonnet model"</p>
+<h3>Planning and Memory Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>todo</strong></td>
+<td>Task list for multi-step projects</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>memory</strong></td>
+<td>Persistent notes across sessions</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>session_search</strong></td>
+<td>Search past conversations</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>clarify</strong></td>
+<td>Ask you a clarifying question</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<h3>Scheduling and Automation Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>cronjob</strong></td>
+<td>Schedule recurring tasks</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_create</strong></td>
+<td>Build multi-step automation pipelines</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_run</strong></td>
+<td>Execute a saved workflow</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_list</strong></td>
+<td>List all saved workflows</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_show</strong></td>
+<td>View workflow details</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_delete</strong></td>
+<td>Remove a workflow</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>workflow_schedule</strong></td>
+<td>Schedule a workflow on a timer</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<h3>Tool Creation Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>create_tool</strong></td>
+<td>Dynamically create a new tool</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>delete_tool</strong></td>
+<td>Remove a custom tool</td>
+<td>None</td>
+</tr>
+<tr>
+<td><strong>list_custom_tools</strong></td>
+<td>Show all custom tools</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<h3>System Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>update_hermes</strong></td>
+<td>Pull latest updates from upstream</td>
+<td>Git</td>
+</tr>
+<tr>
+<td><strong>check_hermes_updates</strong></td>
+<td>Check if updates are available</td>
+<td>Git</td>
+</tr>
+<tr>
+<td><strong>search_guide</strong></td>
+<td>Search this user guide</td>
+<td>None</td>
+</tr>
+</tbody>
+</table>
+<h3>Messaging Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>send_message</strong></td>
+<td>Send messages via Telegram, Discord, etc.</td>
+<td>Gateway configured</td>
+</tr>
+</tbody>
+</table>
+<h3>Smart Home Tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>What It Does</th>
+<th>Requirements</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>ha_list_entities</strong></td>
+<td>List Home Assistant devices</td>
+<td>HASS_TOKEN</td>
+</tr>
+<tr>
+<td><strong>ha_get_state</strong></td>
+<td>Check device state</td>
+<td>HASS_TOKEN</td>
+</tr>
+<tr>
+<td><strong>ha_list_services</strong></td>
+<td>List available services</td>
+<td>HASS_TOKEN</td>
+</tr>
+<tr>
+<td><strong>ha_call_service</strong></td>
+<td>Control a device</td>
+<td>HASS_TOKEN</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Part 8: Custom Tools — Build Your Own</h2>
+<p>One of Hermes' most powerful features is the ability to create new tools on the fly. This means you can extend Hermes' capabilities without programming knowledge — just describe what you want.</p>
+<h3>API Wrapper Tools</h3>
+<p>Wrap any web API as a Hermes tool. You give it a URL, HTTP method, and parameters, and it generates a tool that calls that API.</p>
+<p><strong>Example: Weather API tool</strong>
+Say: "Create a tool called 'get_weather' that calls https://api.openweathermap.org/data/2.5/weather with a 'q' query parameter for the city name"</p>
+<p>After creation, you can say: "Get the weather in Portland" and Hermes will use your new tool.</p>
+<p><strong>Example: Discord webhook tool</strong>
+Say: "Create a tool that posts messages to my Discord webhook at [URL]"</p>
+<p><strong>Example: Stock price tool</strong>
+Say: "Create a tool that fetches stock prices from the Yahoo Finance API"</p>
+<h3>Custom Code Tools</h3>
+<p>Write arbitrary Python logic as a tool. You describe the parameters and the code, and Hermes generates a working tool.</p>
+<p><strong>Example: File size calculator</strong>
+Say: "Create a tool called 'dir_size' that takes a path and returns the total size of all files in that directory in MB"</p>
+<p><strong>Example: Text statistics</strong>
+Say: "Create a tool that counts words, sentences, and paragraphs in text"</p>
+<h3>Managing Custom Tools</h3>
+<ul>
+<li>Custom tools persist across sessions (saved in <code>tools/custom/</code>)</li>
+<li>Say "List my custom tools" to see what you've created</li>
+<li>Say "Delete the [tool_name] tool" to remove one</li>
+<li>Custom tools reload automatically when Hermes restarts</li>
+</ul>
+<hr />
+<h2>Part 9: Workflows — Automate Multi-Step Tasks</h2>
+<p>Workflows let you chain multiple tool calls together into automated pipelines. Think of them as recipes — a series of steps that run in order, passing data from one step to the next.</p>
+<h3>Creating a Workflow</h3>
+<p>Just describe what you want automated:</p>
+<p><strong>Example: Morning briefing</strong>
+Say: "Create a workflow called 'morning-briefing' that searches for today's top news, summarizes it, and reads it aloud with TTS"</p>
+<p><strong>Example: GPU health check</strong>
+Say: "Create a workflow that checks GPU status, lists loaded models, and reports the results"</p>
+<p><strong>Example: Model loader</strong>
+Say: "Create a workflow called 'load-qwen' that checks GPU memory, loads Qwen 7B on GPU 1 with 8192 context, and runs a test prompt"</p>
+<h3>Workflow Features</h3>
+<p><strong>Data flow between steps:</strong>
+Each step can use the output of previous steps. For example, step 2 can use the search results from step 1.</p>
+<p><strong>Conditional steps:</strong>
+Steps can be skipped based on conditions. For example: "Only load the model if GPU has more than 6GB free."</p>
+<p><strong>Loops:</strong>
+Steps can repeat over a list. For example: "For each loaded model, get its info and print a summary."</p>
+<p><strong>Error handling:</strong>
+Steps can be configured to continue, skip, or stop on error.</p>
+<p><strong>Parallel execution:</strong>
+Independent steps can run simultaneously for faster completion.</p>
+<p><strong>Scheduling:</strong>
+Workflows can be scheduled to run automatically on a timer (daily, hourly, etc.).</p>
+<h3>Managing Workflows</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What It Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>"List my workflows"</td>
+<td>Shows all saved workflows</td>
+</tr>
+<tr>
+<td>"Show the [name] workflow"</td>
+<td>Displays the workflow steps</td>
+</tr>
+<tr>
+<td>"Run the [name] workflow"</td>
+<td>Executes the workflow</td>
+</tr>
+<tr>
+<td>"Schedule [name] to run at 8am daily"</td>
+<td>Sets up automatic execution</td>
+</tr>
+<tr>
+<td>"Delete the [name] workflow"</td>
+<td>Removes the workflow</td>
+</tr>
+</tbody>
+</table>
+<p>Workflows are saved as JSON files in the <code>workflows/</code> directory.</p>
+<hr />
+<h2>Part 10: Settings Reference</h2>
+<h3>Environment Variables (.env file)</h3>
+<p>The <code>.env</code> file is for <strong>API keys only</strong>. Model selection, LM Studio settings, GPU preferences, and other runtime state are managed through the GUI — not through environment variables.</p>
+<p><strong>API keys:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>OPENROUTER_API_KEY</code></td>
+<td>OpenRouter API key (required for cloud models)</td>
+<td><code>sk-or-v1-...</code></td>
+</tr>
+<tr>
+<td><code>FIRECRAWL_API_KEY</code></td>
+<td>Web search and page reading</td>
+<td></td>
+</tr>
+<tr>
+<td><code>SERPER_API_KEY</code></td>
+<td>Google search via Serper.dev</td>
+<td></td>
+</tr>
+<tr>
+<td><code>FAL_KEY</code></td>
+<td>Image generation (FAL.ai)</td>
+<td></td>
+</tr>
+<tr>
+<td><code>BROWSERBASE_API_KEY</code></td>
+<td>Cloud browser automation</td>
+<td></td>
+</tr>
+<tr>
+<td><code>GITHUB_TOKEN</code></td>
+<td>Skills Hub (higher rate limits)</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Extension ports (optional):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TTS_SERVER_URL</code></td>
+<td><code>http://localhost:8200</code></td>
+<td>TTS server address</td>
+</tr>
+<tr>
+<td><code>MUSIC_SERVER_URL</code></td>
+<td><code>http://localhost:9150</code></td>
+<td>Music server address</td>
+</tr>
+<tr>
+<td><code>COMFYUI_URL</code></td>
+<td><code>http://localhost:8188</code></td>
+<td>ComfyUI address</td>
+</tr>
+</tbody>
+</table>
+<h3>Runtime Settings (managed by GUI)</h3>
+<p>These settings are selected through the interface and do not need to be edited manually:</p>
+<ul>
+<li><strong>Active model</strong> — selected from the sidebar dropdown or LM Studio panel</li>
+<li><strong>Cloud vs Local provider</strong> — automatically set when you pick a cloud model or click "Use for Chat" in LM Studio</li>
+<li><strong>LM Studio endpoint</strong> — configured in the LM Studio panel's Endpoint field</li>
+<li><strong>GPU selection, context length, temperature</strong> — configured in the sidebar's local model settings or the LM Studio panel</li>
+</ul>
+<hr />
+<h2>Glossary</h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Plain English Explanation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>API</strong></td>
+<td>A way for programs to talk to each other. An API key is like a password that lets Hermes use an online service.</td>
+</tr>
+<tr>
+<td><strong>API Key</strong></td>
+<td>A long code (like a password) that gives Hermes permission to use an online service. You get these from the service's website.</td>
+</tr>
+<tr>
+<td><strong>Model</strong></td>
+<td>The AI "brain." Different models are good at different things. Think of them like different experts — one might be great at writing, another at math.</td>
+</tr>
+<tr>
+<td><strong>GPU</strong></td>
+<td>Your graphics card. Originally designed for gaming, but perfect for running AI models. NVIDIA GPUs are required for local AI.</td>
+</tr>
+<tr>
+<td><strong>VRAM</strong></td>
+<td>Memory on your GPU. Determines how big an AI model you can run. More VRAM = bigger/smarter models.</td>
+</tr>
+<tr>
+<td><strong>Token</strong></td>
+<td>A piece of text, roughly 4 characters or 3/4 of a word. AI models process text in tokens. "Hello world" = 2 tokens.</td>
+</tr>
+<tr>
+<td><strong>Context Length</strong></td>
+<td>How much text the AI can "see" at once. Like the AI's short-term memory. 4096 tokens ≈ 3,000 words.</td>
+</tr>
+<tr>
+<td><strong>GGUF</strong></td>
+<td>A file format for AI models that run on your computer. Like .mp3 is for music, .gguf is for AI models.</td>
+</tr>
+<tr>
+<td><strong>Quantization</strong></td>
+<td>Compression for AI models. Q4 = very compressed (small, fast), Q8 = light compression (bigger, more accurate). Like JPEG quality settings for images.</td>
+</tr>
+<tr>
+<td><strong>Inference</strong></td>
+<td>When the AI generates a response. "Running inference" = "the AI is thinking."</td>
+</tr>
+<tr>
+<td><strong>Tool</strong></td>
+<td>A specific action Hermes can take — like searching the web, reading a file, or generating an image. Hermes has 100 tools.</td>
+</tr>
+<tr>
+<td><strong>Toolset</strong></td>
+<td>A group of related tools. The "web" toolset includes web_search and web_extract.</td>
+</tr>
+<tr>
+<td><strong>Workflow</strong></td>
+<td>A saved sequence of tool calls that run automatically. Like a macro or recipe.</td>
+</tr>
+<tr>
+<td><strong>Extension</strong></td>
+<td>An add-on module that gives Hermes new abilities (TTS, Music, Image Generation). Each is a separate program that runs alongside Hermes.</td>
+</tr>
+<tr>
+<td><strong>OpenRouter</strong></td>
+<td>An online service that lets you use many different AI models through one API key. Like a universal remote for AI.</td>
+</tr>
+<tr>
+<td><strong>LM Studio</strong></td>
+<td>A free program for running AI models on your own computer. Like a music player, but for AI models.</td>
+</tr>
+<tr>
+<td><strong>Prompt</strong></td>
+<td>The text you send to an AI model. Your message is the prompt.</td>
+</tr>
+<tr>
+<td><strong>Streaming</strong></td>
+<td>When the AI response appears word-by-word instead of all at once.</td>
+</tr>
+<tr>
+<td><strong>Session</strong></td>
+<td>A single conversation from start to finish. Each session is saved separately.</td>
+</tr>
+<tr>
+<td><strong>Sub-agent</strong></td>
+<td>A separate AI instance that Hermes creates to work on a specific task, then reports back. Like delegating work to an assistant.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Getting Help</h2>
+<ul>
+<li><strong>Ask Hermes!</strong> Type your question in the chat — Hermes can search this guide for answers using the <code>search_guide</code> tool</li>
+<li><strong>File &gt; API Key Setup</strong> — Check which services are connected</li>
+<li><strong>Tools &gt; Permissions</strong> — Adjust what Hermes can do if something is blocked</li>
+<li><strong>Tools &gt; Extensions</strong> — Check if extension servers are running</li>
+<li><strong>Tools &gt; LM Studio</strong> — Manage local AI models</li>
+<li>Visit the GitHub repository for bug reports and feature requests</li>
+</ul>
+
+</body>
+</html>
