@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Portable Hermes update tools.
+Portable Hermes distribution update tools.
 
 These tools intentionally update from the user's configured ``origin`` remote.
 For portable-hermes-agent, ``origin`` should be
-``https://github.com/aivrar/portable-hermes-agent.git``.  Do not merge the
-upstream Hermes repository directly from a model-visible tool: upstream changes
-are incorporated by maintainers, tested with the portable extensions, and then
-shipped through this portable repo.
+``https://github.com/aivrar/portable-hermes-agent.git``. This updates the
+portable distribution, not raw ``NousResearch/hermes-agent``. Upstream Hermes
+changes are incorporated by maintainers, tested with the portable extensions,
+and then shipped through this portable repo.
 """
 
 from __future__ import annotations
