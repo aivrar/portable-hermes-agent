@@ -884,8 +884,8 @@ See Part 5 for complete details on all 10 LM Studio tools.
 
 | Tool | What It Does | Requirements |
 |------|-------------|-------------|
-| **update_hermes** | Run the safe portable distribution update from `aivrar/portable-hermes-agent` | None |
-| **check_hermes_updates** | Check if portable distribution updates are available | None |
+| **update_hermes** | Update upstream Hermes from `NousResearch/hermes-agent` while preserving Portable Hermes tools/extensions | None |
+| **check_hermes_updates** | Check whether upstream Hermes updates are available | None |
 | **search_guide** | Search this user guide | None |
 
 ### Messaging Tools

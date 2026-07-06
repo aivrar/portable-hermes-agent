@@ -239,7 +239,7 @@ TOOLSETS = {
     },
 
     "hermes_update": {
-        "description": "Portable Hermes update check and safe self-update tools",
+        "description": "Update upstream Hermes from NousResearch while preserving Portable Hermes tools",
         "tools": ["update_hermes", "check_hermes_updates"],
         "includes": []
     },
