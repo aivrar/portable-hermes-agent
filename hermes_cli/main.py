@@ -6654,6 +6654,28 @@ OFFICIAL_REPO_URL = "https://github.com/aivrar/portable-hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
+def _normalize_repo_url(url: Optional[str]) -> str:
+    """Normalize common GitHub remote URL forms for policy comparisons."""
+    if not url:
+        return ""
+    lower = url.strip().rstrip("/").lower()
+    if lower.endswith(".git"):
+        lower = lower[:-4]
+    if lower.startswith("git@github.com:"):
+        lower = "https://github.com/" + lower[len("git@github.com:") :]
+    elif lower.startswith("ssh://git@github.com/"):
+        lower = "https://github.com/" + lower[len("ssh://git@github.com/") :]
+    return lower
+
+
+def _is_official_repo_url(url: Optional[str]) -> bool:
+    """Return True only for the tested portable distribution repository."""
+    normalized = _normalize_repo_url(url)
+    return bool(normalized) and normalized in {
+        _normalize_repo_url(official) for official in OFFICIAL_REPO_URLS
+    }
+
+
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     """Get the URL of the origin remote, or None if not set."""
     try:
@@ -6674,17 +6696,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
-    normalized = origin_url.rstrip("/")
-    if normalized.endswith(".git"):
-        normalized = normalized[:-4]
-    for official in OFFICIAL_REPO_URLS:
-        official_normalized = official.rstrip("/")
-        if official_normalized.endswith(".git"):
-            official_normalized = official_normalized[:-4]
-        if normalized == official_normalized:
-            return False
-    return True
+    return not _is_official_repo_url(origin_url)
 
 
 def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -6699,6 +6711,22 @@ def _has_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+def _get_upstream_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Get the URL of the upstream remote, or None if not set."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["remote", "get-url", "upstream"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def _add_upstream_remote(git_cmd: list[str], cwd: Path) -> bool:
@@ -6770,6 +6798,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     This implements the fork upstream sync logic:
     - If upstream remote doesn't exist, ask user if they want to add it
+    - If upstream exists, require it to be this portable distribution repo
     - Compare origin/main with upstream/main
     - If origin/main is strictly behind upstream/main, pull from upstream
     - Try to sync fork back to origin if possible
@@ -6783,7 +6812,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
         # Ask user if they want to add upstream
         print()
-        print("ℹ Your fork is not tracking the official Hermes repository.")
+        print("ℹ Your fork is not tracking the official Portable Hermes Agent repository.")
         print("  This means you may miss Portable Hermes Agent updates.")
         print()
         try:
@@ -6809,6 +6838,19 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 f"  Skipped. Run 'git remote add upstream {OFFICIAL_REPO_URL}' to add later."
             )
             _mark_skip_upstream_prompt()
+            return
+    else:
+        upstream_url = _get_upstream_url(git_cmd, cwd)
+        if not _is_official_repo_url(upstream_url):
+            print()
+            print("! Existing upstream remote is not Portable Hermes Agent.")
+            if upstream_url:
+                print(f"  upstream: {upstream_url}")
+            print(f"  expected: {OFFICIAL_REPO_URL}")
+            print(
+                "  Skipping fork sync so this portable install is not updated "
+                "from an untested source."
+            )
             return
 
     # Fetch upstream main only. This sync compares upstream/main with
