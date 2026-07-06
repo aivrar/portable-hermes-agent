@@ -1,6 +1,7 @@
 """Build a release zip for portable-hermes-agent."""
 import argparse
 import os
+import subprocess
 import zipfile
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +34,7 @@ EXCLUDE_PATHS = {
     ".env",
     "build_release.py",
     "test_script.sh",
+    "test.pdf",
     "smoke_test_all_tools.py",
     "test_all_tools.py",
     "agent_debug.log",
@@ -97,6 +99,39 @@ def should_exclude(rel_path):
     return False
 
 
+def iter_release_files():
+    """Yield release candidate files.
+
+    Prefer git's tracked-file list so ignored local scratch files in a
+    maintainer checkout cannot leak into a published portable ZIP. Fall back to
+    a worktree walk when this script is run outside a git checkout.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        yield from iter_worktree_files()
+        return
+
+    for rel_path in result.stdout.decode("utf-8", errors="surrogateescape").split("\0"):
+        if rel_path:
+            yield rel_path
+
+
+def iter_worktree_files():
+    """Fallback file walk for source trees without git metadata."""
+    for root, dirs, files in os.walk(PROJECT_ROOT):
+        # Prune excluded dirs in-place to avoid walking into them
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+
+        for fname in sorted(files):
+            yield os.path.relpath(os.path.join(root, fname), PROJECT_ROOT)
+
+
 def main():
     args = parse_args()
     version = args.version[1:] if args.version.startswith("v") else args.version
@@ -115,23 +150,20 @@ def main():
     prefix = "portable-hermes-agent"
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for root, dirs, files in os.walk(PROJECT_ROOT):
-            # Prune excluded dirs in-place to avoid walking into them
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        for rel_path in sorted(iter_release_files()):
+            if should_exclude(rel_path):
+                continue
 
-            for fname in sorted(files):
-                full_path = os.path.join(root, fname)
-                rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+            full_path = os.path.join(PROJECT_ROOT, rel_path)
+            if not os.path.isfile(full_path):
+                continue
 
-                if should_exclude(rel_path):
-                    continue
-
-                archive_name = os.path.join(prefix, rel_path).replace("\\", "/")
-                try:
-                    zf.write(full_path, archive_name)
-                    count += 1
-                except (PermissionError, OSError):
-                    pass
+            archive_name = os.path.join(prefix, rel_path).replace("\\", "/")
+            try:
+                zf.write(full_path, archive_name)
+                count += 1
+            except (PermissionError, OSError):
+                pass
 
     size_mb = os.path.getsize(zip_path) / (1024 * 1024)
     print(f"Done! {count} files, {size_mb:.1f} MB")
