@@ -29,7 +29,7 @@ Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agen
 | **Guide** | 1 | Searchable built-in user manual |
 | **GPU** | 1 | NVIDIA GPU status (memory, temp, utilization) |
 | **Model Switcher** | 1 | Switch between cloud and local AI models |
-| **Hermes Update** | 2 | Update from this portable repo with backups and runtime preservation |
+| **Hermes Update** | 2 | Update upstream Hermes while preserving portable tools, extensions, and runtime data |
 
 Plus all built-in hermes-agent tools: web search, file operations, browser automation, code execution, delegation, memory, skills, messaging, Home Assistant, and more.
 
