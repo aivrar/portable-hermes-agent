@@ -109,7 +109,7 @@ Or run:
 hermes.bat update --backup --yes
 ```
 
-Updates come from `aivrar/portable-hermes-agent`. Runtime folders such as `.hermes/`, `.hermes/custom_tools/`, `.hermes/extensions/`, `extensions/`, and `python_embedded/` are preserved. Upstream Hermes changes from NousResearch are included only after this portable repo has merged, tested, and released them.
+Updates come from `aivrar/portable-hermes-agent`, the tested portable distribution. Runtime folders such as `.hermes/`, `.hermes/custom_tools/`, `.hermes/extensions/`, `extensions/`, and `python_embedded/` are preserved. Raw upstream Hermes changes from `NousResearch/hermes-agent` are not pulled directly into user installs; they are included after this portable repo has merged, tested, and released them.
 
 ### 4. Connect an AI Model
 
