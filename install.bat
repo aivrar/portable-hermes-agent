@@ -42,7 +42,7 @@ echo [STEP 1/10] Downloading Python %PYTHON_VERSION% embedded...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
     "$ProgressPreference = 'SilentlyContinue';" ^
-    "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_ZIP%'"
+    "Invoke-WebRequest -Uri '%PYTHON_URL%' -OutFile '%PYTHON_ZIP%' -UseBasicParsing -ErrorAction Stop"
 
 if not exist "%PYTHON_ZIP%" (
     echo ERROR: Failed to download Python. Check your internet connection.
@@ -90,7 +90,7 @@ if %errorlevel% neq 0 (
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
         "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
         "$ProgressPreference = 'SilentlyContinue';" ^
-        "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%PYTHON_DIR%\get-pip.py'"
+        "Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/get-pip.py' -OutFile '%PYTHON_DIR%\get-pip.py' -UseBasicParsing -ErrorAction Stop"
     "%PYTHON_EXE%" "%PYTHON_DIR%\get-pip.py" --quiet
     if errorlevel 1 (
         echo ERROR: Failed to install pip.
@@ -118,8 +118,9 @@ if not exist "%PYTHON_DIR%\Lib\tkinter" (
     set "TCLTK_TEMP=%SCRIPT_DIR%_tcltk_temp"
 
     powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
         "$ProgressPreference = 'SilentlyContinue';" ^
-        "Invoke-WebRequest -Uri '%TCLTK_URL%' -OutFile '%TCLTK_MSI%'"
+        "Invoke-WebRequest -Uri '%TCLTK_URL%' -OutFile '%TCLTK_MSI%' -UseBasicParsing -ErrorAction Stop"
 
     if exist "!TCLTK_MSI!" (
         :: Use PowerShell Start-Process -Wait for reliable synchronous extraction.
