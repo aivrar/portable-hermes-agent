@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "CVE-2026-10222"
+reason = "Version-only match on this repository's own 0.17.0 package metadata; the upstream sanitizer fix and regression tests from commit b944c6e821c2177eac6da857c99ff24566aa56b0 are already present."
