@@ -42,6 +42,16 @@ EXCLUDE_PATHS = {
     "thinking_debug.log",
 }
 
+# Generated Docusaurus source is published on the documentation site and is
+# not consumed by the portable runtime.  Keeping it in the ZIP duplicates
+# skill instructions (including shell examples) and can trigger download-time
+# antivirus heuristics such as Norton's MD:HttpRequest-inf signature.  Retain
+# website/static/api/model-catalog.json, which the updater uses to seed the
+# local model catalog cache.
+EXCLUDE_PREFIXES = {
+    "website/docs",
+}
+
 # File extensions to exclude
 EXCLUDE_EXTS = {".pyc", ".pyo"}
 
@@ -80,6 +90,12 @@ def should_exclude(rel_path):
     # Check path exclusions
     if norm_path in {path.replace("\\", "/") for path in EXCLUDE_PATHS}:
         return True
+
+    # Check path-prefix exclusions
+    for prefix in EXCLUDE_PREFIXES:
+        norm_prefix = prefix.replace("\\", "/").rstrip("/")
+        if norm_path == norm_prefix or norm_path.startswith(norm_prefix + "/"):
+            return True
 
     # Check extension repos
     for repo in EXCLUDE_EXT_REPOS:

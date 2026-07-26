@@ -16,6 +16,26 @@ def test_release_zip_excludes_development_only_dirs():
     assert build_release.should_exclude("test.pdf") is True
 
 
+def test_release_zip_excludes_generated_docs_but_keeps_runtime_assets():
+    flagged_doc = (
+        "website/docs/user-guide/skills/optional/autonomous-ai-agents/"
+        "autonomous-ai-agents-blackbox.md"
+    )
+    assert build_release.should_exclude(flagged_doc) is True
+    assert build_release.should_exclude(flagged_doc.replace("/", "\\")) is True
+
+    # The portable updater seeds its model cache from this tracked manifest.
+    assert build_release.should_exclude("website/static/api/model-catalog.json") is False
+
+    # Preserve the actual optional skill; only its generated website copy is removed.
+    assert (
+        build_release.should_exclude(
+            "optional-skills/autonomous-ai-agents/blackbox/SKILL.md"
+        )
+        is False
+    )
+
+
 def test_release_zip_excludes_portable_runtime_dirs():
     assert build_release.should_exclude(".hermes/config.yaml") is True
     assert build_release.should_exclude("python_embedded/python.exe") is True
