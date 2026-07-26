@@ -45,12 +45,14 @@ EXCLUDE_PATHS = {
 # Generated Docusaurus source is published on the documentation site and is
 # not consumed by the portable runtime.  Keeping it in the ZIP duplicates
 # skill instructions (including shell examples) and can trigger download-time
-# antivirus heuristics such as Norton's MD:HttpRequest-inf signature.  Retain
+# antivirus heuristics such as Norton's MD:HttpRequest-inf signature.  This
+# includes localized copies under website/i18n/<locale>/.  Retain
 # website/static/api/model-catalog.json, which the updater uses to seed the
 # local model catalog cache.
 EXCLUDE_PREFIXES = {
     "website/docs",
 }
+I18N_DOCS_PLUGIN_PREFIX = "docusaurus-plugin-content-docs"
 
 # File extensions to exclude
 EXCLUDE_EXTS = {".pyc", ".pyo"}
@@ -96,6 +98,19 @@ def should_exclude(rel_path):
         norm_prefix = prefix.replace("\\", "/").rstrip("/")
         if norm_path == norm_prefix or norm_path.startswith(norm_prefix + "/"):
             return True
+
+    # Docusaurus stores localized docs below a locale directory. Plugin IDs may
+    # add a suffix to this component, so match the component prefix rather than
+    # hard-coding the currently shipped locale and plugin directory name.
+    if (
+        len(parts) >= 4
+        and parts[:2] == ["website", "i18n"]
+        and (
+            parts[3] == I18N_DOCS_PLUGIN_PREFIX
+            or parts[3].startswith(I18N_DOCS_PLUGIN_PREFIX + "-")
+        )
+    ):
+        return True
 
     # Check extension repos
     for repo in EXCLUDE_EXT_REPOS:
