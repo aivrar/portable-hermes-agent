@@ -24,6 +24,28 @@ def test_release_zip_excludes_generated_docs_but_keeps_runtime_assets():
     assert build_release.should_exclude(flagged_doc) is True
     assert build_release.should_exclude(flagged_doc.replace("/", "\\")) is True
 
+    localized_doc = (
+        "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/"
+        "user-guide/skills/optional/autonomous-ai-agents/"
+        "autonomous-ai-agents-blackbox.md"
+    )
+    assert build_release.should_exclude(localized_doc) is True
+    assert build_release.should_exclude(localized_doc.replace("/", "\\")) is True
+    assert (
+        build_release.should_exclude(
+            "website/i18n/es/docusaurus-plugin-content-docs-version-v2/intro.md"
+        )
+        is True
+    )
+
+    # Preserve non-doc localization resources used by the website build.
+    assert (
+        build_release.should_exclude(
+            "website/i18n/zh-Hans/docusaurus-theme-classic/navbar.json"
+        )
+        is False
+    )
+
     # The portable updater seeds its model cache from this tracked manifest.
     assert build_release.should_exclude("website/static/api/model-catalog.json") is False
 
