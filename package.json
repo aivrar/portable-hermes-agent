@@ -41,6 +41,7 @@
     "yauzl": "^3.3.1",
     "fast-uri": "3.1.4",
     "js-yaml": "4.3.0",
+    "postcss": "8.5.23",
     "tar": "7.5.20"
   },
   "engines": {
