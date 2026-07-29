@@ -97,7 +97,14 @@ hermes.bat          :: CLI mode
 
 ### Updating
 
-For the easiest safe update, double-click:
+Portable Hermes has **two independent update channels**. Updating one does not automatically update the other.
+
+| Update channel | What it updates | How to run it |
+|---|---|---|
+| **Portable Hermes distribution** | The Windows launchers, integrations, portable tools, and the Hermes version tested with this repository | Close Hermes, then double-click `UPDATE.bat` |
+| **Upstream Hermes Agent** | Newer core agent code from `NousResearch/hermes-agent` | Start Hermes and ask it to check or run its upstream updater |
+
+For the normal, safest maintenance path, close other Hermes windows and gateways, then double-click:
 
 ```batch
 UPDATE.bat
@@ -109,9 +116,21 @@ Or run:
 hermes.bat update --backup --yes
 ```
 
-`UPDATE.bat` and `hermes.bat update --backup --yes` update the tested Portable Hermes distribution from `aivrar/portable-hermes-agent`. Runtime folders such as `.hermes/`, `.hermes/custom_tools/`, `.hermes/extensions/`, `extensions/`, and `python_embedded/` are preserved.
+This updates from `aivrar/portable-hermes-agent`, makes a backup when requested, and preserves runtime folders such as `.hermes/`, `.hermes/custom_tools/`, `.hermes/extensions/`, `extensions/`, and `python_embedded/`.
 
-Inside the agent, the `update_hermes` tool updates the upstream Hermes Agent code from `NousResearch/hermes-agent` and then repairs/preserves this repo's portable tools, toolsets, extensions, guide, and launchers. That keeps Portable Hermes easy to install while still letting users pull newer upstream Hermes code when they ask the agent to do it.
+If you also want newer upstream Hermes code, start Hermes after the Portable update and ask:
+
+> Check whether upstream Hermes Agent has updates. Do not install anything yet.
+
+Then, if you want the available update, ask:
+
+> Update upstream Hermes Agent while preserving Portable Hermes. When finished, tell me whether I should restart.
+
+Restart Hermes after a successful upstream update so the running process loads the new Python modules. A Git checkout can report an exact ahead/behind count; a release ZIP has no Git history, so it reports ZIP-overlay mode instead and can still install the latest upstream code.
+
+Most users do not need daily updates. Run the Portable updater when a release, fix, or security notice is published (or every week or two), and check upstream weekly if you want newer Hermes features. Checking daily is optional.
+
+See **[Keeping Portable Hermes Updated](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated)** for the complete workflow, backups, release-ZIP behavior, and troubleshooting.
 
 ### 4. Connect an AI Model
 

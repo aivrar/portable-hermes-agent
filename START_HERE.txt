@@ -34,8 +34,36 @@ Safe update:
 
   .\hermes.bat update --backup --yes
 
-Updates come from aivrar/portable-hermes-agent. Runtime folders and
-custom tools under .hermes are preserved.
+Portable Hermes has two separate update paths:
+
+1. Portable distribution update (recommended for normal maintenance)
+
+   - Close Hermes and any running gateways.
+   - Run UPDATE.bat.
+   - This updates from aivrar/portable-hermes-agent.
+   - Runtime folders and custom tools under .hermes are preserved.
+
+2. Optional upstream Hermes Agent update (for the newest core features)
+
+   - Start Hermes after the Portable update.
+   - Ask: "Check whether upstream Hermes Agent has updates. Do not install
+     anything yet."
+   - If you want the update, ask: "Update upstream Hermes Agent while
+     preserving Portable Hermes. When finished, tell me whether I should
+     restart."
+   - Restart Hermes after a successful upstream update.
+
+These are independent. A Portable update installs the Hermes version tested
+with this distribution. The optional agent updater pulls newer core code from
+NousResearch/hermes-agent while restoring the Portable Hermes integrations.
+
+Most users do not need daily updates. Use UPDATE.bat for new Portable releases,
+fixes, or security notices (or every week or two). Check upstream weekly if
+you want newer Hermes features; checking daily is optional.
+
+Full updater guide:
+
+  https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated
 
 Documentation:
 
