@@ -36,6 +36,7 @@ MAX_TODO_ITEMS = 256
 # before it is parsed and re-injected (see AIAgent._hydrate_todo_store).
 MAX_TODO_RESULT_CHARS = 512_000
 _TRUNCATION_MARKER = "… [truncated]"
+TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
 
 
 class TodoStore:
@@ -135,7 +136,7 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [TODO_INJECTION_HEADER]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
