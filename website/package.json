@@ -38,7 +38,7 @@
   "overrides": {
     "@babel/core": "7.29.7",
     "body-parser": "1.20.6",
-    "brace-expansion": "1.1.16",
+    "brace-expansion": "1.1.17",
     "dompurify": "3.4.12",
     "http-proxy-middleware": "2.0.10",
     "joi": "17.13.4",

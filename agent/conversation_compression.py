@@ -391,6 +391,67 @@ def conversation_history_after_compression(agent: Any, messages: list) -> Option
     return None
 
 
+def _message_text(message: Any) -> str:
+    """Return the textual portion of a message without flattening media blocks."""
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "\n".join(parts)
+    return "" if content is None else str(content)
+
+
+def _is_real_user_message(message: Any) -> bool:
+    """Distinguish human input from compression and todo scaffolding."""
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if message.get("_todo_snapshot_synthetic"):
+        return False
+
+    from agent.context_compressor import ContextCompressor
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    content = message.get("content")
+    if ContextCompressor._is_context_summary_content(content):
+        return False
+    if _message_text(message).lstrip().startswith(TODO_INJECTION_HEADER):
+        return False
+    # A media-only user message is still genuine user input.
+    return bool(_message_text(message).strip()) or isinstance(content, list)
+
+
+def _strip_stale_todo_snapshot(content: Any) -> Any:
+    """Remove a todo snapshot merged at an earlier compression boundary."""
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    if isinstance(content, str):
+        index = content.find(TODO_INJECTION_HEADER)
+        if index == -1:
+            return content
+        return content[:index].rstrip()
+    if isinstance(content, list):
+        return [
+            part
+            for part in content
+            if not (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and str(part.get("text") or "")
+                .lstrip()
+                .startswith(TODO_INJECTION_HEADER)
+            )
+        ]
+    return content
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -646,7 +707,49 @@ def compress_context(
 
         todo_snapshot = agent._todo_store.format_for_injection()
         if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+            # Keep the snapshot subordinate to the latest real user turn. A
+            # standalone synthetic user message at the tail can be interpreted
+            # as fresh user authority after compression (CVE-2026-10221).
+            from agent.context_compressor import _append_text_to_content
+
+            merged = False
+            tail = (
+                compressed[-1]
+                if compressed and isinstance(compressed[-1], dict)
+                else None
+            )
+            if tail is not None and tail.get("role") == "user":
+                stripped = _strip_stale_todo_snapshot(tail.get("content"))
+                probe = {
+                    key: value for key, value in tail.items() if key != "content"
+                }
+                probe["content"] = stripped
+                if _is_real_user_message(probe):
+                    snapshot_text = (
+                        f"\n\n{todo_snapshot}"
+                        if isinstance(stripped, str) and stripped
+                        else todo_snapshot
+                    )
+                    tail["content"] = _append_text_to_content(
+                        stripped, snapshot_text
+                    )
+                    merged = True
+                elif stripped != tail.get("content") and not _message_text(
+                    {"role": "user", "content": stripped}
+                ).strip():
+                    # A bare snapshot surviving from an earlier boundary is
+                    # refreshed in place instead of duplicated.
+                    tail["content"] = todo_snapshot
+                    tail["_todo_snapshot_synthetic"] = True
+                    merged = True
+            if not merged:
+                compressed.append(
+                    {
+                        "role": "user",
+                        "content": todo_snapshot,
+                        "_todo_snapshot_synthetic": True,
+                    }
+                )
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
