@@ -85,7 +85,7 @@ dependencies = [
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
   # Security floor for PyJWT[crypto] and auth-provider transitives.
-  "cryptography==49.0.0",
+  "cryptography==50.0.0",
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
