@@ -40,7 +40,7 @@
     "@assistant-ui/store": "0.2.13",
     "yauzl": "^3.3.1",
     "fast-uri": "3.1.5",
-    "js-yaml": "4.3.0",
+    "js-yaml": "4.3.1",
     "postcss": "8.5.23",
     "tar": "7.5.22"
   },
