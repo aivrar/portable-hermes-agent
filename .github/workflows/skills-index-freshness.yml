@@ -5,11 +5,10 @@ name: Skills Index Freshness Check
 # stale OR the file disappears entirely OR a major source has collapsed,
 # this workflow opens a GitHub issue so we hear about it before users do.
 #
-# Triggered every 4 hours so we catch a stuck cron within one tick.
+# The portable repository does not own the upstream skills index, so this
+# inherited watchdog remains manually dispatchable but is not scheduled here.
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 permissions:

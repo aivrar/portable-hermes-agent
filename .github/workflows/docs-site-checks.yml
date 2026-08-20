@@ -9,6 +9,10 @@ permissions:
 jobs:
   docs-site-checks:
     runs-on: ubuntu-latest
+    # Docusaurus currently depends on image-size 2.0.2, whose malformed
+    # ICNS/JXL/HEIF parsers can loop indefinitely and has no patched release.
+    # Bound untrusted PR builds until Docusaurus can consume a fixed version.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

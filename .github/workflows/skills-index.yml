@@ -1,9 +1,8 @@
 name: Build Skills Index
 
 on:
-  schedule:
-    # Run twice daily: 6 AM and 6 PM UTC
-    - cron: "0 6,18 * * *"
+  # The portable repository does not own the upstream skills index. Keep the
+  # workflow for upstream-sync compatibility without scheduling no-op runs.
   workflow_dispatch: # Manual trigger
   push:
     branches: [main]
@@ -13,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  actions: write # to trigger deploy-site.yml on schedule
+  actions: write # to trigger deploy-site.yml after a manual refresh
 
 jobs:
   build-index:
@@ -42,12 +41,12 @@ jobs:
           path: website/static/api/skills-index.json
           retention-days: 7
 
-  # Re-trigger the docs deploy so the refreshed index lands on the live site.
-  # The deploy itself is owned by deploy-site.yml (which crawls and deploys
-  # everything in one pipeline); we just kick it on a schedule.
+  # Re-trigger the docs deploy after an explicitly requested refresh.
+  # The deploy itself is owned by deploy-site.yml, which crawls and deploys
+  # everything in one pipeline.
   trigger-deploy:
     needs: build-index
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Deploy Site workflow
