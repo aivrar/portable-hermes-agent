@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
+from gui.i18n import t
 
 try:
     import lmstudio
@@ -334,7 +335,7 @@ class LMStudioPanel(tk.Toplevel):
     def __init__(self, parent, on_model_ready=None):
         super().__init__(parent)
         self.on_model_ready = on_model_ready
-        self.title("LM Studio - Local Models")
+        self.title(t("lmstudio.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
         set_dark_title_bar(self)

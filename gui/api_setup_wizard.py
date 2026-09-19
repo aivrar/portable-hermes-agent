@@ -12,6 +12,7 @@ import webbrowser
 from pathlib import Path
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
+from gui.i18n import t
 from hermes_constants import get_hermes_home
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -158,7 +159,7 @@ class APISetupWizard(tk.Toplevel):
         super().__init__(parent)
         self.on_complete = on_complete
         self.auto_mode = auto_mode  # True = only show missing keys
-        self.title("Hermes Agent - API Setup")
+        self.title(t("wizard.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
         self.grab_set()
@@ -200,9 +201,9 @@ class APISetupWizard(tk.Toplevel):
         hdr = tk.Frame(self, bg=C["bg_main"])
         hdr.pack(fill="x", padx=40, pady=(30, 0))
 
-        tk.Label(hdr, text="API Key Setup", font=FONTS["title"],
+        tk.Label(hdr, text=t("wizard.title"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(anchor="w")
-        tk.Label(hdr, text="Let's unlock Hermes' full power",
+        tk.Label(hdr, text=t("wizard.welcome_desc"),
                 font=FONTS["body"], fg=C["text_secondary"],
                 bg=C["bg_main"]).pack(anchor="w", pady=(4, 0))
 
@@ -210,14 +211,14 @@ class APISetupWizard(tk.Toplevel):
         status_frame = tk.Frame(self, bg=C["bg_main"])
         status_frame.pack(fill="x", padx=40, pady=(20, 0))
 
-        tk.Label(status_frame, text="Service Status:",
+        tk.Label(status_frame, text=t("settings.tab_api") + ":",
                 font=FONTS["subheading"], fg=C["text_primary"],
                 bg=C["bg_main"]).pack(anchor="w", pady=(0, 8))
 
         for svc in API_SERVICES:
             has_key = bool(os.getenv(svc["key"]))
             dot_color = C["success"] if has_key else (C["danger"] if svc["required"] else C["warning_dark"])
-            status_text = "Ready" if has_key else ("Required" if svc["required"] else "Not set")
+            status_text = t("wizard.status_ready") if has_key else ("Required" if svc["required"] else t("wizard.status_not_set"))
             hover_bg = C["bg_hover"]
 
             row = tk.Frame(status_frame, bg=C["bg_main"], cursor="hand2",
@@ -232,7 +233,7 @@ class APISetupWizard(tk.Toplevel):
                     fg=C["text_primary"], bg=C["bg_main"]).pack(side="left")
             tk.Label(row, text=status_text, font=FONTS["small"],
                     fg=dot_color, bg=C["bg_main"]).pack(side="right")
-            tk.Label(row, text="  Set up", font=SF("Segoe UI", 8, "underline"),
+            tk.Label(row, text=f"  {t('wizard.get_key')}", font=SF("Segoe UI", 8, "underline"),
                     fg=C["accent"], bg=C["bg_main"], cursor="hand2").pack(side="right")
 
             # Click row to set up just that service
@@ -247,10 +248,10 @@ class APISetupWizard(tk.Toplevel):
 
         # Info
         if not self.services:
-            tk.Label(self, text="All API keys are set! You're good to go.",
+            tk.Label(self, text=t("wizard.done_saved", count=len(API_SERVICES)),
                     font=FONTS["body"], fg=C["success"],
                     bg=C["bg_main"]).pack(pady=20)
-            ttk.Button(self, text="Close", style="Primary.TButton",
+            ttk.Button(self, text=t("settings.cancel"), style="Primary.TButton",
                        command=self._finish).pack(pady=10)
         else:
             missing_count = len(self.services)
@@ -265,9 +266,9 @@ class APISetupWizard(tk.Toplevel):
             btn_frame = tk.Frame(self, bg=C["bg_main"])
             btn_frame.pack(pady=20)
 
-            ttk.Button(btn_frame, text="Let's Go!", style="Primary.TButton",
+            ttk.Button(btn_frame, text=t("wizard.start_chatting", "Let's Go!"), style="Primary.TButton",
                        command=self._next_step).pack(side="left", padx=4)
-            ttk.Button(btn_frame, text="Skip All", style="TButton",
+            ttk.Button(btn_frame, text=t("wizard.skip"), style="TButton",
                        command=self._finish).pack(side="left", padx=4)
 
     def _next_step(self):
@@ -296,7 +297,7 @@ class APISetupWizard(tk.Toplevel):
         hdr = tk.Frame(self, bg=C["bg_main"])
         hdr.pack(fill="x", padx=40, pady=(20, 0))
 
-        tk.Label(hdr, text=f"Step {step_num} of {total}",
+        tk.Label(hdr, text=t("wizard.step_of", current=step_num, total=total),
                 font=FONTS["small"], fg=C["text_hint"],
                 bg=C["bg_main"]).pack(anchor="w")
         tk.Label(hdr, text=f"[{svc['icon']}] {svc['name']}",
@@ -327,7 +328,7 @@ class APISetupWizard(tk.Toplevel):
         btn_frame = tk.Frame(self, bg=C["bg_main"])
         btn_frame.pack(fill="x", padx=40, pady=(16, 0))
 
-        open_btn = ttk.Button(btn_frame, text=f"Get Key  (opens {svc['name']} in your browser)",
+        open_btn = ttk.Button(btn_frame, text=f"{t('wizard.get_key')}  ({svc['name']})",
                              style="Primary.TButton",
                              command=lambda: webbrowser.open(svc["signup_url"]))
         open_btn.pack(fill="x")
@@ -337,7 +338,7 @@ class APISetupWizard(tk.Toplevel):
         entry_frame = tk.Frame(self, bg=C["bg_main"])
         entry_frame.pack(fill="x", padx=40, pady=(16, 0))
 
-        tk.Label(entry_frame, text="Paste your key here:",
+        tk.Label(entry_frame, text=t("wizard.paste_label"),
                 font=FONTS["small"], fg=C["text_secondary"],
                 bg=C["bg_main"]).pack(anchor="w")
 
@@ -358,7 +359,7 @@ class APISetupWizard(tk.Toplevel):
         clip_frame = tk.Frame(entry_frame, bg=C["bg_main"])
         clip_frame.pack(fill="x", pady=(6, 0))
 
-        ttk.Button(clip_frame, text="Paste from Clipboard",
+        ttk.Button(clip_frame, text=t("wizard.clip_detected", "Paste from Clipboard"),
                    style="Small.TButton",
                    command=lambda: self._paste_from_clipboard(key_entry)).pack(side="left")
 
@@ -384,9 +385,9 @@ class APISetupWizard(tk.Toplevel):
         bottom = tk.Frame(self, bg=C["bg_main"])
         bottom.pack(fill="x", padx=40, pady=(20, 0))
 
-        ttk.Button(bottom, text="Save & Next", style="Primary.TButton",
+        ttk.Button(bottom, text=t("wizard.save_continue"), style="Primary.TButton",
                    command=lambda: self._save_current(svc)).pack(side="right")
-        ttk.Button(bottom, text="Skip", style="TButton",
+        ttk.Button(bottom, text=t("wizard.skip"), style="TButton",
                    command=self._next_step).pack(side="right", padx=(0, 8))
 
         # Focus the entry
@@ -449,7 +450,7 @@ class APISetupWizard(tk.Toplevel):
 
         value = entry.get().strip()
         if not value:
-            self.status_label.configure(text="No key entered — skipping.",
+            self.status_label.configure(text=t("wizard.no_key"),
                                        fg=C["warning_dark"])
             self.after(1000, self._next_step)
             return
@@ -457,13 +458,13 @@ class APISetupWizard(tk.Toplevel):
         # Basic validation
         if svc.get("prefix") and not value.startswith(svc["prefix"]):
             self.status_label.configure(
-                text=f"Key usually starts with '{svc['prefix']}' — saving anyway.",
+                text=t("wizard.prefix_hint", prefix=svc['prefix']),
                 fg=C["warning_dark"])
 
         # Save it
         _save_key_to_env(key_name, value)
         self.saved_keys[key_name] = True
-        self.status_label.configure(text="Saved!", fg=C["success"])
+        self.status_label.configure(text=t("wizard.saved"), fg=C["success"])
         self.after(500, self._next_step)
 
     def _show_done(self):
@@ -473,16 +474,16 @@ class APISetupWizard(tk.Toplevel):
         prog_frame = tk.Frame(self, bg=C["accent"], height=4)
         prog_frame.pack(fill="x")
 
-        tk.Label(self, text="Setup Complete!", font=FONTS["title"],
+        tk.Label(self, text=t("wizard.done_title"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(pady=(40, 8))
 
         saved_count = len(self.saved_keys)
         if saved_count > 0:
-            tk.Label(self, text=f"{saved_count} API key{'s' if saved_count > 1 else ''} saved successfully.",
+            tk.Label(self, text=t("wizard.done_saved", count=saved_count),
                     font=FONTS["body"], fg=C["success"],
                     bg=C["bg_main"]).pack()
         else:
-            tk.Label(self, text="No new keys were added.",
+            tk.Label(self, text=t("wizard.done_none"),
                     font=FONTS["body"], fg=C["text_hint"],
                     bg=C["bg_main"]).pack()
 
@@ -501,16 +502,15 @@ class APISetupWizard(tk.Toplevel):
                     fg=dot_color, bg=C["bg_main"]).pack(side="left", padx=(0, 8))
             tk.Label(row, text=svc["name"], font=FONTS["body"],
                     fg=C["text_primary"], bg=C["bg_main"]).pack(side="left")
-            tk.Label(row, text="Ready" if has_key else "Not set",
+            tk.Label(row, text=t("wizard.status_ready") if has_key else t("wizard.status_not_set"),
                     font=FONTS["small"], fg=dot_color,
                     bg=C["bg_main"]).pack(side="right")
 
-        tk.Label(self, text="\nYou can always add more keys later from\n"
-                "File > API Key Setup or Settings.",
+        tk.Label(self, text=t("wizard.done_hint"),
                 font=FONTS["small"], fg=C["text_hint"],
                 bg=C["bg_main"], justify="center").pack(pady=(20, 0))
 
-        ttk.Button(self, text="Start Chatting!", style="Primary.TButton",
+        ttk.Button(self, text=t("wizard.start_chatting"), style="Primary.TButton",
                    command=self._finish).pack(pady=20)
 
     def _finish(self):
