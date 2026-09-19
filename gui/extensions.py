@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, S, SF
+from gui.i18n import t
 
 PROJECT_ROOT = Path(__file__).parent.parent
 EXTENSIONS_DIR = PROJECT_ROOT / "extensions"
@@ -207,14 +208,14 @@ class ExtensionsManager(tk.Toplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Extensions Manager")
+        self.title(t("extensions.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
         set_dark_title_bar(self)
         from gui.theme import center_window
         center_window(self, 700, 550, parent)
 
-        tk.Label(self, text="Extensions", font=FONTS["title"],
+        tk.Label(self, text=t("menu.extensions"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(pady=(20, 4))
         tk.Label(self, text="Add powerful AI capabilities to Hermes",
                 font=FONTS["small"], fg=C["text_hint"],
