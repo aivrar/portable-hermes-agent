@@ -33,7 +33,15 @@ from gui.extensions import ExtensionsManager
 from gui.lm_studio import LMStudioPanel
 from gui.permissions_panel import PermissionsPanel
 from gui.permissions import load_permissions, get_permissions_summary
-from gui.i18n import t, get_language, set_language, register_listener, SUPPORTED_LANGUAGES, init_language
+from gui.i18n import (
+    t,
+    get_language,
+    set_language,
+    register_listener,
+    unregister_listener,
+    SUPPORTED_LANGUAGES,
+    init_language,
+)
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -1146,7 +1154,7 @@ class StatusBar(tk.Frame):
                            fg=C["success"], bg=C["bg_sidebar"])
         self.dot.pack(side="left", padx=(12, 4))
 
-        self.status_lbl = tk.Label(self, text="Ready", font=FONTS["small"],
+        self.status_lbl = tk.Label(self, text=t("status.ready"), font=FONTS["small"],
                                   fg=C["text_hint"], bg=C["bg_sidebar"])
         self.status_lbl.pack(side="left")
 
@@ -1158,24 +1166,34 @@ class StatusBar(tk.Frame):
                                 fg=C["text_disabled"], bg=C["bg_sidebar"])
         self.iter_lbl.pack(side="right", padx=8)
 
+        self._state_kind = "ready"
+        self._state_data = ""
+
     def set_ready(self):
+        self._state_kind = "ready"
+        self._state_data = ""
         self.dot.configure(fg=C["success"])
         self.status_lbl.configure(text=t("status.ready"))
 
     def set_thinking(self, text=""):
+        self._state_kind = "thinking"
+        self._state_data = text
         self.dot.configure(fg=C["info"])
         if text:
-            # Truncate to fit status bar width
             display = text[:120] if len(text) > 120 else text
             self.status_lbl.configure(text=display)
         else:
             self.status_lbl.configure(text=t("status.thinking"))
 
     def set_tool(self, name):
+        self._state_kind = "tool"
+        self._state_data = name
         self.dot.configure(fg=C["warning_dark"])
         self.status_lbl.configure(text=t("status.tool_calling", tool=name))
 
     def set_error(self):
+        self._state_kind = "error"
+        self._state_data = ""
         self.dot.configure(fg=C["danger"])
         self.status_lbl.configure(text=t("status.error", error=""))
 
@@ -1184,6 +1202,21 @@ class StatusBar(tk.Frame):
 
     def set_iter(self, n):
         self.iter_lbl.configure(text=f"Step {n}")
+
+    def update_ui_language(self):
+        """Refresh status label in current language while preserving activity state."""
+        if self._state_kind == "ready":
+            self.status_lbl.configure(text=t("status.ready"))
+        elif self._state_kind == "thinking":
+            if self._state_data:
+                display = self._state_data[:120] if len(self._state_data) > 120 else self._state_data
+                self.status_lbl.configure(text=display)
+            else:
+                self.status_lbl.configure(text=t("status.thinking"))
+        elif self._state_kind == "tool":
+            self.status_lbl.configure(text=t("status.tool_calling", tool=self._state_data))
+        elif self._state_kind == "error":
+            self.status_lbl.configure(text=t("status.error", error=""))
 
 
 # ============================================================================
@@ -1228,6 +1261,9 @@ class HermesGUI:
 
         self._build_menu()
         self._build_layout()
+
+        # Register GUI language change listener so all entry points (menu, Settings) trigger uniform UI refresh
+        register_listener(self._on_language_changed)
 
         # First-run wizard — show if any required keys are missing
         missing = get_missing_keys()
@@ -1338,13 +1374,44 @@ class HermesGUI:
             btn.configure(menu=menu)
 
     def _switch_language(self, lang_code: str):
-        if set_language(lang_code, persist=True):
-            self._build_menu_items()
-            self.root.title(t("app.title"))
-            if hasattr(self, "sidebar") and hasattr(self.sidebar, "update_ui_language"):
-                self.sidebar.update_ui_language()
-            if hasattr(self, "status_bar"):
-                self.status_bar.set_status(t("status.ready"))
+        set_language(lang_code, persist=True)
+
+    def _on_language_changed(self, lang_code: str):
+        """
+        Unified language refresh handler triggered whenever the language changes
+        (from the Language menu, SettingsDialog, or external programmatic call).
+        Refreshes title, menu, sidebar, status bar (preserving activity state),
+        and composer controls/tooltips.
+        """
+        # 1. Window title
+        self.root.title(t("app.title"))
+
+        # 2. Rebuild menu bar items
+        self._build_menu_items()
+
+        # 3. Sidebar labels
+        if hasattr(self, "sidebar") and hasattr(self.sidebar, "update_ui_language"):
+            self.sidebar.update_ui_language()
+
+        # 4. Status bar (preserves current activity state: ready/thinking/tool/error)
+        if hasattr(self, "status_bar") and hasattr(self.status_bar, "update_ui_language"):
+            self.status_bar.update_ui_language()
+
+        # 5. Composer buttons and tooltips
+        if hasattr(self, "attach_btn") and self.attach_btn.winfo_exists():
+            self.attach_btn.configure(text=t("chat.attach"))
+        if hasattr(self, "attach_tooltip"):
+            self.attach_tooltip.text = t("chat.attach_tooltip")
+
+        if hasattr(self, "send_btn") and self.send_btn.winfo_exists():
+            self.send_btn.configure(text=t("chat.send"))
+        if hasattr(self, "send_tooltip"):
+            self.send_tooltip.text = t("chat.send_tooltip")
+
+        if hasattr(self, "stop_btn") and self.stop_btn.winfo_exists():
+            self.stop_btn.configure(text=t("chat.stop"))
+        if hasattr(self, "stop_tooltip"):
+            self.stop_tooltip.text = t("chat.stop_tooltip")
 
     # ---- Layout ----
 
@@ -1429,20 +1496,20 @@ class HermesGUI:
         btn_row = tk.Frame(inp_outer, bg=C["bg_sidebar"])
         btn_row.pack(fill="x", pady=(6, 0))
 
-        attach_btn = ttk.Button(btn_row, text=t("chat.attach"), width=8,
-                               command=self._attach_image)
-        attach_btn.pack(side="left", padx=(0, 4))
-        Tooltip(attach_btn, t("chat.attach_tooltip"))
+        self.attach_btn = ttk.Button(btn_row, text=t("chat.attach"), width=8,
+                                     command=self._attach_image)
+        self.attach_btn.pack(side="left", padx=(0, 4))
+        self.attach_tooltip = Tooltip(self.attach_btn, t("chat.attach_tooltip"))
 
-        send_btn = ttk.Button(btn_row, text=t("chat.send"), style="Primary.TButton",
-                             command=self._send)
-        send_btn.pack(side="right", padx=(4, 0))
-        Tooltip(send_btn, t("chat.send_tooltip"))
+        self.send_btn = ttk.Button(btn_row, text=t("chat.send"), style="Primary.TButton",
+                                   command=self._send)
+        self.send_btn.pack(side="right", padx=(4, 0))
+        self.send_tooltip = Tooltip(self.send_btn, t("chat.send_tooltip"))
 
         self.stop_btn = ttk.Button(btn_row, text=t("chat.stop"), style="Danger.TButton",
                                    command=self._interrupt)
         self.stop_btn.pack(side="right", padx=(4, 0))
-        Tooltip(self.stop_btn, t("chat.stop_tooltip"))
+        self.stop_tooltip = Tooltip(self.stop_btn, t("chat.stop_tooltip"))
 
         self.root.bind("<Control-Shift-I>", lambda e: self._attach_image())
 
@@ -1856,6 +1923,7 @@ class HermesGUI:
                                        t("app.exit_confirm"),
                                        parent=self.root):
                 return
+        unregister_listener(self._on_language_changed)
         self.bridge.close()
         self.root.destroy()
 

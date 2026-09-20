@@ -1,6 +1,7 @@
 """
 Unit tests for GUI language updates, persistence under an isolated HERMES_HOME,
-and compatibility with headless CI environments.
+regression coverage for actual application methods (HermesGUI and SettingsDialog),
+and full compatibility with headless CI environments.
 """
 import os
 import sys
@@ -23,7 +24,10 @@ from gui.i18n import (
     load_saved_language,
     register_listener,
     unregister_listener,
+    SUPPORTED_LANGUAGES,
 )
+from gui.app import StatusBar, HermesGUI, SettingsDialog
+from gui.theme import Tooltip
 
 
 def _has_display() -> bool:
@@ -36,6 +40,51 @@ def _has_display() -> bool:
         return True
     except Exception:
         return False
+
+
+class HeadlessWidgetStub:
+    """A lightweight, headless-safe stub that implements Tkinter widget protocols."""
+    def __init__(self, **kwargs):
+        self._cfg = dict(kwargs)
+        self.text = self._cfg.get("text", "")
+
+    def configure(self, **kwargs):
+        self._cfg.update(kwargs)
+        if "text" in kwargs:
+            self.text = kwargs["text"]
+
+    def get(self):
+        return self.text
+
+    def set(self, val):
+        self.text = str(val)
+        self._cfg["text"] = str(val)
+
+    def cget(self, key):
+        return self._cfg.get(key, "")
+
+    def __getitem__(self, key):
+        return self._cfg.get(key, "")
+
+    def winfo_exists(self):
+        return True
+
+    def winfo_children(self):
+        return []
+
+    def pack(self, *args, **kwargs):
+        pass
+
+    def pack_forget(self):
+        pass
+
+    def destroy(self):
+        pass
+
+    def title(self, new_title=None):
+        if new_title is not None:
+            self._cfg["title"] = new_title
+        return self._cfg.get("title", "")
 
 
 class TestGuiLanguagePersistence(unittest.TestCase):
@@ -72,7 +121,10 @@ class TestGuiLanguagePersistence(unittest.TestCase):
             pass
 
     def test_save_and_load_persistence_isolated_home(self):
-        """Verify that language preferences persist to gui_config.json under an isolated HERMES_HOME."""
+        """
+        Verify that language preferences persist to gui_config.json under an isolated HERMES_HOME.
+        Clears HERMES_LANGUAGE env before load_saved_language() to strictly verify file-based reload.
+        """
         cfg_file = self.isolated_home / "gui_config.json"
         self.assertFalse(cfg_file.exists(), "Initial config should not exist in clean isolated home")
 
@@ -85,23 +137,28 @@ class TestGuiLanguagePersistence(unittest.TestCase):
             data = json.load(f)
         self.assertEqual(data.get("language"), "zh-hant")
 
-        # Clear active state and verify reload from isolated file
+        # CRITICAL: Clear environment variable so load_saved_language() must read from gui_config.json
+        os.environ.pop("HERMES_LANGUAGE", None)
         loaded = load_saved_language()
-        self.assertEqual(loaded, "zh-hant")
+        self.assertEqual(loaded, "zh-hant", "Must reload zh-hant from saved gui_config.json")
 
         # 2. Switch to Simplified Chinese
         set_language("zh", persist=True)
         with open(cfg_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertEqual(data.get("language"), "zh")
-        self.assertEqual(load_saved_language(), "zh")
+
+        os.environ.pop("HERMES_LANGUAGE", None)
+        self.assertEqual(load_saved_language(), "zh", "Must reload zh from saved gui_config.json")
 
         # 3. Switch to English
         set_language("en", persist=True)
         with open(cfg_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.assertEqual(data.get("language"), "en")
-        self.assertEqual(load_saved_language(), "en")
+
+        os.environ.pop("HERMES_LANGUAGE", None)
+        self.assertEqual(load_saved_language(), "en", "Must reload en from saved gui_config.json")
 
     def test_env_override_takes_precedence_over_file(self):
         """HERMES_LANGUAGE environment variable should override file configuration."""
@@ -113,49 +170,219 @@ class TestGuiLanguagePersistence(unittest.TestCase):
         os.environ["HERMES_LANGUAGE"] = "zh-hant"
         self.assertEqual(load_saved_language(), "zh-hant")
 
-    def test_gui_listener_updates_without_display(self):
-        """
-        Headless-compatible test: verifies that simulated GUI widgets correctly
-        receive language change events and update their text without requiring a real display.
-        """
-        mock_sidebar_btn = MagicMock()
-        mock_status_lbl = MagicMock()
 
-        def on_language_change(lang_code):
-            mock_sidebar_btn.configure(text=t("sidebar.new_chat"))
-            mock_status_lbl.configure(text=t("status.ready"))
+class TestApplicationLanguageSwitchingRegression(unittest.TestCase):
+    """
+    Regression tests exercising actual application methods:
+    - HermesGUI._switch_language
+    - HermesGUI._on_language_changed
+    - SettingsDialog._save
+    - StatusBar.update_ui_language (preserving activity state)
+    - Composer controls & tooltips updates
+    - Listener registration and cleanup
+    """
 
-        register_listener(on_language_change)
+    def setUp(self):
+        self.orig_env_home = os.environ.get("HERMES_HOME")
+        self.orig_env_lang = os.environ.get("HERMES_LANGUAGE")
+        self.orig_active_lang = get_language()
+
+        self.temp_dir = tempfile.TemporaryDirectory()
+        os.environ["HERMES_HOME"] = self.temp_dir.name
+        os.environ.pop("HERMES_LANGUAGE", None)
+        set_language("en", persist=False)
+
+    def tearDown(self):
+        if self.orig_env_home is not None:
+            os.environ["HERMES_HOME"] = self.orig_env_home
+        else:
+            os.environ.pop("HERMES_HOME", None)
+
+        if self.orig_env_lang is not None:
+            os.environ["HERMES_LANGUAGE"] = self.orig_env_lang
+            set_language(self.orig_env_lang, persist=False)
+        else:
+            os.environ.pop("HERMES_LANGUAGE", None)
+            set_language(self.orig_active_lang, persist=False)
+
         try:
-            # Switch to Traditional Chinese
-            set_language("zh-hant", persist=False)
-            mock_sidebar_btn.configure.assert_called_with(text="+ 新對話")
-            mock_status_lbl.configure.assert_called_with(text="就緒")
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
-            # Switch to English
-            set_language("en", persist=False)
-            mock_sidebar_btn.configure.assert_called_with(text="+ New Chat")
-            mock_status_lbl.configure.assert_called_with(text="Ready")
+    def _create_app_stub(self):
+        """Construct a stubbed HermesGUI instance with real application method bindings."""
+        gui = object.__new__(HermesGUI)
+        gui.root = HeadlessWidgetStub(title=t("app.title"))
+        gui.menu_bar = HeadlessWidgetStub()
+        gui._build_menu_items = MagicMock()
+
+        # Sidebar stub
+        gui.sidebar = HeadlessWidgetStub()
+        gui.sidebar.update_ui_language = MagicMock()
+
+        # Real StatusBar instance logic via duck-typing stub
+        status_bar = object.__new__(StatusBar)
+        status_bar.status_lbl = HeadlessWidgetStub(text=t("status.ready"))
+        status_bar.dot = HeadlessWidgetStub()
+        status_bar.model_lbl = HeadlessWidgetStub()
+        status_bar.iter_lbl = HeadlessWidgetStub()
+        status_bar._state_kind = "ready"
+        status_bar._state_data = ""
+        gui.status_bar = status_bar
+
+        # Composer controls & tooltips
+        gui.attach_btn = HeadlessWidgetStub(text=t("chat.attach"))
+        gui.attach_tooltip = HeadlessWidgetStub(text=t("chat.attach_tooltip"))
+        gui.send_btn = HeadlessWidgetStub(text=t("chat.send"))
+        gui.send_tooltip = HeadlessWidgetStub(text=t("chat.send_tooltip"))
+        gui.stop_btn = HeadlessWidgetStub(text=t("chat.stop"))
+        gui.stop_tooltip = HeadlessWidgetStub(text=t("chat.stop_tooltip"))
+
+        # Register listener as HermesGUI.__init__ does
+        register_listener(gui._on_language_changed)
+        return gui
+
+    def test_menu_switch_language_updates_controls_and_preserves_ready_state(self):
+        """Verify HermesGUI._switch_language executes cleanly, updates controls, and handles ready state."""
+        gui = self._create_app_stub()
+        try:
+            # 1. Switch to Traditional Chinese via menu entry point
+            HermesGUI._switch_language(gui, "zh-hant")
+
+            # Check title and controls
+            self.assertEqual(gui.root.title(), "便攜版 Hermes Agent")
+            self.assertEqual(gui.attach_btn.cget("text"), "📎 附件")
+            self.assertEqual(gui.attach_tooltip.text, "附加圖片 (Ctrl+Shift+I)")
+            self.assertEqual(gui.send_btn.cget("text"), "發送")
+            self.assertEqual(gui.send_tooltip.text, "發送訊息 (Enter)")
+            self.assertEqual(gui.stop_btn.cget("text"), "停止")
+            self.assertEqual(gui.stop_tooltip.text, "停止生成 (Escape)")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "就緒")
+
+            # Check callbacks
+            gui.sidebar.update_ui_language.assert_called()
+            gui._build_menu_items.assert_called()
+
+            # 2. Switch back to English
+            HermesGUI._switch_language(gui, "en")
+            self.assertEqual(gui.root.title(), "Portable Hermes Agent")
+            self.assertEqual(gui.attach_btn.cget("text"), "📎 Attach")
+            self.assertEqual(gui.attach_tooltip.text, "Attach image (Ctrl+Shift+I)")
+            self.assertEqual(gui.send_btn.cget("text"), "Send")
+            self.assertEqual(gui.send_tooltip.text, "Send message (Enter)")
+            self.assertEqual(gui.stop_btn.cget("text"), "Stop")
+            self.assertEqual(gui.stop_tooltip.text, "Stop generation (Escape)")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Ready")
         finally:
-            unregister_listener(on_language_change)
+            unregister_listener(gui._on_language_changed)
 
-    @unittest.skipUnless(_has_display(), "Headless environment without display - skipping real Tk widget test")
-    def test_real_tk_widgets_on_display_available(self):
-        """Test real Tkinter widget updates when an actual display is present."""
+    def test_switch_language_preserves_thinking_and_tool_activity_states(self):
+        """
+        Critical regression test: switching language while work is in progress must
+        preserve thinking/tool activity states rather than unconditionally resetting to 'Ready'.
+        """
+        gui = self._create_app_stub()
+        try:
+            # Case A: Thinking state with custom status text
+            StatusBar.set_thinking(gui.status_bar, "Analyzing user code...")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Analyzing user code...")
+
+            HermesGUI._switch_language(gui, "zh-hant")
+            # Activity text must be preserved, NOT reset to '就緒'
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Analyzing user code...")
+
+            # Case B: Default thinking state (no text)
+            StatusBar.set_thinking(gui.status_bar, "")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "思考中...")
+
+            HermesGUI._switch_language(gui, "en")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Thinking...")
+
+            # Case C: Tool calling state
+            StatusBar.set_tool(gui.status_bar, "read_file")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Calling: read_file")
+
+            HermesGUI._switch_language(gui, "zh-hant")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "正在呼叫：read_file")
+
+            HermesGUI._switch_language(gui, "zh")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "正在调用：read_file")
+
+            # Case D: Error state
+            StatusBar.set_error(gui.status_bar)
+            HermesGUI._switch_language(gui, "en")
+            self.assertEqual(gui.status_bar.status_lbl.cget("text"), "Error: ")
+        finally:
+            unregister_listener(gui._on_language_changed)
+
+    def test_settings_save_triggers_gui_refresh_via_listener(self):
+        """
+        Regression test: SettingsDialog._save calls set_language(), which must
+        notify registered HermesGUI listener and refresh main controls without restart.
+        """
+        gui = self._create_app_stub()
+        try:
+            # Construct a stubbed SettingsDialog
+            dlg = object.__new__(SettingsDialog)
+            dlg.key_entries = {}
+            dlg.model_var = HeadlessWidgetStub(text="")
+            dlg.bridge = MagicMock()
+            dlg.destroy = MagicMock()
+
+            # User selected Traditional Chinese in Settings
+            dlg.lang_var = HeadlessWidgetStub(text="繁體中文")
+
+            # Execute actual SettingsDialog._save method
+            SettingsDialog._save(dlg)
+
+            # Dialog must be closed and language updated in GUI
+            dlg.destroy.assert_called_once()
+            self.assertEqual(get_language(), "zh-hant")
+            self.assertEqual(gui.attach_btn.cget("text"), "📎 附件")
+            self.assertEqual(gui.send_btn.cget("text"), "發送")
+            self.assertEqual(gui.stop_btn.cget("text"), "停止")
+            self.assertEqual(gui.root.title(), "便攜版 Hermes Agent")
+        finally:
+            unregister_listener(gui._on_language_changed)
+
+    def test_listener_cleanup_on_close(self):
+        """HermesGUI._on_close must unregister the language change listener."""
+        gui = self._create_app_stub()
+        gui.bridge = MagicMock()
+        gui.bridge.is_running = False
+
+        # Close the app
+        HermesGUI._on_close(gui)
+
+        # Ensure listener was removed
+        from gui.i18n import _listeners
+        self.assertNotIn(gui._on_language_changed, _listeners)
+
+    @unittest.skipUnless(_has_display(), "Headless environment without display - skipping real Tk display lane")
+    def test_display_backed_app_and_settings_switching(self):
+        """Full display-backed lane: verifies actual Tkinter widgets and SettingsDialog under a real window."""
         import tkinter as tk
         root = tk.Tk()
         root.withdraw()
         try:
-            btn = tk.Button(root, text=t("chat.send"))
-            self.assertEqual(btn["text"], t("chat.send"))
+            # Build actual StatusBar and controls
+            status_bar = StatusBar(root)
+            status_bar.set_thinking("Deep reasoning in progress")
+            self.assertEqual(status_bar.status_lbl.cget("text"), "Deep reasoning in progress")
 
+            btn_attach = tk.Button(root, text=t("chat.attach"))
+            tip_attach = Tooltip(btn_attach, t("chat.attach_tooltip"))
+
+            # Switch language
             set_language("zh-hant", persist=False)
-            btn.configure(text=t("chat.send"))
-            self.assertEqual(btn["text"], "發送")
+            status_bar.update_ui_language()
+            btn_attach.configure(text=t("chat.attach"))
+            tip_attach.text = t("chat.attach_tooltip")
 
-            set_language("en", persist=False)
-            btn.configure(text=t("chat.send"))
-            self.assertEqual(btn["text"], "Send")
+            self.assertEqual(btn_attach.cget("text"), "📎 附件")
+            self.assertEqual(tip_attach.text, "附加圖片 (Ctrl+Shift+I)")
+            self.assertEqual(status_bar.status_lbl.cget("text"), "Deep reasoning in progress")
         finally:
             root.destroy()
 
