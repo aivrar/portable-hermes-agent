@@ -1,7 +1,9 @@
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
+import pytest
 import build_release
 
 
@@ -60,10 +62,53 @@ def test_release_tag_produces_the_expected_asset_name(tmp_path, monkeypatch):
         ["build_release.py", "--version", "v9.8.7", "--output-dir", str(tmp_path)],
     )
     monkeypatch.setattr(build_release, "iter_release_files", lambda: iter(()))
+    monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", set())
 
     build_release.main()
 
     assert (tmp_path / "portable-hermes-agent-v9.8.7.zip").is_file()
+
+
+@pytest.mark.parametrize("failure", ["inventory", "missing_source", "write", "corrupt"])
+def test_incomplete_build_never_replaces_previous_archive(tmp_path, monkeypatch, failure):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "README.md").write_bytes(b"portable readme")
+    output = tmp_path / "release"
+    output.mkdir()
+    published = output / "portable-hermes-agent-vtest.zip"
+    published.write_bytes(b"previous verified release")
+    monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "test",
+                                     "--output-dir", str(output)])
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(source))
+    monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", {"README.md"})
+    candidates = [] if failure == "inventory" else ["README.md"]
+    if failure == "missing_source":
+        candidates.append("gui/app.py")
+    monkeypatch.setattr(build_release, "iter_release_files", lambda: iter(candidates))
+    if failure == "write":
+        def fail_write(*args, **kwargs):
+            raise PermissionError("source became unreadable")
+        monkeypatch.setattr(zipfile.ZipFile, "write", fail_write)
+    elif failure == "corrupt":
+        def corrupt_write(zf, filename, arcname):
+            zf.writestr(arcname, b"wrong bytes")
+        monkeypatch.setattr(zipfile.ZipFile, "write", corrupt_write)
+
+    with pytest.raises((RuntimeError, OSError)):
+        build_release.main()
+    assert published.read_bytes() == b"previous verified release"
+    assert list(output.iterdir()) == [published]
+
+
+def test_release_required_surface_is_tracked_and_not_excluded():
+    from tools.update_hermes_tool import _PORTABLE_SOURCE_PATHS, _PORTABLE_REQUIRED_TREE_FILES
+
+    candidates = {p for p in build_release.iter_release_files()
+                  if not build_release.should_exclude(p)}
+    assert build_release.REQUIRED_RELEASE_FILES <= candidates
+    # Adding a portable-owned source must also add it to the release minimum.
+    assert (_PORTABLE_SOURCE_PATHS | _PORTABLE_REQUIRED_TREE_FILES) <= build_release.REQUIRED_RELEASE_FILES
 
 
 def test_readme_download_links_target_the_portable_release_page():

@@ -10,6 +10,11 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
+import urllib.request
+import zipfile
+
+import pytest
 
 
 def test_staged_apps_swap_preserves_live_release_dir(tmp_path, monkeypatch):
@@ -54,3 +59,63 @@ def test_staged_apps_swap_preserves_live_release_dir(tmp_path, monkeypatch):
     )
     exe = root / "apps" / "desktop" / "release" / "win-unpacked" / "Hermes.exe"
     assert exe.exists() and exe.read_bytes() == b"MZbuilt"
+
+
+def test_portable_zip_update_installs_complete_gui_and_preserves_user_state(tmp_path, monkeypatch):
+    from hermes_cli import main as hermes_main
+    from hermes_cli import update_cmd
+
+    root = tmp_path / "installed"
+    root.mkdir()
+    preserved = {
+        ".hermes/gui_config.json": b'{"language":"zh-hant"}',
+        ".hermes/custom_tools/personal.py": b"# personal tool",
+        ".env": b"FAKE_TEST_KEY=keep",
+        "python_embedded/python.exe": b"embedded runtime",
+        "extensions/comfyui/user-model.bin": b"user model",
+        "apps/desktop/release/win-unpacked/Hermes.exe": b"desktop build",
+    }
+    for name, content in preserved.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (root / "README.md").write_bytes(b"old portable readme")
+    source = Path(__file__).resolve().parents[2]
+    delivered = {p.relative_to(source).as_posix(): p.read_bytes()
+                 for p in (source / "gui").rglob("*.py")}
+    for name in ("README.md", "README.zh-TW.md", "START.bat", "hermes_gui.bat",
+                 "tools/update_hermes_tool.py"):
+        delivered[name] = (source / name).read_bytes()
+    delivered["apps/desktop/electron/main.cjs"] = b"// updated desktop source"
+    archive = tmp_path / "download.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, content in delivered.items():
+            zf.writestr("portable-hermes-agent-main/" + name, content)
+        for name in preserved:
+            if not name.startswith("apps/"):
+                zf.writestr("portable-hermes-agent-main/" + name, b"must not replace user data")
+
+    def download(url, target):
+        assert url == "https://github.com/aivrar/portable-hermes-agent/archive/refs/heads/main.zip"
+        shutil.copyfile(archive, target)
+
+    class SourceUpdateFinished(Exception):
+        pass
+
+    def stop_before_dependency_install():
+        raise SourceUpdateFinished
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(hermes_main, "_capture_active_tool_dependencies", lambda: [])
+    monkeypatch.setattr(hermes_main, "_resolve_update_branch", lambda args: "main")
+    monkeypatch.setattr(urllib.request, "urlretrieve", download)
+    monkeypatch.setattr(update_cmd, "_read_project_version", lambda: "old")
+    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda *args: None)
+    monkeypatch.setattr(hermes_main, "_record_bytecode_fingerprint", lambda: None)
+    monkeypatch.setattr(hermes_main, "_refresh_bootstrap_cache_scripts", lambda *args: None)
+    monkeypatch.setattr(hermes_main, "_abort_dependency_sync_if_self_locked", stop_before_dependency_install)
+    # Run the real download/extract/stage/swap path, stopping only before package installation.
+    with pytest.raises(SourceUpdateFinished):
+        update_cmd._update_via_zip(SimpleNamespace())
+    for name, content in {**delivered, **preserved}.items():
+        assert (root / name).read_bytes() == content, name

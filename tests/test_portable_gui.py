@@ -105,7 +105,10 @@ def test_gui_keeps_portable_branding_and_has_no_stale_version_label():
         encoding="utf-8"
     )
 
-    assert 'self.root.title("Portable Hermes Agent")' in source
+    from gui.i18n import TRANSLATIONS
+
+    assert TRANSLATIONS["en"]["app.title"] == "Portable Hermes Agent"
+    assert 'self.root.title(t("app.title"))' in source
     assert "github.com/aivrar/portable-hermes-agent" in source
     assert "Hermes Agent v0.2.0" not in source
 

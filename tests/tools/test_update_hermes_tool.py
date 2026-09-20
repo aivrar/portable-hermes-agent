@@ -174,6 +174,7 @@ def test_divergent_merge_uses_upstream_tree_and_restores_portable_surface(
     runtime_markers = {
         ".env": "PORTABLE_SECRET=kept\n",
         ".hermes/config.yaml": "portable: true\n",
+        ".hermes/gui_config.json": '{"language": "zh-hant"}\n',
         ".hermes/custom_tools/user_tool.py": "# user tool\n",
         ".hermes/extensions/user-extension/state.json": "{}\n",
         ".venv/pyvenv.cfg": "home = portable\n",
@@ -274,9 +275,14 @@ def test_upstream_zip_update_preserves_runtime_readme_and_portable_tools(
     project.mkdir()
     portable_files = {
         "README.md": "# Portable Hermes Agent\nportable instructions\n",
+        "README.zh-TW.md": "portable translated instructions\n",
+        ".gitattributes": "*.bat text eol=crlf\n",
+        "gui/i18n.py": "# portable translations\n",
+        "gui/future_panel.py": "# preserve whole GUI tree\n",
         "tools/update_hermes_tool.py": "# portable upstream updater\n",
         ".github/workflows/portable.yml": "name: portable\n",
         ".hermes/config.yaml": "portable: true\n",
+        ".hermes/gui_config.json": '{"language": "zh-hant"}\n',
         ".hermes/custom_tools/user_tool.py": "# user tool\n",
         ".hermes/extensions/user-extension/state.json": "{}\n",
         "extensions/comfyui/user-model.txt": "keep me\n",
@@ -297,6 +303,9 @@ def test_upstream_zip_update_preserves_runtime_readme_and_portable_tools(
     with zipfile.ZipFile(archive, "w") as zf:
         root = "hermes-agent-main/"
         zf.writestr(root + "README.md", "# Hermes Agent\nupstream readme\n")
+        for name in ("README.zh-TW.md", ".gitattributes", "gui/i18n.py",
+                     "gui/future_panel.py", ".hermes/gui_config.json"):
+            zf.writestr(root + name, "upstream replacement\n")
         zf.writestr(root + "tools/update_hermes_tool.py", "# upstream file\n")
         zf.writestr(root + ".github/workflows/upstream.yml", "name: upstream\n")
         zf.writestr(root + ".hermes/config.yaml", "portable: false\n")
@@ -311,10 +320,10 @@ def test_upstream_zip_update_preserves_runtime_readme_and_portable_tools(
     monkeypatch.setattr(
         update_hermes_tool,
         "_PORTABLE_SOURCE_PATHS",
-        {"README.md", "tools/update_hermes_tool.py"},
+        {"README.md", "README.zh-TW.md", ".gitattributes", "tools/update_hermes_tool.py"},
     )
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_DIRS", set())
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_REQUIRED_TREE_FILES", set())
+    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_DIRS", {"gui"})
+    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_REQUIRED_TREE_FILES", {"gui/i18n.py"})
     monkeypatch.setattr(
         update_hermes_tool, "urlopen", lambda *args, **kwargs: io.BytesIO(payload)
     )

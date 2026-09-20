@@ -57,7 +57,12 @@ _PORTABLE_RUNTIME_PATHS = {
 }
 
 _PORTABLE_SOURCE_PATHS = {
+    ".gitattributes",
     "README.md",
+    "README.es.md",
+    "README.ur-pk.md",
+    "README.zh-CN.md",
+    "README.zh-TW.md",
     "START.bat",
     "START_HERE.txt",
     "UPDATE.bat",
@@ -69,6 +74,7 @@ _PORTABLE_SOURCE_PATHS = {
     "scripts/install.ps1",
     "scripts/install.sh",
     "docs/hermes-guide.md",
+    "docs/portable-release-checklist.md",
     "docs/Portable-Hermes-Agent-Manual.pdf",
     "assets/SOUL.md",
     "tools/update_hermes_tool.py",
@@ -97,6 +103,7 @@ _PORTABLE_SOURCE_DIRS = {
 
 _PORTABLE_REQUIRED_TREE_FILES = {
     "gui/app.py",
+    "gui/i18n.py",
     "gui/agent_bridge.py",
     "gui/theme.py",
     "skills/extensions/portable-comfyui/SKILL.md",

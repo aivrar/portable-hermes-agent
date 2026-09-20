@@ -1,3 +1,5 @@
+# Portable Hermes Agent
+
 <p align="center">
   <a href="README.md"><img src="https://img.shields.io/badge/Language-English-blue?style=for-the-badge" alt="English"></a>
   <a href="README.zh-TW.md"><img src="https://img.shields.io/badge/語言-繁體中文-purple?style=for-the-badge" alt="繁體中文"></a>
@@ -5,8 +7,6 @@
   <a href="README.es.md"><img src="https://img.shields.io/badge/Idioma-Español-yellow?style=for-the-badge" alt="Español"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/زبان-اردو-green?style=for-the-badge" alt="اردو"></a>
 </p>
-
-# Portable Hermes Agent
 
 **Portable AI agent desktop for Windows** — 100 tools, GUI, local models via LM Studio, TTS, Music, ComfyUI, workflows, tool maker. No install. No Docker. No admin rights.
 
