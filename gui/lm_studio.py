@@ -360,13 +360,13 @@ class LMStudioPanel(tk.Toplevel):
         # Title
         hdr = tk.Frame(self, bg=C["bg_main"], padx=20, pady=16)
         hdr.pack(fill="x")
-        tk.Label(hdr, text="LM Studio", font=FONTS["title"],
+        tk.Label(hdr, text=t("lmstudio.heading", "LM Studio"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(side="left")
 
         self.status_dot = tk.Label(hdr, text="\u25CF", font=SF("Segoe UI", 12),
                                   fg=C["text_disabled"], bg=C["bg_main"])
         self.status_dot.pack(side="left", padx=(8, 4))
-        self.status_lbl = tk.Label(hdr, text="Connecting...", font=FONTS["small"],
+        self.status_lbl = tk.Label(hdr, text=t("lmstudio.status_connecting", "Connecting..."), font=FONTS["small"],
                                   fg=C["text_hint"], bg=C["bg_main"])
         self.status_lbl.pack(side="left")
 
@@ -377,7 +377,7 @@ class LMStudioPanel(tk.Toplevel):
         # Endpoint config
         ep_row = tk.Frame(self, bg=C["bg_main"], padx=20)
         ep_row.pack(fill="x", pady=(0, 8))
-        tk.Label(ep_row, text="Endpoint:", font=FONTS["body"],
+        tk.Label(ep_row, text=t("lmstudio.endpoint", "Endpoint:"), font=FONTS["body"],
                 fg=C["text_secondary"], bg=C["bg_main"]).pack(side="left")
         self._ep_var = tk.StringVar(value=self.client.base_url)
         ep_entry = tk.Entry(ep_row, textvariable=self._ep_var,
@@ -385,11 +385,11 @@ class LMStudioPanel(tk.Toplevel):
                            fg=C["text_primary"], insertbackground=C["text_primary"],
                            relief="flat")
         ep_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), ipady=2)
-        ttk.Button(ep_row, text="Connect", style="Small.TButton",
+        ttk.Button(ep_row, text=t("lmstudio.connect", "Connect"), style="Small.TButton",
                    command=self._apply_endpoint).pack(side="left")
 
         # Model list
-        model_frame = tk.LabelFrame(self, text="  Available Models  ",
+        model_frame = tk.LabelFrame(self, text=f"  {t('lmstudio.available_models', 'Available Models')}  ",
                                     bg=C["bg_main"], fg=C["text_secondary"],
                                     font=FONTS["subheading"], padx=12, pady=8)
         model_frame.pack(fill="both", expand=True, padx=20, pady=(0, 8))
@@ -412,7 +412,7 @@ class LMStudioPanel(tk.Toplevel):
         # GPU selector
         gpu_row = tk.Frame(ctrl, bg=C["bg_main"])
         gpu_row.pack(fill="x", pady=4)
-        tk.Label(gpu_row, text="GPU:", font=FONTS["body"],
+        tk.Label(gpu_row, text=t("lmstudio.gpu", "GPU:"), font=FONTS["body"],
                 fg=C["text_secondary"], bg=C["bg_main"], width=12,
                 anchor="w").pack(side="left")
         self.gpu_var = tk.StringVar()
@@ -431,7 +431,7 @@ class LMStudioPanel(tk.Toplevel):
         from gui.theme import S as _S
         ctx_row = tk.Frame(ctrl, bg=C["bg_main"])
         ctx_row.pack(fill="x", pady=4)
-        tk.Label(ctx_row, text="Context:", font=FONTS["body"],
+        tk.Label(ctx_row, text=t("lmstudio.context", "Context:"), font=FONTS["body"],
                 fg=C["text_secondary"], bg=C["bg_main"], width=12,
                 anchor="w").pack(side="left")
 
@@ -458,18 +458,18 @@ class LMStudioPanel(tk.Toplevel):
         btn_row = tk.Frame(self, bg=C["bg_main"], padx=20, pady=12)
         btn_row.pack(fill="x")
 
-        self.load_btn = ttk.Button(btn_row, text="Load Model", style="Primary.TButton",
+        self.load_btn = ttk.Button(btn_row, text=t("lmstudio.load", "Load Model"), style="Primary.TButton",
                                    command=self._load_model)
         self.load_btn.pack(side="left", padx=(0, 8))
 
-        self.unload_btn = ttk.Button(btn_row, text="Unload", style="Danger.TButton",
+        self.unload_btn = ttk.Button(btn_row, text=t("lmstudio.unload", "Unload"), style="Danger.TButton",
                                      command=self._unload_model)
         self.unload_btn.pack(side="left", padx=(0, 8))
 
-        ttk.Button(btn_row, text="Refresh", style="TButton",
+        ttk.Button(btn_row, text=t("lmstudio.refresh", "Refresh"), style="TButton",
                    command=self._refresh_models).pack(side="left", padx=(0, 8))
 
-        self.use_btn = ttk.Button(btn_row, text="Use for Chat", style="Primary.TButton",
+        self.use_btn = ttk.Button(btn_row, text=t("lmstudio.use_chat", "Use for Chat"), style="Primary.TButton",
                                   command=self._use_model)
         self.use_btn.pack(side="right")
 
@@ -487,14 +487,14 @@ class LMStudioPanel(tk.Toplevel):
     def _on_connected(self, running, sdk_ok):
         if running:
             self.status_dot.configure(fg=C["success"])
-            status = "Connected"
+            status = t("lmstudio.status_connected", "Connected")
             if sdk_ok:
                 status += " (SDK active)"
             self.status_lbl.configure(text=status)
             self._refresh_models()
         else:
             self.status_dot.configure(fg=C["danger"])
-            self.status_lbl.configure(text="Not running — start LM Studio first")
+            self.status_lbl.configure(text=t("lmstudio.status_not_running", "Not running — start LM Studio first"))
 
     def _apply_endpoint(self):
         """Apply a new LM Studio endpoint URL and reconnect."""
@@ -504,7 +504,8 @@ class LMStudioPanel(tk.Toplevel):
         self.client = LMStudioClient(base_url=url)
         # Update status and reconnect
         self.status_dot.configure(fg=C["text_disabled"])
-        self.status_lbl.configure(text="Connecting...")
+        self.status_lbl.configure(text=t("lmstudio.status_connecting", "Connecting..."))
+        self._connect()
         self._connect()
 
     def _refresh_models(self):

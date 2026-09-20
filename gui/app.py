@@ -980,12 +980,12 @@ class SettingsDialog(tk.Toplevel):
 
     def _build_api(self, parent):
         keys = [
-            ("OPENROUTER_API_KEY", "OpenRouter (main LLM provider)"),
-            ("FIRECRAWL_API_KEY", "Firecrawl (web search)"),
-            ("FAL_KEY", "FAL.ai (image generation)"),
-            ("SERPER_API_KEY", "Serper.dev (Google search)"),
-            ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (voice/transcription)"),
-            ("GITHUB_TOKEN", "GitHub (Skills Hub rate limits)"),
+            ("OPENROUTER_API_KEY", t("settings.api_openrouter", "OpenRouter (main LLM provider)")),
+            ("FIRECRAWL_API_KEY", t("settings.api_firecrawl", "Firecrawl (web search)")),
+            ("FAL_KEY", t("settings.api_fal", "FAL.ai (image generation)")),
+            ("SERPER_API_KEY", t("settings.api_serper", "Serper.dev (Google search)")),
+            ("VOICE_TOOLS_OPENAI_KEY", t("settings.api_openai", "OpenAI (voice/transcription)")),
+            ("GITHUB_TOKEN", t("settings.api_github", "GitHub (Skills Hub rate limits)")),
         ]
         self.key_entries = {}
         for key, label in keys:
@@ -1021,7 +1021,7 @@ class SettingsDialog(tk.Toplevel):
         self.model_combo = ttk.Combobox(parent, textvariable=self.model_var,
                                         values=models, font=FONTS["mono_small"])
         self.model_combo.pack(fill="x", pady=(4, 12))
-        tk.Label(parent, text="You can type any OpenRouter model ID",
+        tk.Label(parent, text=t("settings.model_hint", "You can type any OpenRouter model ID"),
                 font=SF("Segoe UI", 8), fg=C["text_disabled"], bg=C["bg_main"]).pack(anchor="w")
 
     def _build_general(self, parent):
@@ -1098,13 +1098,13 @@ def _discover_installed_skills(skills_dir: Path) -> Dict[str, list]:
 class SkillsBrowser(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("Skills Browser")
+        self.title(t("skills.title", "Skills Browser"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
         set_dark_title_bar(self)
         center_window(self, 650, 500, parent)
 
-        tk.Label(self, text="Installed Skills", font=FONTS["title"],
+        tk.Label(self, text=t("skills.heading", "Installed Skills"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(pady=(20, 8))
 
         self.text = tk.Text(self, wrap="word", bg=C["bg_card"], fg=C["text_primary"],
@@ -1121,7 +1121,7 @@ class SkillsBrowser(tk.Toplevel):
         try:
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
-                self.after(0, lambda: self._set("No skills directory found."))
+                self.after(0, lambda: self._set(t("skills.no_dir", "No skills directory found.")))
                 return
             cats = _discover_installed_skills(skills_dir)
             lines = []
@@ -1130,7 +1130,7 @@ class SkillsBrowser(tk.Toplevel):
                 lines.append("  " + "-" * 40)
                 for n, d in cats[cat]:
                     lines.append(f"    {n:30s} {d[:50]}" if d else f"    {n}")
-            self.after(0, lambda: self._set("\n".join(lines) or "No skills found."))
+            self.after(0, lambda: self._set("\n".join(lines) or t("skills.no_skills", "No skills found.")))
         except Exception as e:
             self.after(0, lambda: self._set(f"Error: {e}"))
 
@@ -1281,26 +1281,9 @@ class HermesGUI:
         # Show context-aware welcome message
         has_key = self.bridge._is_model_configured()
         if has_key:
-            self._add_msg(
-                "Welcome to Portable Hermes Agent!\n"
-                "Type a message below and press Enter to chat.\n"
-                "Shift+Enter for newlines. Escape to interrupt.",
-                "system"
-            )
+            self._add_msg(t("chat.welcome_configured"), "system")
         else:
-            self._add_msg(
-                "Welcome to Portable Hermes Agent!\n\n"
-                "No AI model is connected yet, but that's OK!\n"
-                "I'm running in guided mode \u2014 ask me anything and I'll "
-                "search the built-in guide for answers.\n\n"
-                "Try typing:\n"
-                "  \u2022 How do I get started?\n"
-                "  \u2022 What is OpenRouter?\n"
-                "  \u2022 How do I use local models?\n"
-                "  \u2022 What can Hermes do?\n\n"
-                "Or go to File > API Key Setup to connect an AI model.",
-                "system"
-            )
+            self._add_msg(t("chat.welcome_unconfigured"), "system")
 
         # Notify user if we fell back from a local model
         if self.bridge._startup_fallback:
@@ -1413,6 +1396,14 @@ class HermesGUI:
         if hasattr(self, "stop_tooltip"):
             self.stop_tooltip.text = t("chat.stop_tooltip")
 
+        # 6. Chat title
+        if hasattr(self, "chat_title") and self.chat_title.winfo_exists():
+            current_title = self.chat_title.cget("text")
+            if current_title in ("New Chat", "新對話", "新建对话"):
+                self.chat_title.configure(text=t("chat.new_chat_title"))
+            elif current_title in ("Resumed Session", "恢復對話", "恢复对话"):
+                self.chat_title.configure(text=t("chat.resumed_session"))
+
     # ---- Layout ----
 
     def _build_layout(self):
@@ -1439,7 +1430,7 @@ class HermesGUI:
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
-        self.chat_title = tk.Label(hdr, text="New Chat", font=FONTS["subheading"],
+        self.chat_title = tk.Label(hdr, text=t("chat.new_chat_title"), font=FONTS["subheading"],
                                   fg=C["text_primary"], bg=C["bg_sidebar"])
         self.chat_title.pack(side="left", padx=16)
 
@@ -1755,9 +1746,9 @@ class HermesGUI:
         self.bridge.new_session()
         for w in self.msg_frame.winfo_children():
             w.destroy()
-        self.chat_title.configure(text="New Chat")
+        self.chat_title.configure(text=t("chat.new_chat_title"))
         self.status_bar.set_ready()
-        self._add_msg("New session started.", "system")
+        self._add_msg(t("chat.session_started", "New session started."), "system")
         self.input_text.focus_set()
         self.sidebar.refresh_sessions()
 
@@ -1810,7 +1801,7 @@ class HermesGUI:
             # Load conversation into bridge
             self.bridge.conversation_history = messages
             self.bridge.agent = None  # Force recreation
-            self.chat_title.configure(text="Resumed Session")
+            self.chat_title.configure(text=t("chat.resumed_session"))
 
             # Display messages
             for msg in messages:
@@ -1833,7 +1824,7 @@ class HermesGUI:
                     # Skip tool results in replay
                     pass
 
-            self._add_msg("Session resumed. You can continue the conversation.", "system")
+            self._add_msg(t("chat.session_resumed", "Session resumed. You can continue the conversation."), "system")
             self.input_text.focus_set()
 
         except Exception as e:
@@ -1843,7 +1834,7 @@ class HermesGUI:
         if self.bridge.is_running:
             self.bridge.interrupt()
             self._cleanup_stream_bubble()
-            self._add_msg("Generation stopped.", "system")
+            self._add_msg(t("chat.generation_stopped", "Generation stopped."), "system")
             self.status_bar.set_ready()
 
     def _open_settings(self):

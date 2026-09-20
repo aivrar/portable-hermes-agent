@@ -75,7 +75,7 @@ class PermissionsPanel(tk.Toplevel):
 
         ttk.Button(btn_frame, text=t("permissions.save"), style="Primary.TButton",
                    command=self._save).pack(side="right")
-        ttk.Button(btn_frame, text="Reset to Defaults", style="TButton",
+        ttk.Button(btn_frame, text=t("permissions.reset_defaults", "Reset to Defaults"), style="TButton",
                    command=self._reset).pack(side="right", padx=(0, 8))
 
     def _build_card(self, parent, key, defn):
@@ -88,7 +88,8 @@ class PermissionsPanel(tk.Toplevel):
         hdr = tk.Frame(card, bg=C["bg_card"])
         hdr.pack(fill="x")
 
-        tk.Label(hdr, text=defn["name"], font=FONTS["subheading"],
+        category_name = t(f"permissions.{key}.name", defn["name"])
+        tk.Label(hdr, text=category_name, font=FONTS["subheading"],
                 fg=C["text_primary"], bg=C["bg_card"]).pack(side="left")
 
         current = self.perms.get(key, defn["default"])
@@ -125,7 +126,8 @@ class PermissionsPanel(tk.Toplevel):
         tick_frame = tk.Frame(card, bg=C["bg_card"])
         tick_frame.pack(fill="x")
         for lvl in range(max_level + 1):
-            name = defn["levels"].get(lvl, ("?",))[0]
+            fallback_name = defn["levels"].get(lvl, ("?",))[0]
+            name = t(f"permissions.{key}.level_{lvl}.name", fallback_name)
             anchor = "w" if lvl == 0 else ("e" if lvl == max_level else "center")
             tk.Label(tick_frame, text=name, font=SF("Segoe UI", 7),
                     fg=C["text_disabled"], bg=C["bg_card"],
