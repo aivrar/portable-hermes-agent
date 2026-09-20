@@ -34,11 +34,14 @@ jobs:
       - name: Require working real Tk widgets
         shell: pwsh
         run: .venv/Scripts/python.exe -c "import tkinter as tk; r=tk.Tk(); r.withdraw(); r.update(); r.destroy()"
-      - name: Test real GUI controls without parallel display contention or retries
+      - name: Test real GUI controls without retries
         shell: bash
         env:
           HERMES_PYTHON: .venv/Scripts/python.exe
-        run: scripts/run_tests.sh tests/gui -j 1 --file-retries 0
+        # pytest fd capture can break Tcl's Windows file channels (init.tcl:
+        # "couldn't read file ... No error"). sys capture leaves OS handles intact.
+        # https://github.com/israel-dryer/ttkbootstrap/blob/master/pyproject.toml
+        run: scripts/run_tests.sh tests/gui -j 1 --file-retries 0 --capture=sys
       - name: Test portable update and release contracts without retries
         shell: bash
         env:

@@ -35,6 +35,9 @@ There are two distinct update paths. Do not substitute one repository for the ot
    this does not change the embedded Python used by the portable application.
 3. Run real Tk widget tests on a machine with a display (or Xvfb). A skipped
    display test is not evidence that the GUI works.
+   On Windows use `scripts/run_tests.sh tests/gui -j 1 --file-retries 0 --capture=sys`:
+   pytest's default file-descriptor capture can interfere with Tcl file channels
+   and produce misleading `init.tcl` read failures. Do not mask these with retries.
 4. Check both source-update paths: upstream Git merge and ZIP overlay retain
    portable files; portable ZIP replacement delivers new GUI modules. Preserve
    user configuration, custom tools, language preferences, downloaded extensions,
