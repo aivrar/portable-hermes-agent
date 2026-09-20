@@ -218,7 +218,7 @@ class APISetupWizard(tk.Toplevel):
         for svc in API_SERVICES:
             has_key = bool(os.getenv(svc["key"]))
             dot_color = C["success"] if has_key else (C["danger"] if svc["required"] else C["warning_dark"])
-            status_text = t("wizard.status_ready") if has_key else ("Required" if svc["required"] else t("wizard.status_not_set"))
+            status_text = t("wizard.status_ready") if has_key else (t("wizard.status_required") if svc["required"] else t("wizard.status_not_set"))
             hover_bg = C["bg_hover"]
 
             row = tk.Frame(status_frame, bg=C["bg_main"], cursor="hand2",
@@ -255,10 +255,7 @@ class APISetupWizard(tk.Toplevel):
                        command=self._finish).pack(pady=10)
         else:
             missing_count = len(self.services)
-            tk.Label(self, text=f"\n{missing_count} key{'s' if missing_count > 1 else ''} to set up. "
-                    "Each takes about 1 minute.\n"
-                    "I'll open the signup page — you handle any CAPTCHAs,\n"
-                    "then paste the key back here.",
+            tk.Label(self, text=t("wizard.keys_to_setup", count=missing_count),
                     font=FONTS["body"], fg=C["text_secondary"],
                     bg=C["bg_main"], justify="center").pack(pady=(15, 0))
 
@@ -282,6 +279,7 @@ class APISetupWizard(tk.Toplevel):
         self._clear()
 
         key_name = svc["key"]
+        svc_key = key_name.lower()
         step_num = self.current_step + 1
         total = len(self.services)
 
@@ -303,14 +301,17 @@ class APISetupWizard(tk.Toplevel):
         tk.Label(hdr, text=f"[{svc['icon']}] {svc['name']}",
                 font=FONTS["heading"], fg=C["accent"],
                 bg=C["bg_main"]).pack(anchor="w", pady=(4, 0))
-        tk.Label(hdr, text=svc["what"], font=FONTS["body"],
+        what_text = t(f"wizard.service.{svc_key}.what", svc["what"])
+        tk.Label(hdr, text=what_text, font=FONTS["body"],
                 fg=C["text_primary"], bg=C["bg_main"]).pack(anchor="w", pady=(4, 0))
 
         # Unlocks
-        tk.Label(hdr, text=f"Unlocks: {svc['unlocks']}",
+        unlocks_val = t(f"wizard.service.{svc_key}.unlocks", svc["unlocks"])
+        tk.Label(hdr, text=t("wizard.unlocks", unlocks=unlocks_val),
                 font=FONTS["small"], fg=C["success"],
                 bg=C["bg_main"]).pack(anchor="w", pady=(2, 0))
-        tk.Label(hdr, text=svc["free_tier"],
+        free_tier_text = t(f"wizard.service.{svc_key}.free_tier", svc["free_tier"])
+        tk.Label(hdr, text=free_tier_text,
                 font=FONTS["small"], fg=C["warning_dark"],
                 bg=C["bg_main"]).pack(anchor="w")
 
@@ -319,8 +320,9 @@ class APISetupWizard(tk.Toplevel):
                               highlightbackground=C["border"], highlightthickness=1)
         steps_frame.pack(fill="x", padx=40, pady=(16, 0))
 
-        for step_text in svc["steps"]:
-            tk.Label(steps_frame, text=step_text, font=FONTS["body"],
+        for i, step_text in enumerate(svc["steps"]):
+            localized_step = t(f"wizard.service.{svc_key}.step_{i+1}", step_text)
+            tk.Label(steps_frame, text=localized_step, font=FONTS["body"],
                     fg=C["text_primary"], bg=C["bg_card"],
                     anchor="w", justify="left").pack(fill="x", pady=1)
 
@@ -332,7 +334,7 @@ class APISetupWizard(tk.Toplevel):
                              style="Primary.TButton",
                              command=lambda: webbrowser.open(svc["signup_url"]))
         open_btn.pack(fill="x")
-        Tooltip(open_btn, f"Opens {svc['signup_url']} in your default browser")
+        Tooltip(open_btn, t("wizard.open_url_tooltip", url=svc["signup_url"]))
 
         # Key entry
         entry_frame = tk.Frame(self, bg=C["bg_main"])
@@ -359,11 +361,11 @@ class APISetupWizard(tk.Toplevel):
         clip_frame = tk.Frame(entry_frame, bg=C["bg_main"])
         clip_frame.pack(fill="x", pady=(6, 0))
 
-        ttk.Button(clip_frame, text=t("wizard.clip_detected", "Paste from Clipboard"),
+        ttk.Button(clip_frame, text=t("wizard.paste_from_clip"),
                    style="Small.TButton",
                    command=lambda: self._paste_from_clipboard(key_entry)).pack(side="left")
 
-        tk.Label(clip_frame, text="  Copy the key on the website, then click this",
+        tk.Label(clip_frame, text=f"  {t('wizard.copy_hint')}",
                 font=SF("Segoe UI", 8), fg=C["text_hint"],
                 bg=C["bg_main"]).pack(side="left")
 
@@ -432,7 +434,7 @@ class APISetupWizard(tk.Toplevel):
                 entry.insert(0, clip)
                 self._clip_snapshot = clip  # Don't re-trigger
                 self.status_label.configure(
-                    text="Key detected from clipboard!",
+                    text=t("wizard.clip_detected"),
                     fg=C["success"])
 
         # Poll every 2 seconds
