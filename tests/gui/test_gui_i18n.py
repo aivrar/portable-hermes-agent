@@ -103,6 +103,24 @@ class TestGuiI18n(unittest.TestCase):
         self.assertEqual(t("non_existent_key_12345"), "non_existent_key_12345")
         self.assertEqual(t("non_existent_key_12345", default="Default Val"), "Default Val")
 
+    def test_wizard_translations(self):
+        """Verify API key setup wizard translations across all supported languages."""
+        set_language("zh-hant", persist=False)
+        self.assertEqual(t("wizard.status_required"), "必填")
+        self.assertIn("需設定 5 項金鑰", t("wizard.keys_to_setup", count=5))
+        self.assertEqual(t("wizard.paste_from_clip"), "從剪貼簿貼上")
+        self.assertIn("核心大腦", t("wizard.service.openrouter_api_key.what"))
+
+        set_language("zh", persist=False)
+        self.assertEqual(t("wizard.status_required"), "必填")
+        self.assertIn("需设置 5 项密钥", t("wizard.keys_to_setup", count=5))
+        self.assertEqual(t("wizard.paste_from_clip"), "从剪贴板粘贴")
+
+        set_language("en", persist=False)
+        self.assertEqual(t("wizard.status_required"), "Required")
+        self.assertIn("5 key(s) to set up", t("wizard.keys_to_setup", count=5))
+        self.assertEqual(t("wizard.paste_from_clip"), "Paste from Clipboard")
+
 
 if __name__ == "__main__":
     unittest.main()
