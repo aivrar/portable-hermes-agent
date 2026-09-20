@@ -1,10 +1,32 @@
 """Build a release zip for portable-hermes-agent."""
 import argparse
+import hashlib
 import os
 import subprocess
+import tempfile
 import zipfile
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# Minimum bootable portable surface. The complete tracked inventory is checked
+# separately below; these catch accidental removal from that inventory itself.
+REQUIRED_RELEASE_FILES = {
+    "README.md", "README.zh-TW.md", "START.bat", "UPDATE.bat", "install.bat",
+    "hermes.bat", "hermes_gui.bat", "hermes_gui.vbs", "START_HERE.txt",
+    "gui/__init__.py", "gui/app.py", "gui/agent_bridge.py", "gui/i18n.py",
+    "gui/theme.py", "gui/api_setup_wizard.py", "gui/permissions.py",
+    "gui/permissions_panel.py", "gui/extensions.py", "gui/lm_studio.py",
+    "tools/update_hermes_tool.py", "docs/Portable-Hermes-Agent-Manual.pdf",
+    ".gitattributes", "README.es.md", "README.ur-pk.md", "README.zh-CN.md",
+    "scripts/install.cmd", "scripts/install.ps1", "scripts/install.sh",
+    "docs/hermes-guide.md", "docs/portable-release-checklist.md", "assets/SOUL.md",
+    "tools/run_python_tool.py", "tools/lm_studio_tools.py", "tools/gpu_tool.py",
+    "tools/model_switcher_tool.py", "tools/extension_tools.py", "tools/tool_maker.py",
+    "tools/workflow_tool.py", "tools/serper_search_tool.py", "tools/guide_tool.py",
+    "skills/extensions/portable-comfyui/SKILL.md", "skills/extensions/music-server/SKILL.md",
+    "skills/extensions/tts-server/SKILL.md", "skills/getting-started/SKILL.md",
+    "skills/lm-studio/SKILL.md",
+}
 
 # Directories to exclude entirely
 EXCLUDE_DIRS = {
@@ -177,27 +199,41 @@ def main():
     print(f"Output: {zip_path}")
     print()
 
-    count = 0
     prefix = "portable-hermes-agent"
+    candidates = sorted({p.replace("\\", "/") for p in iter_release_files()
+                         if not should_exclude(p)})
+    missing = REQUIRED_RELEASE_FILES - set(candidates)
+    if missing:
+        raise RuntimeError(f"Incomplete portable inventory: {', '.join(sorted(missing))}")
 
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for rel_path in sorted(iter_release_files()):
-            if should_exclude(rel_path):
-                continue
-
-            full_path = os.path.join(PROJECT_ROOT, rel_path)
-            if not os.path.isfile(full_path):
-                continue
-
-            archive_name = os.path.join(prefix, rel_path).replace("\\", "/")
-            try:
+    # Never replace a good published build with a partial ZIP. Every included
+    # source must be readable, and every archive entry must match its source.
+    fd, staging_path = tempfile.mkstemp(prefix=zip_name + ".", suffix=".tmp", dir=output_dir)
+    os.close(fd)
+    try:
+        expected = {}
+        with zipfile.ZipFile(staging_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for rel_path in candidates:
+                full_path = os.path.join(PROJECT_ROOT, rel_path)
+                with open(full_path, "rb") as source:
+                    digest = hashlib.file_digest(source, "sha256").digest()
+                archive_name = f"{prefix}/{rel_path}"
                 zf.write(full_path, archive_name)
-                count += 1
-            except (PermissionError, OSError):
-                pass
+                expected[archive_name] = digest
+        with zipfile.ZipFile(staging_path) as zf:
+            if len(zf.namelist()) != len(expected) or set(zf.namelist()) != set(expected):
+                raise RuntimeError("Release archive inventory mismatch")
+            for name, digest in expected.items():
+                with zf.open(name) as member:
+                    if hashlib.file_digest(member, "sha256").digest() != digest:
+                        raise RuntimeError(f"Release archive content mismatch: {name}")
+        os.replace(staging_path, zip_path)
+    finally:
+        if os.path.exists(staging_path):
+            os.unlink(staging_path)
 
     size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-    print(f"Done! {count} files, {size_mb:.1f} MB")
+    print(f"Verified! {len(candidates)} files, {size_mb:.1f} MB")
     print(f"Output: {zip_path}")
 
 

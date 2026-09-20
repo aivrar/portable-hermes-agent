@@ -506,7 +506,6 @@ class LMStudioPanel(tk.Toplevel):
         self.status_dot.configure(fg=C["text_disabled"])
         self.status_lbl.configure(text=t("lmstudio.status_connecting", "Connecting..."))
         self._connect()
-        self._connect()
 
     def _refresh_models(self):
         """Refresh model list."""

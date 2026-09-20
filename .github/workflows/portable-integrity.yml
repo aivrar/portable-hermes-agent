@@ -1,0 +1,52 @@
+name: Portable integrity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portable-integrity-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  portable-integrity:
+    name: Windows GUI, update preservation, and release archive
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # 10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked test dependencies
+        shell: pwsh
+        run: uv sync --locked --python (Get-Command python).Source --extra dev
+      - name: Require working real Tk widgets
+        shell: pwsh
+        run: .venv/Scripts/python.exe -c "import tkinter as tk; r=tk.Tk(); r.withdraw(); r.update(); r.destroy()"
+      - name: Test portable contracts
+        shell: bash
+        env:
+          HERMES_PYTHON: .venv/Scripts/python.exe
+        run: scripts/run_tests.sh tests/gui tests/test_portable_gui.py tests/test_build_release.py tests/tools/test_update_hermes_tool.py tests/hermes_cli/test_update_zip*.py -j 3
+      - name: Build and verify every release archive member
+        shell: pwsh
+        env:
+          ARCHIVE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        run: python build_release.py --version $env:ARCHIVE_VERSION --output-dir "$env:RUNNER_TEMP/portable-release"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-portable-release
+          path: ${{ runner.temp }}/portable-release/*.zip
+          if-no-files-found: error
+          retention-days: 7
