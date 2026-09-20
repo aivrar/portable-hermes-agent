@@ -217,7 +217,7 @@ class ExtensionsManager(tk.Toplevel):
 
         tk.Label(self, text=t("menu.extensions"), font=FONTS["title"],
                 fg=C["accent"], bg=C["bg_main"]).pack(pady=(20, 4))
-        tk.Label(self, text="Add powerful AI capabilities to Hermes",
+        tk.Label(self, text=t("extensions.subtitle", "Add powerful AI capabilities to Hermes"),
                 font=FONTS["small"], fg=C["text_hint"],
                 bg=C["bg_main"]).pack()
 
@@ -281,26 +281,30 @@ class ExtensionsManager(tk.Toplevel):
 
         # Status dot
         if running:
-            dot_color, status_text = C["success"], "Running"
+            dot_color, status_text = C["success"], t("extensions.status_running", "Running")
         elif installed:
-            dot_color, status_text = C["warning_dark"], "Installed (stopped)"
+            dot_color, status_text = C["warning_dark"], t("extensions.status_stopped", "Installed (stopped)")
         else:
-            dot_color, status_text = C["text_disabled"], "Not installed"
+            dot_color, status_text = C["text_disabled"], t("extensions.status_not_installed", "Not installed")
 
         tk.Label(hdr, text="\u25CF", font=SF("Segoe UI", 12),
                 fg=dot_color, bg=C["bg_card"]).pack(side="left", padx=(0, 8))
 
+        ext_name = t(f"extensions.{ext['id']}.name", ext["name"])
+        ext_desc = t(f"extensions.{ext['id']}.desc", ext["description"])
+        ext_size = t(f"extensions.{ext['id']}.size", ext["size_estimate"])
+
         # Title and icon
         tk.Label(hdr, text=f"[{ext['icon']}]", font=FONTS["mono_small"],
                 fg=C["text_disabled"], bg=C["bg_card"]).pack(side="left", padx=(0, 6))
-        tk.Label(hdr, text=ext["name"], font=FONTS["subheading"],
+        tk.Label(hdr, text=ext_name, font=FONTS["subheading"],
                 fg=C["text_primary"], bg=C["bg_card"]).pack(side="left")
 
         tk.Label(hdr, text=status_text, font=FONTS["small"],
                 fg=dot_color, bg=C["bg_card"]).pack(side="right")
 
         # Description
-        tk.Label(card, text=ext["description"], font=FONTS["small"],
+        tk.Label(card, text=ext_desc, font=FONTS["small"],
                 fg=C["text_secondary"], bg=C["bg_card"],
                 justify="left", anchor="w", wraplength=S(600)).pack(fill="x", pady=(6, 0))
 
@@ -308,12 +312,12 @@ class ExtensionsManager(tk.Toplevel):
         info = tk.Frame(card, bg=C["bg_card"])
         info.pack(fill="x", pady=(6, 0))
 
-        tk.Label(info, text=f"Port: {ext['port']}", font=FONTS["mono_small"],
+        tk.Label(info, text=f"{t('extensions.port')}: {ext['port']}", font=FONTS["mono_small"],
                 fg=C["text_disabled"], bg=C["bg_card"]).pack(side="left", padx=(0, 16))
-        tk.Label(info, text=f"Size: {ext['size_estimate']}", font=FONTS["mono_small"],
+        tk.Label(info, text=f"{t('extensions.size')}: {ext_size}", font=FONTS["mono_small"],
                 fg=C["text_disabled"], bg=C["bg_card"]).pack(side="left", padx=(0, 16))
         if ext.get("requires_gpu"):
-            tk.Label(info, text="GPU recommended", font=FONTS["mono_small"],
+            tk.Label(info, text=t("extensions.gpu_recommended", "GPU recommended"), font=FONTS["mono_small"],
                     fg=C["warning_dark"], bg=C["bg_card"]).pack(side="left")
 
         # Action buttons
@@ -321,17 +325,17 @@ class ExtensionsManager(tk.Toplevel):
         btn_frame.pack(fill="x", pady=(10, 0))
 
         if not installed:
-            ttk.Button(btn_frame, text="Install", style="Primary.TButton",
+            ttk.Button(btn_frame, text=t("extensions.install_btn", "Install"), style="Primary.TButton",
                        command=lambda eid=ext["id"]: self._install(eid)).pack(side="left", padx=(0, 8))
         else:
             if running:
-                ttk.Button(btn_frame, text="Stop", style="Danger.TButton",
+                ttk.Button(btn_frame, text=t("extensions.stop_btn", "Stop"), style="Danger.TButton",
                            command=lambda eid=ext["id"]: self._stop(eid)).pack(side="left", padx=(0, 8))
             else:
-                ttk.Button(btn_frame, text="Start", style="Primary.TButton",
+                ttk.Button(btn_frame, text=t("extensions.start_btn", "Start"), style="Primary.TButton",
                            command=lambda eid=ext["id"]: self._start(eid)).pack(side="left", padx=(0, 8))
 
-            ttk.Button(btn_frame, text="Open Folder", style="Small.TButton",
+            ttk.Button(btn_frame, text=t("extensions.open_folder", "Open Folder"), style="Small.TButton",
                        command=lambda p=s.get("path", ""): os.startfile(p) if p else None).pack(side="left", padx=(0, 8))
 
     def _install(self, ext_id):
@@ -339,12 +343,14 @@ class ExtensionsManager(tk.Toplevel):
         if not ext:
             return
 
+        ext_name = t(f"extensions.{ext['id']}.name", ext["name"])
+        ext_size = t(f"extensions.{ext['id']}.size", ext["size_estimate"])
+
         # Confirmation
-        if not messagebox.askyesno("Install Extension",
-                                    f"Install {ext['name']}?\n\n"
-                                    f"Size: {ext['size_estimate']}\n"
-                                    f"This will download and set up everything automatically.\n"
-                                    f"The install window will open — follow any prompts there.",
+        if not messagebox.askyesno(t("extensions.confirm_title", "Install Extension"),
+                                    t("extensions.confirm_msg",
+                                      name=ext_name, size=ext_size,
+                                      default=f"Install {ext_name}?\n\nSize: {ext_size}\nThis will download and set up everything automatically.\nThe install window will open — follow any prompts there."),
                                     parent=self):
             return
 

@@ -165,16 +165,20 @@ def get_permission(name: str) -> int:
 
 def get_level_name(perm_name: str, level: int) -> str:
     """Get human-readable name for a permission level."""
+    from gui.i18n import t
     defn = PERMISSION_DEFS.get(perm_name, {})
     levels = defn.get("levels", {})
-    return levels.get(level, ("Unknown", ""))[0]
+    fallback = levels.get(level, ("Unknown", ""))[0]
+    return t(f"permissions.{perm_name}.level_{level}.name", fallback)
 
 
 def get_level_description(perm_name: str, level: int) -> str:
     """Get description for a permission level."""
+    from gui.i18n import t
     defn = PERMISSION_DEFS.get(perm_name, {})
     levels = defn.get("levels", {})
-    return levels.get(level, ("", "Unknown"))[1]
+    fallback = levels.get(level, ("", "Unknown"))[1]
+    return t(f"permissions.{perm_name}.level_{level}.desc", fallback)
 
 
 # ============================================================================

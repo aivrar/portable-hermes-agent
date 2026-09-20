@@ -121,6 +121,30 @@ class TestGuiI18n(unittest.TestCase):
         self.assertIn("5 key(s) to set up", t("wizard.keys_to_setup", count=5))
         self.assertEqual(t("wizard.paste_from_clip"), "Paste from Clipboard")
 
+    def test_comprehensive_dialog_translations(self):
+        """Verify permissions, settings, extensions, and chat translations in Traditional Chinese."""
+        set_language("zh-hant", persist=False)
+        self.assertEqual(t("permissions.read.name"), "檔案讀取")
+        self.assertEqual(t("permissions.reset_defaults"), "重設為預設值")
+        self.assertEqual(t("settings.api_openrouter"), "OpenRouter (主要 LLM 提供商)")
+        self.assertEqual(t("extensions.music-server.name"), "音樂生成伺服器")
+        self.assertEqual(t("lmstudio.endpoint"), "端點網址：")
+        self.assertIn("歡迎使用便攜版 Hermes Agent！", t("chat.welcome_configured"))
+
+        set_language("zh", persist=False)
+        self.assertEqual(t("permissions.read.name"), "文件读取")
+        self.assertEqual(t("permissions.reset_defaults"), "重置为默认值")
+        self.assertEqual(t("settings.api_openrouter"), "OpenRouter (主要 LLM 提供商)")
+        self.assertEqual(t("extensions.music-server.name"), "音乐生成服务器")
+        self.assertEqual(t("lmstudio.endpoint"), "端点：")
+
+        set_language("en", persist=False)
+        self.assertEqual(t("permissions.read.name"), "File Reading")
+        self.assertEqual(t("permissions.reset_defaults"), "Reset to Defaults")
+        self.assertEqual(t("settings.api_openrouter"), "OpenRouter (main LLM provider)")
+        self.assertEqual(t("extensions.music-server.name"), "Music Generation Server")
+        self.assertEqual(t("lmstudio.endpoint"), "Endpoint:")
+
 
 if __name__ == "__main__":
     unittest.main()
