@@ -62,6 +62,10 @@ jobs:
     with:
       slice_count: 8
 
+  portable-integrity:
+    name: Portable integrity
+    uses: ./.github/workflows/portable-integrity.yml
+
   lint:
     name: Python lints
     needs: detect
@@ -138,6 +142,7 @@ jobs:
     name: All required checks pass
     needs:
       - tests
+      - portable-integrity
       - lint
       - typecheck
       - docs-site
@@ -159,7 +164,7 @@ jobs:
           echo "$RESULTS" | python3 -c "
           import json, sys
           results = json.load(sys.stdin)
-          failed = [r for r in results if r == 'failure']
+          failed = [r for r in results if r not in ('success', 'skipped')]
           if failed:
               print(f'::error::{len(failed)} job(s) failed')
               sys.exit(1)
