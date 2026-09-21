@@ -29,6 +29,15 @@ There are two distinct update paths. Do not substitute one repository for the ot
   both update paths; never bundle `.lmstudio_config`. Exercise authenticated
   model discovery and chat-key propagation, native metadata, key clearing,
   failed saves, profile isolation, and Tk responsiveness during network work.
+- Live LM Studio verification after v1.4.7 exposed missing Windows logging
+  dependencies after source-only upstream updates and contributor AGENTS.md
+  filling the default local context window. Check real AIAgent construction,
+  keep profile SOUL/project configuration, and do not report an upstream update
+  complete until dependency installation and fresh-process agent imports pass.
+- When a local LM Studio server is available, exercise the packaged GUI's real
+  agent conversation, not just mock widgets or direct HTTP. Record its model,
+  context size, authentication mode, response, and UI heartbeat. Restore only
+  test-owned loaded models afterward; do not alter the user's security settings.
 
 ## Before publishing
 

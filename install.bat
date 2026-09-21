@@ -326,7 +326,12 @@ echo [OK] Skills synced.
 :: ============================================
 :: Final verification - never claim success for a partial install
 :: ============================================
-echo [VERIFY] Checking embedded GUI, profile, and portable skills...
+echo [VERIFY] Checking embedded agent runtime, GUI, profile, and portable skills...
+"%PYTHON_EXE%" -c "import run_agent, hermes_logging; from run_agent import AIAgent" >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Agent runtime dependency verification failed. Run install.bat again to repair it.
+    exit /b 1
+)
 "%PYTHON_EXE%" -c "import os, tkinter; from pathlib import Path; import gui.app, hermes_cli; tkinter.Tcl(); h=Path(os.environ['HERMES_HOME']); required=['.env','config.yaml','permissions.json','SOUL.md','node/node.exe','node/npm.cmd','skills/getting-started/SKILL.md','skills/lm-studio/SKILL.md','skills/extensions/portable-comfyui/SKILL.md','skills/extensions/music-server/SKILL.md','skills/extensions/tts-server/SKILL.md']; missing=[p for p in required if not (h/p).is_file()]; assert not missing, 'missing profile files: '+', '.join(missing)" >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Installation verification failed. Run install.bat again to repair it.

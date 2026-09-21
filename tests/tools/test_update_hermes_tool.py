@@ -3,11 +3,20 @@ import json
 import subprocess
 import zipfile
 from pathlib import Path
+import pytest
 
 from tools import update_hermes_tool
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_REAL_REFRESH = update_hermes_tool._refresh_portable_dependencies
+
+
+@pytest.fixture(autouse=True)
+def isolate_dependency_installer(monkeypatch):
+    # Source-update integration tests must not install packages into the host.
+    monkeypatch.setattr(update_hermes_tool, "_refresh_portable_dependencies",
+                        lambda timeout: {"success": True})
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -96,6 +105,12 @@ def test_update_hermes_fast_forward_repairs_portable_surface(monkeypatch):
     assert seen["snapshot"] == snapshot
     assert ("fetch", "hermes-upstream", "main", "--quiet") in calls
     assert ("merge", "--ff-only", "hermes-upstream/main") in calls
+
+    monkeypatch.setattr(update_hermes_tool, "_refresh_portable_dependencies",
+                        lambda timeout: {"success": False, "error": "dependency repair failed"})
+    failed = json.loads(update_hermes_tool.update_hermes_handler({"branch": "main"}))
+    assert failed["success"] is False
+    assert failed["error"] == "dependency repair failed"
 
 
 def test_divergent_merge_uses_upstream_tree_and_restores_portable_surface(

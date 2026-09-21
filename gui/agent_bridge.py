@@ -362,6 +362,14 @@ You are running on **{os_name} {os_release}**.
 
         permissions_prompt = "\n\n".join(prompt_parts)
 
+        # The launcher uses the application directory for portable commands.
+        # That is not an instruction to inject Hermes' contributor AGENTS.md
+        # into every end-user chat. Preserve explicitly configured projects
+        # and the user's profile SOUL while excluding this accidental context.
+        configured_cwd = self.config.get("terminal", {}).get("cwd")
+        terminal_cwd = Path(os.environ.get("TERMINAL_CWD") or os.getcwd()).resolve()
+        skip_install_context = configured_cwd in (None, "", ".") and terminal_cwd == PROJECT_ROOT.resolve()
+
         self.agent = AIAgent(
             model=model,
             provider=provider,
@@ -371,6 +379,8 @@ You are running on **{os_name} {os_release}**.
             credential_pool=credential_pool,
             quiet_mode=True,
             platform="gui",
+            skip_context_files=skip_install_context,
+            load_soul_identity=True,
             disabled_toolsets=disabled,
             ephemeral_system_prompt=permissions_prompt or None,
             session_id=self.session_id,
