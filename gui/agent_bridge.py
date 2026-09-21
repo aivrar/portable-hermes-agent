@@ -186,7 +186,8 @@ class AgentBridge:
             base_url = lm_url if lm_url.endswith("/v1") else lm_url + "/v1"
             provider = "custom"
             api_mode = "chat_completions"
-            api_key = "lm-studio"
+            from gui.lm_studio import LMStudioClient
+            api_key = LMStudioClient(base_url=base_url).api_key or "lm-studio"
             credential_pool = None
         else:
             # Use Hermes' current provider/credential resolver so the restored

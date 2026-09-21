@@ -42,6 +42,14 @@ Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agen
 
 Plus all built-in hermes-agent tools: web search, file operations, browser automation, code execution, delegation, memory, skills, messaging, Home Assistant, and more.
 
+The LM Studio panel saves its endpoint and API key in the active `HERMES_HOME`
+directory (`.lmstudio_config`), outside the application source. Both update paths
+preserve this user data; release archives exclude it. Clear the key field and
+click **Save** to remove a saved key. The saved key is also used for GUI chat.
+Keep this file private. SDK model-loading with authentication requires a version
+of the LM Studio Python SDK that supports `api_token`; REST model discovery and
+chat remain available when the optional SDK cannot connect.
+
 ### Extension Modules
 
 Three portable AI generation servers from [aivrar](https://github.com/aivrar):
