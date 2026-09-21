@@ -209,7 +209,7 @@ class LMStudioClient:
         We try 'path' first since that's the full model path the SDK uses.
         """
         # 'path' is the full model path the SDK uses for loading
-        for attr in ("path", "model_key", "id", "name"):
+        for attr in ("identifier", "path", "model_key", "id", "name"):
             val = getattr(m, attr, None)
             if val and isinstance(val, str):
                 return val
@@ -351,7 +351,7 @@ class LMStudioClient:
         then calls load_new_instance() on it directly.
         """
         if not self._sdk_client:
-            return False
+            raise RuntimeError("LM Studio SDK is not connected; reconnect before loading a model.")
         try:
             # Unload all existing instances to ensure clean GPU placement.
             try:

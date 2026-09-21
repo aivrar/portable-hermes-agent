@@ -184,6 +184,8 @@ def test_local_chat_receives_saved_lmstudio_key(monkeypatch, tmp_path):
     monkeypatch.setattr(lm_studio, "LMSTUDIO_CONFIG_PATH", tmp_path / "lm-config")
     assert lm_studio._write_lmstudio_config(base_url="http://localhost:1234", api_key="test-only")
     bridge = _bridge_shell(agent_bridge, tmp_path)
+    monkeypatch.setenv("TERMINAL_CWD", str(agent_bridge.PROJECT_ROOT))
+    bridge.config["terminal"] = {"cwd": "."}
     bridge.set_local_mode("http://localhost:1234", "local-model")
     captured = {}
     monkeypatch.setattr(run_agent, "AIAgent", lambda **kwargs: captured.update(kwargs))
@@ -191,6 +193,29 @@ def test_local_chat_receives_saved_lmstudio_key(monkeypatch, tmp_path):
     bridge._create_agent()
     assert captured["api_key"] == "test-only"
     assert captured["base_url"] == "http://localhost:1234/v1"
+    assert captured["skip_context_files"] is True
+    assert captured["load_soul_identity"] is True
+    bridge.config["terminal"] = {"cwd": str(tmp_path)}
+    bridge._create_agent()
+    assert captured["skip_context_files"] is False
+
+
+def test_real_local_gui_agent_constructs_without_install_tree_instructions(monkeypatch, tmp_path):
+    from gui import agent_bridge
+    from agent.system_prompt import build_system_prompt
+    monkeypatch.setenv("TERMINAL_CWD", str(agent_bridge.PROJECT_ROOT))
+    bridge = _bridge_shell(agent_bridge, tmp_path)
+    bridge.config["terminal"] = {"cwd": "."}
+    bridge.set_local_mode("http://127.0.0.1:1234", "local-test")
+    # Real AIAgent initialization, including Windows logging dependencies.
+    bridge._create_agent()
+    try:
+        assert bridge.agent.skip_context_files is True
+        assert bridge.agent.load_soul_identity is True
+        prompt = build_system_prompt(bridge.agent)
+        assert "Hermes Agent - Development Guide" not in prompt
+    finally:
+        bridge.agent = None
 
 
 def test_gui_bridge_close_releases_owned_session_database():

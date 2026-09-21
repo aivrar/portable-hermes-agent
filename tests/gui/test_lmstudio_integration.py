@@ -10,6 +10,16 @@ import pytest
 from gui import lm_studio as lm
 
 
+def test_loaded_sdk_models_use_identifier_not_debug_repr():
+    model = SimpleNamespace(identifier="hermes-live-instance")
+    assert lm.LMStudioClient._extract_model_id(model) == "hermes-live-instance"
+
+
+def test_load_without_sdk_never_reports_success():
+    with pytest.raises(RuntimeError, match="not connected"):
+        lm.LMStudioClient(api_key="").load_model("test-model")
+
+
 def test_profile_storage_clear_and_atomic_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(lm, "LMSTUDIO_CONFIG_PATH", None)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "one"))

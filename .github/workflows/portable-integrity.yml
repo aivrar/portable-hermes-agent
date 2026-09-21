@@ -45,7 +45,7 @@ jobs:
         shell: bash
         env:
           HERMES_PYTHON: .venv/Scripts/python.exe
-        run: scripts/run_tests.sh tests/test_portable_gui.py tests/test_build_release.py tests/tools/test_update_hermes_tool.py tests/hermes_cli/test_update_zip*.py -j 3 --file-retries 0
+        run: scripts/run_tests.sh tests/test_portable_gui.py tests/test_build_release.py tests/tools/test_update_hermes_tool.py tests/tools/test_portable_dependency_refresh.py tests/hermes_cli/test_update_zip*.py -j 3 --file-retries 0
       - name: Build and verify every release archive member
         shell: pwsh
         env:

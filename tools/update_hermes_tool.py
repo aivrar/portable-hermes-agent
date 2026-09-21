@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -765,6 +766,12 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
         ready, ready_status = _portable_surface_is_ready()
         result["portable_verification"] = ready_status
         result["success"] = bool(overlay.get("success")) and ready
+        if result["success"]:
+            dependencies = _refresh_portable_dependencies(timeout)
+            result["steps"].append({"dependencies": dependencies})
+            result["success"] = dependencies["success"]
+            if not dependencies["success"]:
+                result["error"] = dependencies["error"]
         if overlay.get("success") and not ready:
             result["error"] = ready_status
         result["current_commit"] = ""
@@ -837,9 +844,45 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
     result["portable_verification"] = ready_status
     result["current_commit"] = _current_commit()
     result["success"] = not result.get("stash_restore_failed", False) and ready
+    if result["success"]:
+        dependencies = _refresh_portable_dependencies(timeout)
+        result["steps"].append({"dependencies": dependencies})
+        result["success"] = dependencies["success"]
+        if not dependencies["success"]:
+            result["error"] = dependencies["error"]
     if not ready:
         result["error"] = ready_status
     return _json(result)
+
+
+def _refresh_portable_dependencies(timeout: int) -> dict[str, Any]:
+    """A source update is incomplete until the active runtime has its new deps."""
+    embedded = _PROJECT_ROOT / "python_embedded" / "python.exe"
+    interpreter = str(embedded if embedded.is_file() else Path(sys.executable))
+    env = os.environ.copy()
+    env.pop("PIP_PREFIX", None)
+    env.pop("PIP_USER", None)
+    if embedded.is_file():
+        env["PIP_TARGET"] = str(embedded.parent / "Lib" / "site-packages")
+    commands = [
+        [interpreter, "-m", "pip", "install", "--upgrade", "-e", str(_PROJECT_ROOT)],
+        [interpreter, "-c", "import run_agent, hermes_logging; from gui import app"],
+    ]
+    try:
+        for command in commands:
+            completed = subprocess.run(command, cwd=_PROJECT_ROOT, env=env,
+                                       capture_output=True, text=True,
+                                       encoding="utf-8", errors="replace", timeout=timeout)
+            if completed.returncode:
+                return {"success": False, "error": (
+                    "Source files updated, but runtime dependency repair failed. "
+                    "Run install.bat to repair before restarting Hermes. "
+                    + _tail(completed.stderr or completed.stdout))}
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"success": False, "error": (
+            "Source files updated, but runtime dependency repair failed. "
+            f"Run install.bat before restarting Hermes: {exc}")}
+    return {"success": True, "status": "dependencies installed and agent/GUI imports verified"}
 
 
 UPDATE_SCHEMA = {
