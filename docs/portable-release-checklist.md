@@ -38,6 +38,9 @@ There are two distinct update paths. Do not substitute one repository for the ot
   agent conversation, not just mock widgets or direct HTTP. Record its model,
   context size, authentication mode, response, and UI heartbeat. Restore only
   test-owned loaded models afterward; do not alter the user's security settings.
+- Keep LM Studio's default loaded context at or above the core's minimum, and
+  warn before loading a model whose reported maximum is below that floor. Test
+  a real model identifier, not only a custom alias that can hide metadata gaps.
 
 ## Before publishing
 
