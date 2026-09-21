@@ -857,9 +857,12 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
 
 def _refresh_portable_dependencies(timeout: int) -> dict[str, Any]:
     """A source update is incomplete until the active runtime has its new deps."""
+    from tools.environments.local import build_subprocess_env
+
     embedded = _PROJECT_ROOT / "python_embedded" / "python.exe"
     interpreter = str(embedded if embedded.is_file() else Path(sys.executable))
-    env = os.environ.copy()
+    # Keep package-index credentials and the installer's existing HOME contract.
+    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     env.pop("PIP_PREFIX", None)
     env.pop("PIP_USER", None)
     if embedded.is_file():
@@ -871,6 +874,7 @@ def _refresh_portable_dependencies(timeout: int) -> dict[str, Any]:
     try:
         for command in commands:
             completed = subprocess.run(command, cwd=_PROJECT_ROOT, env=env,
+                                       stdin=subprocess.DEVNULL,
                                        capture_output=True, text=True,
                                        encoding="utf-8", errors="replace", timeout=timeout)
             if completed.returncode:
