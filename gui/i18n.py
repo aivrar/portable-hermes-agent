@@ -348,6 +348,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.save_key": "Save",
         "lmstudio.api_key_saved": "API key saved",
         "lmstudio.api_key_cleared": "API key cleared",
+        "lmstudio.save_failed": "Failed to save configuration",
     },
 
     "zh-hant": {
@@ -674,6 +675,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.save_key": "儲存",
         "lmstudio.api_key_saved": "API 金鑰已儲存",
         "lmstudio.api_key_cleared": "API 金鑰已清除",
+        "lmstudio.save_failed": "設定儲存失敗",
     },
 
     "zh": {
@@ -1000,6 +1002,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.save_key": "保存",
         "lmstudio.api_key_saved": "API 密钥已保存",
         "lmstudio.api_key_cleared": "API 密钥已清除",
+        "lmstudio.save_failed": "配置保存失败",
     },
 }
 
