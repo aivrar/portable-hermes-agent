@@ -19,6 +19,7 @@ def test_refresh_uses_embedded_runtime_and_propagates_failure(tmp_path, monkeypa
         calls.append(command)
         assert command[0] == str(embedded)
         assert kwargs["cwd"] == tmp_path
+        assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["env"]["PIP_TARGET"] == str(embedded.parent / "Lib" / "site-packages")
         assert "PIP_PREFIX" not in kwargs["env"]
         return subprocess.CompletedProcess(command, exit_code, "", "test install failure" if exit_code else "")
