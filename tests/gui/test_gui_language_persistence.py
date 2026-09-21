@@ -465,7 +465,8 @@ class TestLMStudioConfigAndClient(unittest.TestCase):
         # 3. Simulate failure when path points to an invalid directory
         orig = lm_studio.LMSTUDIO_CONFIG_PATH
         try:
-            lm_studio.LMSTUDIO_CONFIG_PATH = Path("/nonexistent/directory/unwritable/.lmstudio_config")
+            # A file cannot be used as the parent directory (portable on Windows).
+            lm_studio.LMSTUDIO_CONFIG_PATH = self.test_cfg_path / ".lmstudio_config"
             res = lm_studio._write_lmstudio_config(base_url="http://fail")
             self.assertFalse(res)
         finally:

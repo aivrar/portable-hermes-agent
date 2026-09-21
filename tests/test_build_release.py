@@ -226,6 +226,8 @@ def test_release_zip_excludes_generated_docs_but_keeps_runtime_assets():
 
 
 def test_release_zip_excludes_portable_runtime_dirs():
+    assert build_release.should_exclude(".lmstudio_config") is True
+    assert build_release.should_exclude(".hermes/.lmstudio_config") is True
     assert build_release.should_exclude(".hermes/config.yaml") is True
     assert build_release.should_exclude("python_embedded/python.exe") is True
     assert build_release.should_exclude("extensions/comfyui/README.md") is True

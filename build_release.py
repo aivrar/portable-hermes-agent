@@ -54,6 +54,7 @@ EXCLUDE_DIRS = {
 # Specific paths to exclude
 EXCLUDE_PATHS = {
     ".env",
+    ".lmstudio_config",
     "build_release.py",
     "test_script.sh",
     "test.pdf",

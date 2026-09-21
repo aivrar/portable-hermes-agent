@@ -178,6 +178,21 @@ def test_gui_approval_bridge_returns_current_approval_choices():
     assert bridge._approval_callback("dangerous command", "changes files") == "deny"
 
 
+def test_local_chat_receives_saved_lmstudio_key(monkeypatch, tmp_path):
+    from gui import agent_bridge, lm_studio
+    import run_agent
+    monkeypatch.setattr(lm_studio, "LMSTUDIO_CONFIG_PATH", tmp_path / "lm-config")
+    assert lm_studio._write_lmstudio_config(base_url="http://localhost:1234", api_key="test-only")
+    bridge = _bridge_shell(agent_bridge, tmp_path)
+    bridge.set_local_mode("http://localhost:1234", "local-model")
+    captured = {}
+    monkeypatch.setattr(run_agent, "AIAgent", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", ""))
+    bridge._create_agent()
+    assert captured["api_key"] == "test-only"
+    assert captured["base_url"] == "http://localhost:1234/v1"
+
+
 def test_gui_bridge_close_releases_owned_session_database():
     from gui.agent_bridge import AgentBridge
 

@@ -25,6 +25,10 @@ There are two distinct update paths. Do not substitute one repository for the ot
 - [PR #110](https://github.com/aivrar/portable-hermes-agent/pull/110): exercise real
   language-switching widgets, saved preferences, status state and listener cleanup;
   one LM Studio connect click must start one connection, not two.
+- PR #114: retain LM Studio settings under the active `HERMES_HOME` through
+  both update paths; never bundle `.lmstudio_config`. Exercise authenticated
+  model discovery and chat-key propagation, native metadata, key clearing,
+  failed saves, profile isolation, and Tk responsiveness during network work.
 
 ## Before publishing
 

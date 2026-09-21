@@ -69,6 +69,7 @@ def test_portable_zip_update_installs_complete_gui_and_preserves_user_state(tmp_
     root.mkdir()
     preserved = {
         ".hermes/gui_config.json": b'{"language":"zh-hant"}',
+        ".hermes/.lmstudio_config": b'{"base_url":"http://localhost:1234","api_key":"test-only"}',
         ".hermes/custom_tools/personal.py": b"# personal tool",
         ".env": b"FAKE_TEST_KEY=keep",
         "python_embedded/python.exe": b"embedded runtime",

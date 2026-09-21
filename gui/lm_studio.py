@@ -9,6 +9,8 @@ import json
 import subprocess
 import threading
 import time
+import tempfile
+from urllib.parse import urlsplit
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -16,6 +18,7 @@ from typing import List, Dict, Optional
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
 from gui.i18n import t
+from hermes_constants import get_hermes_home
 
 try:
     import lmstudio
@@ -33,15 +36,21 @@ except ImportError:
     HAS_HTTPX = False
 
 PROJECT_ROOT = Path(__file__).parent.parent
-LMSTUDIO_CONFIG_PATH = PROJECT_ROOT / ".lmstudio_config"
+# Resolve per profile at use time; never store credentials in the source tree.
+LMSTUDIO_CONFIG_PATH = None
+
+
+def _lmstudio_config_path():
+    return LMSTUDIO_CONFIG_PATH or get_hermes_home() / ".lmstudio_config"
 
 
 def _read_lmstudio_config() -> Dict[str, str]:
     """Read LM Studio config from disk, supporting legacy plain-text endpoint files."""
-    if not LMSTUDIO_CONFIG_PATH.exists():
+    path = _lmstudio_config_path()
+    if not path.exists():
         return {}
     try:
-        raw = LMSTUDIO_CONFIG_PATH.read_text(encoding="utf-8").strip()
+        raw = path.read_text(encoding="utf-8").strip()
     except Exception:
         return {}
     if not raw:
@@ -66,11 +75,22 @@ def _write_lmstudio_config(*, base_url: Optional[str] = None, api_key: Optional[
         data["base_url"] = base_url.strip().rstrip("/")
     if api_key is not None:
         data["api_key"] = api_key.strip()
+    temporary = None
     try:
-        LMSTUDIO_CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+        path = _lmstudio_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=".lmstudio-", delete=False) as stream:
+            temporary = Path(stream.name)
+            os.chmod(temporary, 0o600)
+            json.dump(data, stream, ensure_ascii=True, indent=2)
+        os.replace(temporary, path)
         return True
     except Exception:
         return False
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 # ============================================================================
 # GPU Detection
@@ -102,10 +122,14 @@ def get_available_gpus() -> List[str]:
 class LMStudioClient:
     """Manages LM Studio SDK connection, model loading, and OpenAI endpoint."""
 
-    def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: str = ""):
+    def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: Optional[str] = None):
         self.base_url = base_url.strip().rstrip("/")
         cfg = _read_lmstudio_config()
-        self.api_key = api_key or cfg.get("api_key", "") or os.environ.get("LM_API_KEY", "")
+        saved_url = cfg.get("base_url", "http://localhost:1234/v1").rstrip("/").removesuffix("/v1")
+        saved_key = cfg.get("api_key") if saved_url == self._server_root() else None
+        self.api_key = (api_key if api_key is not None else
+                        saved_key if saved_key is not None else
+                        os.environ.get("LM_API_TOKEN", os.environ.get("LM_API_KEY", "")))
         self._sdk_client = None
         self._sdk_api_host = None
 
@@ -163,13 +187,13 @@ class LMStudioClient:
         if not HAS_SDK:
             return False
         try:
-            self._sdk_api_host = lmstudio.Client.find_default_local_api_host()
+            # Use the selected host, not a different auto-discovered local server.
+            self._sdk_api_host = urlsplit(self._server_root()).netloc
             if self._sdk_api_host:
                 # Apply API key if available
-                api_key = getattr(self, 'api_key', None) or os.environ.get("LM_API_KEY", "")
                 kwargs = {"api_host": self._sdk_api_host}
-                if api_key:
-                    kwargs["api_key"] = api_key
+                if self.api_key:
+                    kwargs["api_token"] = self.api_key
                 self._sdk_client = lmstudio.Client(**kwargs)
                 return True
         except Exception:
@@ -252,20 +276,6 @@ class LMStudioClient:
             return []
         headers = self._auth_headers()
         
-        # First, try SDK downloaded models (most reliable)
-        if self._sdk_client:
-            try:
-                sdk_models = self.list_downloaded_models()
-                if sdk_models:
-                    # Ensure display names are properly set
-                    for m in sdk_models:
-                        if m.get("display_name", "") == "unknown":
-                            m["display_name"] = m.get("path", m.get("id", "Unknown Model"))
-                    return sdk_models
-            except Exception as e:
-                # Log error but continue
-                pass
-        
         # Try API endpoints with proper error handling
         urls_to_try = [
             # LM Studio native v0 endpoint (preserves context_length and quantization)
@@ -274,7 +284,6 @@ class LMStudioClient:
             self._openai_base() + "/models",
             self._server_root() + "/models",
             self._server_root() + "/api/v1/models",
-            self._server_root() + "/v1/models",
         ]
         
         for url in urls_to_try:
@@ -291,8 +300,8 @@ class LMStudioClient:
                     except Exception:
                         continue
                     
-                    if isinstance(data, dict) and "data" in data:
-                        models_list = data["data"]
+                    if isinstance(data, dict):
+                        models_list = data.get("data", data.get("models", []))
                     elif isinstance(data, list):
                         models_list = data
                     else:
@@ -302,7 +311,7 @@ class LMStudioClient:
                     for m in models_list:
                         if not isinstance(m, dict):
                             continue
-                        model_id = m.get("id") or m.get("path") or ""
+                        model_id = m.get("id") or m.get("key") or m.get("path") or ""
                         if not model_id:
                             continue
                         
@@ -466,11 +475,20 @@ class LMStudioPanel(tk.Toplevel):
         base_url = self._resolve_base_url()
         api_key = self._resolve_api_key()
         self.client = LMStudioClient(base_url=base_url, api_key=api_key)
-        self.gpus = get_available_gpus()
+        self.gpus = ["CPU"]
         self.models = []
 
         self._build_ui()
         self.after(100, self._connect)
+        def discover_gpus():
+            gpus = get_available_gpus()
+            self.after(0, lambda: self._set_gpus(gpus))
+        threading.Thread(target=discover_gpus, daemon=True).start()
+
+    def _set_gpus(self, gpus):
+        self.gpus = gpus
+        self.gpu_combo.configure(values=gpus)
+        self.gpu_combo.current(1 if len(gpus) > 1 else 0)
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -488,9 +506,9 @@ class LMStudioPanel(tk.Toplevel):
     def _resolve_api_key() -> str:
         """Return the LM Studio API key from config or environment."""
         config = _read_lmstudio_config()
-        if config.get("api_key"):
+        if "api_key" in config:
             return config["api_key"].strip()
-        return os.environ.get("LM_API_KEY", "").strip()
+        return os.environ.get("LM_API_TOKEN", os.environ.get("LM_API_KEY", "")).strip()
 
     def _build_ui(self):
         # Title
@@ -625,13 +643,15 @@ class LMStudioPanel(tk.Toplevel):
 
     def _connect(self):
         """Connect to LM Studio in background."""
+        client = self.client
+        client.api_key = self._key_var.get().strip()
         def _do():
-            self.client.api_key = self._key_var.get().strip()
-            running = self.client.is_running()
+            running = client.is_running()
             sdk_ok = False
             if running and HAS_SDK:
-                sdk_ok = self.client.connect_sdk()
-            self.after(0, lambda: self._on_connected(running, sdk_ok))
+                sdk_ok = client.connect_sdk()
+            self.after(0, lambda: self._on_connected(running, sdk_ok)
+                       if self.client is client else None)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -652,9 +672,10 @@ class LMStudioPanel(tk.Toplevel):
         url = self._ep_var.get().strip().rstrip("/")
         if not url:
             return
-        self.client = LMStudioClient(base_url=url, api_key=self._key_var.get().strip())
         if not _write_lmstudio_config(base_url=url, api_key=self._key_var.get().strip()):
-            os.environ["LM_BASE_URL"] = url
+            self.status_lbl.configure(text=t("lmstudio.save_failed", "Failed to save configuration"))
+            return
+        self.client = LMStudioClient(base_url=url, api_key=self._key_var.get().strip())
         # Update status and reconnect
         self.status_dot.configure(fg=C["text_disabled"])
         self.status_lbl.configure(text=t("lmstudio.status_connecting", "Connecting..."))
@@ -663,18 +684,15 @@ class LMStudioPanel(tk.Toplevel):
     def _apply_api_key(self):
         """Save API key and reconnect."""
         key = self._key_var.get().strip()
-        if key:
-            os.environ["LM_API_KEY"] = key
-        else:
-            os.environ.pop("LM_API_KEY", None)
         saved = _write_lmstudio_config(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
-        self.client.api_key = key
         if not saved:
             self.status_lbl.configure(text=t("lmstudio.save_failed", "Failed to save configuration"))
+            return
         elif key:
             self.status_lbl.configure(text=t("lmstudio.api_key_saved", "API key saved"))
         else:
             self.status_lbl.configure(text=t("lmstudio.api_key_cleared", "API key cleared"))
+        self.client = LMStudioClient(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         self._connect()
 
     def _refresh_models(self):

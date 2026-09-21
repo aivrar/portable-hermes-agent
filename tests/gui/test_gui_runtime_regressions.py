@@ -67,9 +67,41 @@ def test_real_app_menu_and_settings_language_switch(monkeypatch):
 def test_lmstudio_connect_action_starts_one_connection(monkeypatch):
     import gui.lm_studio as lm
     monkeypatch.setattr(lm, "LMStudioClient", Mock())
+    monkeypatch.setattr(lm, "_write_lmstudio_config", Mock(return_value=True))
     panel = types.SimpleNamespace(
         _ep_var=Mock(get=lambda: "http://localhost:1234"),
+        _key_var=Mock(get=lambda: ""),
         status_dot=Mock(), status_lbl=Mock(), _connect=Mock(),
     )
     lm.LMStudioPanel._apply_endpoint(panel)
     assert panel._connect.call_count == 1
+
+
+@pytest.mark.skipif(not _has_display(), reason="requires a Tk display")
+def test_lmstudio_panel_keeps_event_loop_responsive(monkeypatch):
+    import time
+    import tkinter as tk
+    from gui import lm_studio as lm
+    root = tk.Tk()
+    root.withdraw()
+    errors, heartbeats = [], []
+    root.report_callback_exception = lambda *args: errors.append(args)
+    monkeypatch.setattr(lm, "get_available_gpus", lambda: ["CPU"])
+    monkeypatch.setattr(lm, "HAS_SDK", False)
+    def slow_probe(self):
+        time.sleep(0.4)
+        return True
+    monkeypatch.setattr(lm.LMStudioClient, "is_running", slow_probe)
+    monkeypatch.setattr(lm.LMStudioClient, "list_models_api", lambda self: [
+        {"id": "test/model", "context_length": 4096, "state": "loaded"}])
+    panel = lm.LMStudioPanel(root)
+    panel.withdraw()
+    root.after(200, lambda: heartbeats.append(panel.model_list.size()))
+    root.after(1000, root.quit)
+    try:
+        root.mainloop()
+        assert heartbeats == [0], "Tk must respond while the network probe is pending"
+        assert panel.model_list.size() == 1
+        assert not errors
+    finally:
+        root.destroy()
