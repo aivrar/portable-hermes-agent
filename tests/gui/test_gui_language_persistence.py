@@ -387,5 +387,68 @@ class TestApplicationLanguageSwitchingRegression(unittest.TestCase):
             root.destroy()
 
 
+class TestLMStudioConfigAndClient(unittest.TestCase):
+    """Unit tests for LM Studio configuration read/write and client header generation."""
+
+    def setUp(self):
+        self.orig_lm_key = os.environ.get("LM_API_KEY")
+        self.orig_lm_url = os.environ.get("LM_BASE_URL")
+        os.environ.pop("LM_API_KEY", None)
+        os.environ.pop("LM_BASE_URL", None)
+
+        from gui import lm_studio
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.test_cfg_path = Path(self.temp_dir.name) / ".lmstudio_config"
+        self.orig_cfg_path = lm_studio.LMSTUDIO_CONFIG_PATH
+        lm_studio.LMSTUDIO_CONFIG_PATH = self.test_cfg_path
+
+    def tearDown(self):
+        from gui import lm_studio
+        lm_studio.LMSTUDIO_CONFIG_PATH = self.orig_cfg_path
+
+        if self.orig_lm_key is not None:
+            os.environ["LM_API_KEY"] = self.orig_lm_key
+        else:
+            os.environ.pop("LM_API_KEY", None)
+
+        if self.orig_lm_url is not None:
+            os.environ["LM_BASE_URL"] = self.orig_lm_url
+        else:
+            os.environ.pop("LM_BASE_URL", None)
+
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
+
+    def test_lmstudio_client_urls_and_headers(self):
+        from gui.lm_studio import LMStudioClient
+
+        client = LMStudioClient(base_url="http://127.0.0.1:1234/v1", api_key="sk-test-key-123")
+        self.assertEqual(client._openai_base(), "http://127.0.0.1:1234/v1")
+        self.assertEqual(client._server_root(), "http://127.0.0.1:1234")
+
+        headers = client._auth_headers()
+        self.assertEqual(headers["Authorization"], "Bearer sk-test-key-123")
+        self.assertEqual(headers["Accept"], "application/json")
+
+        client_no_key = LMStudioClient(base_url="http://localhost:1234", api_key="")
+        self.assertEqual(client_no_key._openai_base(), "http://localhost:1234/v1")
+        self.assertEqual(client_no_key._server_root(), "http://localhost:1234")
+        self.assertEqual(client_no_key._auth_headers(), {})
+
+    def test_lmstudio_config_roundtrip(self):
+        from gui import lm_studio
+        self.assertEqual(lm_studio._read_lmstudio_config(), {})
+
+        ok = lm_studio._write_lmstudio_config(base_url="http://127.0.0.1:5678", api_key="sk-mykey")
+        self.assertTrue(ok)
+        self.assertTrue(self.test_cfg_path.exists())
+
+        data = lm_studio._read_lmstudio_config()
+        self.assertEqual(data.get("base_url"), "http://127.0.0.1:5678")
+        self.assertEqual(data.get("api_key"), "sk-mykey")
+
+
 if __name__ == "__main__":
     unittest.main()

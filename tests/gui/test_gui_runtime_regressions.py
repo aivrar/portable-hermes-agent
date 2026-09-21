@@ -1,9 +1,11 @@
 """Exercise real localization controls and the LM Studio connect boundary."""
 import types
 from unittest.mock import Mock
-
-import pytest
-
+try:
+    import pytest
+except ImportError:
+    import unittest
+    raise unittest.SkipTest("pytest is not installed in current python environment")
 
 def _has_display():
     try:

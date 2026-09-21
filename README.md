@@ -28,7 +28,7 @@ Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agen
 
 | Toolset | Tools | What It Does |
 |---------|-------|-------------|
-| **LM Studio** | 10 | Load/unload models, search HuggingFace, tokenize, embed, direct chat |
+| **LM Studio** | 10 | Load/unload models, search HuggingFace, tokenize, embed, direct chat, API key management, model list retrieval |
 | **Music** | 7 | Generate music, manage models, GPU workers, output library |
 | **TTS** | 7 | Text-to-speech, 10 voice models, voice cloning, job management |
 | **ComfyUI** | 7 | Image generation, instance management, model/node browsing |

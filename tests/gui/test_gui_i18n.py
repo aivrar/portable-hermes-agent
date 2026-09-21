@@ -129,6 +129,8 @@ class TestGuiI18n(unittest.TestCase):
         self.assertEqual(t("settings.api_openrouter"), "OpenRouter (主要 LLM 提供商)")
         self.assertEqual(t("extensions.music-server.name"), "音樂生成伺服器")
         self.assertEqual(t("lmstudio.endpoint"), "端點網址：")
+        self.assertEqual(t("lmstudio.api_key"), "API 金鑰：")
+        self.assertEqual(t("lmstudio.save_key"), "儲存")
         self.assertIn("歡迎使用便攜版 Hermes Agent！", t("chat.welcome_configured"))
 
         set_language("zh", persist=False)
@@ -137,6 +139,8 @@ class TestGuiI18n(unittest.TestCase):
         self.assertEqual(t("settings.api_openrouter"), "OpenRouter (主要 LLM 提供商)")
         self.assertEqual(t("extensions.music-server.name"), "音乐生成服务器")
         self.assertEqual(t("lmstudio.endpoint"), "端点：")
+        self.assertEqual(t("lmstudio.api_key"), "API 密钥：")
+        self.assertEqual(t("lmstudio.save_key"), "保存")
 
         set_language("en", persist=False)
         self.assertEqual(t("permissions.read.name"), "File Reading")
@@ -144,6 +148,8 @@ class TestGuiI18n(unittest.TestCase):
         self.assertEqual(t("settings.api_openrouter"), "OpenRouter (main LLM provider)")
         self.assertEqual(t("extensions.music-server.name"), "Music Generation Server")
         self.assertEqual(t("lmstudio.endpoint"), "Endpoint:")
+        self.assertEqual(t("lmstudio.api_key"), "API Key:")
+        self.assertEqual(t("lmstudio.save_key"), "Save")
 
 
 if __name__ == "__main__":
