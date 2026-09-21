@@ -344,6 +344,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.status_connecting": "Connecting...",
         "lmstudio.status_connected": "Connected",
         "lmstudio.status_not_running": "Not running — start LM Studio first",
+        "lmstudio.api_key": "API Key:",
+        "lmstudio.save_key": "Save",
+        "lmstudio.api_key_saved": "API key saved",
+        "lmstudio.api_key_cleared": "API key cleared",
     },
 
     "zh-hant": {
@@ -666,6 +670,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.status_connecting": "正在連線...",
         "lmstudio.status_connected": "已連線",
         "lmstudio.status_not_running": "未運行 — 請先啟動 LM Studio",
+        "lmstudio.api_key": "API 金鑰：",
+        "lmstudio.save_key": "儲存",
+        "lmstudio.api_key_saved": "API 金鑰已儲存",
+        "lmstudio.api_key_cleared": "API 金鑰已清除",
     },
 
     "zh": {
@@ -988,6 +996,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.status_connecting": "正在连接...",
         "lmstudio.status_connected": "已连接",
         "lmstudio.status_not_running": "未运行 — 请先启动 LM Studio",
+        "lmstudio.api_key": "API 密钥：",
+        "lmstudio.save_key": "保存",
+        "lmstudio.api_key_saved": "API 密钥已保存",
+        "lmstudio.api_key_cleared": "API 密钥已清除",
     },
 }
 

@@ -1,3 +1,23 @@
+# Portable runtime environments and archives (never commit downloaded binaries)
+/python_embedded/
+/node/
+/nodejs/
+*.zip
+*.7z
+*.tar.gz
+
+# Sensitive configurations, credentials, and API keys
+.lmstudio_config
+gui_config.json
+*.key
+*.pem
+*.crt
+credentials.json
+
+# Scratch scripts and logs
+*.log
+run_py.sh
+
 .DS_Store
 /venv/
 /venv.old/

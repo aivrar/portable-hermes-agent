@@ -33,6 +33,44 @@ except ImportError:
     HAS_HTTPX = False
 
 PROJECT_ROOT = Path(__file__).parent.parent
+LMSTUDIO_CONFIG_PATH = PROJECT_ROOT / ".lmstudio_config"
+
+
+def _read_lmstudio_config() -> Dict[str, str]:
+    """Read LM Studio config from disk, supporting legacy plain-text endpoint files."""
+    if not LMSTUDIO_CONFIG_PATH.exists():
+        return {}
+    try:
+        raw = LMSTUDIO_CONFIG_PATH.read_text(encoding="utf-8").strip()
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return {
+                    "base_url": str(data.get("base_url", "")).strip(),
+                    "api_key": str(data.get("api_key", "")).strip(),
+                }
+        except Exception:
+            return {}
+    return {"base_url": raw}
+
+
+def _write_lmstudio_config(*, base_url: Optional[str] = None, api_key: Optional[str] = None) -> bool:
+    """Persist LM Studio endpoint and API key to disk."""
+    data = _read_lmstudio_config()
+    if base_url is not None:
+        data["base_url"] = base_url.strip().rstrip("/")
+    if api_key is not None:
+        data["api_key"] = api_key.strip()
+    try:
+        LMSTUDIO_CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 # ============================================================================
 # GPU Detection
@@ -64,21 +102,55 @@ def get_available_gpus() -> List[str]:
 class LMStudioClient:
     """Manages LM Studio SDK connection, model loading, and OpenAI endpoint."""
 
-    def __init__(self, base_url: str = "http://localhost:1234"):
-        self.base_url = base_url
+    def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: str = ""):
+        self.base_url = base_url.strip().rstrip("/")
+        cfg = _read_lmstudio_config()
+        self.api_key = api_key or cfg.get("api_key", "") or os.environ.get("LM_API_KEY", "")
         self._sdk_client = None
         self._sdk_api_host = None
+
+    def _server_root(self) -> str:
+        """Return the LM Studio server root without the OpenAI `/v1` suffix."""
+        if self.base_url.endswith("/v1"):
+            return self.base_url[:-3]
+        return self.base_url
+
+    def _openai_base(self) -> str:
+        """Return the OpenAI-compatible base URL ending with `/v1`."""
+        if self.base_url.endswith("/v1"):
+            return self.base_url
+        return self.base_url + "/v1"
+
+    def _auth_headers(self) -> Dict[str, str]:
+        """Build authorization headers for LM Studio."""
+        if not self.api_key:
+            return {}
+        
+        # LM Studio expects Bearer token format
+        # Use the full key as-is (they support sk-lm-*:password format)
+        # Add minimal headers to match PowerShell behavior
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
+            "User-Agent": "LMStudioClient/1.0"
+        }
 
     def is_running(self) -> bool:
         """Check if LM Studio is reachable."""
         if not HAS_HTTPX:
             return False
         try:
-            # Try /v1/models first (OpenAI-compatible), then /models
-            for path in ("/v1/models", "/models"):
+            # 200 means ready, 401/403 means reachable but protected.
+            for url in (
+                self._openai_base() + "/models",
+                self._server_root() + "/api/v1/models",
+                self._server_root(),
+            ):
                 try:
-                    r = httpx.get(f"{self.base_url}{path}", timeout=3)
-                    if r.status_code == 200:
+                    r = httpx.get(url, headers=self._auth_headers(), timeout=3)
+                    if r.status_code in (200, 401, 403):
+                        return True
+                    if url == self._server_root() and r.status_code == 404:
                         return True
                 except Exception:
                     continue
@@ -93,7 +165,12 @@ class LMStudioClient:
         try:
             self._sdk_api_host = lmstudio.Client.find_default_local_api_host()
             if self._sdk_api_host:
-                self._sdk_client = lmstudio.Client(api_host=self._sdk_api_host)
+                # Apply API key if available
+                api_key = getattr(self, 'api_key', None) or os.environ.get("LM_API_KEY", "")
+                kwargs = {"api_host": self._sdk_api_host}
+                if api_key:
+                    kwargs["api_key"] = api_key
+                self._sdk_client = lmstudio.Client(**kwargs)
                 return True
         except Exception:
             pass
@@ -131,7 +208,12 @@ class LMStudioClient:
                 return val
         # Fall back to the last part of the model path
         mid = LMStudioClient._extract_model_id(m)
-        return mid.split("/")[-1] if "/" in mid else mid
+        if "/" in mid:
+            return mid.split("/")[-1]
+        elif mid and mid != "unknown":
+            return mid
+        else:
+            return "Local LM Studio Model"
 
     def list_downloaded_models(self) -> List[Dict]:
         """List all downloaded models via SDK."""
@@ -168,50 +250,86 @@ class LMStudioClient:
         """List models via OpenAI-compatible API."""
         if not HAS_HTTPX:
             return []
-        try:
-            # Try native API first (has context_length)
-            base = self.base_url.rstrip("/").replace("/v1", "")
-            native_url = base + "/api/v0/models"
-            r = httpx.get(native_url, timeout=5)
-            if r.status_code == 200:
-                data = r.json()
-                models_list = data if isinstance(data, list) else data.get("data", [])
-                # Log first model's fields to debug ID vs path
-                if models_list:
-                    import logging
-                    logging.getLogger("hermes.lmstudio").info(
-                        "Native API model keys: %s", list(models_list[0].keys())
-                    )
-                    logging.getLogger("hermes.lmstudio").info(
-                        "Native API first model: %s", {k: v for k, v in models_list[0].items()
-                                                        if k in ("id", "path", "model_key", "display_name", "state")}
-                    )
-                return [
-                    {
-                        "id": m.get("id", m.get("path", "unknown")),
-                        "path": m.get("path", m.get("id", "unknown")),
-                        "display_name": m.get("id", m.get("path", "unknown")),
-                        "context_length": m.get("max_context_length"),
-                        "quantization": m.get("quantization"),
-                        "state": m.get("state", "unknown"),
-                    }
-                    for m in models_list
-                ]
-        except Exception:
-            pass
-
-        # Fallback to OpenAI-compatible API
-        for path in ("/v1/models", "/models"):
+        headers = self._auth_headers()
+        
+        # First, try SDK downloaded models (most reliable)
+        if self._sdk_client:
             try:
-                r = httpx.get(f"{self.base_url}{path}", timeout=5)
-                if r.status_code == 200:
-                    data = r.json()
-                    return [
-                        {"id": m.get("id", "unknown"), "context_length": None, "state": "unknown"}
-                        for m in data.get("data", [])
-                    ]
-            except Exception:
+                sdk_models = self.list_downloaded_models()
+                if sdk_models:
+                    # Ensure display names are properly set
+                    for m in sdk_models:
+                        if m.get("display_name", "") == "unknown":
+                            m["display_name"] = m.get("path", m.get("id", "Unknown Model"))
+                    return sdk_models
+            except Exception as e:
+                # Log error but continue
+                pass
+        
+        # Try API endpoints with proper error handling
+        urls_to_try = [
+            # LM Studio native endpoint (confirmed working by user's requests test)
+            self._server_root() + "/models",
+            # OpenAI-compatible endpoints
+            self._openai_base() + "/models",
+            # Legacy LM Studio endpoints
+            self._server_root() + "/api/v1/models",
+            self._server_root() + "/v1/models",
+        ]
+        
+        for url in urls_to_try:
+            try:
+                r = httpx.get(url, headers=headers, timeout=5)
+                import logging
+                logging.getLogger("hermes.lmstudio").debug(
+                    "%s -> status=%s, content-type=%s", url, r.status_code, r.headers.get("content-type", "unknown")
+                )
+                
+                if r.status_code in (200, 401, 403):
+                    try:
+                        data = r.json()
+                    except Exception:
+                        continue
+                    
+                    # LM Studio returns {"data": [...]} format (confirmed by PowerShell test)
+                    if isinstance(data, dict) and "data" in data:
+                        models_list = data["data"]
+                    elif isinstance(data, list):
+                        models_list = data
+                    else:
+                        continue
+                    
+                    # Parse models with known LM Studio structure
+                    result = []
+                    for m in models_list:
+                        if not isinstance(m, dict):
+                            continue
+                        # LM Studio model has: id, object, owned_by
+                        model_id = m.get("id", "")
+                        if not model_id:
+                            continue
+                        
+                        display_name = m.get("id", model_id)  # Use id as display name for now
+                        # Try to extract more meaningful name from id (e.g., remove @q4_k_m suffix)
+                        if "@" in display_name:
+                            display_name = display_name.split("@")[0]
+                        elif "/" in display_name:
+                            display_name = display_name.split("/")[-1]
+                        
+                        result.append({
+                            "id": model_id,
+                            "path": model_id,
+                            "display_name": display_name,
+                            "context_length": None,
+                            "quantization": "unknown",
+                            "state": "ready",
+                        })
+                    if result:
+                        return result
+            except Exception as e:
                 continue
+        
+        # Fallback: return empty list (let UI show "no models" instead of fake ones)
         return []
 
     def load_model(self, model_key: str, gpu_index: Optional[int] = None,
@@ -344,7 +462,8 @@ class LMStudioPanel(tk.Toplevel):
 
         # Read configured endpoint from environment or .env file
         base_url = self._resolve_base_url()
-        self.client = LMStudioClient(base_url=base_url)
+        api_key = self._resolve_api_key()
+        self.client = LMStudioClient(base_url=base_url, api_key=api_key)
         self.gpus = get_available_gpus()
         self.models = []
 
@@ -354,7 +473,22 @@ class LMStudioPanel(tk.Toplevel):
     @staticmethod
     def _resolve_base_url() -> str:
         """Return the LM Studio endpoint. Default is localhost:1234."""
-        return "http://localhost:1234"
+        config = _read_lmstudio_config()
+        if config.get("base_url"):
+            return config["base_url"].strip().rstrip("/")
+        # Fallback to environment variable
+        if "LM_BASE_URL" in os.environ:
+            return os.environ["LM_BASE_URL"].strip().rstrip("/")
+        # Default
+        return "http://localhost:1234/v1"
+
+    @staticmethod
+    def _resolve_api_key() -> str:
+        """Return the LM Studio API key from config or environment."""
+        config = _read_lmstudio_config()
+        if config.get("api_key"):
+            return config["api_key"].strip()
+        return os.environ.get("LM_API_KEY", "").strip()
 
     def _build_ui(self):
         # Title
@@ -387,6 +521,20 @@ class LMStudioPanel(tk.Toplevel):
         ep_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), ipady=2)
         ttk.Button(ep_row, text=t("lmstudio.connect", "Connect"), style="Small.TButton",
                    command=self._apply_endpoint).pack(side="left")
+
+        # API Key config
+        key_row = tk.Frame(self, bg=C["bg_main"], padx=20)
+        key_row.pack(fill="x", pady=(0, 8))
+        tk.Label(key_row, text=t("lmstudio.api_key", "API Key:"), font=FONTS["body"],
+                fg=C["text_secondary"], bg=C["bg_main"]).pack(side="left")
+        self._key_var = tk.StringVar(value=self._resolve_api_key())
+        key_entry = tk.Entry(key_row, textvariable=self._key_var,
+                            font=FONTS["mono_small"], bg=C["bg_input"],
+                            fg=C["text_primary"], insertbackground=C["text_primary"],
+                            show="*", relief="flat")
+        key_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), ipady=2)
+        ttk.Button(key_row, text=t("lmstudio.save_key", "Save"), style="Small.TButton",
+                   command=self._apply_api_key).pack(side="left")
 
         # Model list
         model_frame = tk.LabelFrame(self, text=f"  {t('lmstudio.available_models', 'Available Models')}  ",
@@ -476,6 +624,7 @@ class LMStudioPanel(tk.Toplevel):
     def _connect(self):
         """Connect to LM Studio in background."""
         def _do():
+            self.client.api_key = self._key_var.get().strip()
             running = self.client.is_running()
             sdk_ok = False
             if running and HAS_SDK:
@@ -501,10 +650,27 @@ class LMStudioPanel(tk.Toplevel):
         url = self._ep_var.get().strip().rstrip("/")
         if not url:
             return
-        self.client = LMStudioClient(base_url=url)
+        self.client = LMStudioClient(base_url=url, api_key=self._key_var.get().strip())
+        if not _write_lmstudio_config(base_url=url, api_key=self._key_var.get().strip()):
+            os.environ["LM_BASE_URL"] = url
         # Update status and reconnect
         self.status_dot.configure(fg=C["text_disabled"])
         self.status_lbl.configure(text=t("lmstudio.status_connecting", "Connecting..."))
+        self._connect()
+
+    def _apply_api_key(self):
+        """Save API key and reconnect."""
+        key = self._key_var.get().strip()
+        if key:
+            os.environ["LM_API_KEY"] = key
+        else:
+            os.environ.pop("LM_API_KEY", None)
+        _write_lmstudio_config(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
+        self.client.api_key = key
+        self.status_lbl.configure(
+            text=t("lmstudio.api_key_saved", "API key saved") if key
+            else t("lmstudio.api_key_cleared", "API key cleared")
+        )
         self._connect()
 
     def _refresh_models(self):
