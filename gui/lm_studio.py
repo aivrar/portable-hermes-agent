@@ -268,11 +268,11 @@ class LMStudioClient:
         
         # Try API endpoints with proper error handling
         urls_to_try = [
-            # LM Studio native endpoint (confirmed working by user's requests test)
-            self._server_root() + "/models",
-            # OpenAI-compatible endpoints
+            # LM Studio native v0 endpoint (preserves context_length and quantization)
+            self._server_root() + "/api/v0/models",
+            # LM Studio native v1 / OpenAI endpoints
             self._openai_base() + "/models",
-            # Legacy LM Studio endpoints
+            self._server_root() + "/models",
             self._server_root() + "/api/v1/models",
             self._server_root() + "/v1/models",
         ]
@@ -285,13 +285,12 @@ class LMStudioClient:
                     "%s -> status=%s, content-type=%s", url, r.status_code, r.headers.get("content-type", "unknown")
                 )
                 
-                if r.status_code in (200, 401, 403):
+                if r.status_code == 200:
                     try:
                         data = r.json()
                     except Exception:
                         continue
                     
-                    # LM Studio returns {"data": [...]} format (confirmed by PowerShell test)
                     if isinstance(data, dict) and "data" in data:
                         models_list = data["data"]
                     elif isinstance(data, list):
@@ -299,34 +298,37 @@ class LMStudioClient:
                     else:
                         continue
                     
-                    # Parse models with known LM Studio structure
                     result = []
                     for m in models_list:
                         if not isinstance(m, dict):
                             continue
-                        # LM Studio model has: id, object, owned_by
-                        model_id = m.get("id", "")
+                        model_id = m.get("id") or m.get("path") or ""
                         if not model_id:
                             continue
                         
-                        display_name = m.get("id", model_id)  # Use id as display name for now
-                        # Try to extract more meaningful name from id (e.g., remove @q4_k_m suffix)
+                        path = m.get("path") or model_id
+                        raw_name = m.get("display_name") or model_id
+                        display_name = raw_name
                         if "@" in display_name:
                             display_name = display_name.split("@")[0]
                         elif "/" in display_name:
                             display_name = display_name.split("/")[-1]
                         
+                        context_length = m.get("max_context_length") or m.get("context_length")
+                        quantization = m.get("quantization") or "unknown"
+                        state = m.get("state") or "ready"
+                        
                         result.append({
                             "id": model_id,
-                            "path": model_id,
+                            "path": path,
                             "display_name": display_name,
-                            "context_length": None,
-                            "quantization": "unknown",
-                            "state": "ready",
+                            "context_length": context_length,
+                            "quantization": quantization,
+                            "state": state,
                         })
                     if result:
                         return result
-            except Exception as e:
+            except Exception:
                 continue
         
         # Fallback: return empty list (let UI show "no models" instead of fake ones)
@@ -665,12 +667,14 @@ class LMStudioPanel(tk.Toplevel):
             os.environ["LM_API_KEY"] = key
         else:
             os.environ.pop("LM_API_KEY", None)
-        _write_lmstudio_config(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
+        saved = _write_lmstudio_config(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         self.client.api_key = key
-        self.status_lbl.configure(
-            text=t("lmstudio.api_key_saved", "API key saved") if key
-            else t("lmstudio.api_key_cleared", "API key cleared")
-        )
+        if not saved:
+            self.status_lbl.configure(text=t("lmstudio.save_failed", "Failed to save configuration"))
+        elif key:
+            self.status_lbl.configure(text=t("lmstudio.api_key_saved", "API key saved"))
+        else:
+            self.status_lbl.configure(text=t("lmstudio.api_key_cleared", "API key cleared"))
         self._connect()
 
     def _refresh_models(self):

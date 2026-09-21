@@ -449,6 +449,84 @@ class TestLMStudioConfigAndClient(unittest.TestCase):
         self.assertEqual(data.get("base_url"), "http://127.0.0.1:5678")
         self.assertEqual(data.get("api_key"), "sk-mykey")
 
+    def test_lmstudio_config_clearing_and_failure(self):
+        from gui import lm_studio
+
+        # 1. Save initial config
+        lm_studio._write_lmstudio_config(base_url="http://127.0.0.1:1234", api_key="sk-initial")
+        self.assertEqual(lm_studio._read_lmstudio_config().get("api_key"), "sk-initial")
+
+        # 2. Clear key
+        ok = lm_studio._write_lmstudio_config(api_key="")
+        self.assertTrue(ok)
+        self.assertEqual(lm_studio._read_lmstudio_config().get("api_key"), "")
+        self.assertEqual(lm_studio._read_lmstudio_config().get("base_url"), "http://127.0.0.1:1234")
+
+        # 3. Simulate failure when path points to an invalid directory
+        orig = lm_studio.LMSTUDIO_CONFIG_PATH
+        try:
+            lm_studio.LMSTUDIO_CONFIG_PATH = Path("/nonexistent/directory/unwritable/.lmstudio_config")
+            res = lm_studio._write_lmstudio_config(base_url="http://fail")
+            self.assertFalse(res)
+        finally:
+            lm_studio.LMSTUDIO_CONFIG_PATH = orig
+
+    def test_list_models_api_fallbacks_and_metadata(self):
+        from unittest.mock import patch
+        from gui.lm_studio import LMStudioClient
+
+        client = LMStudioClient(base_url="http://localhost:1234", api_key="test-key")
+
+        # Scenario A: /api/v0/models succeeds with rich metadata
+        mock_resp_v0 = MagicMock()
+        mock_resp_v0.status_code = 200
+        mock_resp_v0.json.return_value = {
+            "data": [
+                {
+                    "id": "qwen2.5-coder-7b-instruct@q4_k_m",
+                    "path": "qwen/qwen2.5-coder-7b",
+                    "display_name": "qwen2.5-coder-7b-instruct@q4_k_m",
+                    "max_context_length": 32768,
+                    "quantization": "Q4_K_M",
+                    "state": "loaded",
+                }
+            ]
+        }
+
+        with patch("gui.lm_studio.httpx.get", return_value=mock_resp_v0) as mock_get:
+            models = client.list_models_api()
+            self.assertEqual(len(models), 1)
+            self.assertEqual(models[0]["id"], "qwen2.5-coder-7b-instruct@q4_k_m")
+            self.assertEqual(models[0]["display_name"], "qwen2.5-coder-7b-instruct")
+            self.assertEqual(models[0]["context_length"], 32768)
+            self.assertEqual(models[0]["quantization"], "Q4_K_M")
+            self.assertEqual(models[0]["state"], "loaded")
+            mock_get.assert_called_once()
+            # Verify auth header was passed
+            call_kwargs = mock_get.call_args[1]
+            self.assertEqual(call_kwargs["headers"].get("Authorization"), "Bearer test-key")
+
+        # Scenario B: /api/v0/models 404s, falls back to OpenAI-compatible /models
+        def side_effect(url, **kwargs):
+            resp = MagicMock()
+            if "/api/v0/models" in url:
+                resp.status_code = 404
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "data": [
+                        {"id": "meta-llama/llama-3.1-8b-instruct"}
+                    ]
+                }
+            return resp
+
+        with patch("gui.lm_studio.httpx.get", side_effect=side_effect):
+            fallback_models = client.list_models_api()
+            self.assertEqual(len(fallback_models), 1)
+            self.assertEqual(fallback_models[0]["id"], "meta-llama/llama-3.1-8b-instruct")
+            self.assertEqual(fallback_models[0]["display_name"], "llama-3.1-8b-instruct")
+            self.assertEqual(fallback_models[0]["state"], "ready")
+
 
 if __name__ == "__main__":
     unittest.main()
