@@ -10,6 +10,22 @@ import pytest
 from gui import lm_studio as lm
 
 
+def test_context_selection_obeys_core_floor():
+    panel = SimpleNamespace(ctx_var=Mock(), ctx_label=Mock())
+    lm.LMStudioPanel._on_ctx_change(panel, "8192")
+    panel.ctx_var.set.assert_called_once_with(lm.MINIMUM_CONTEXT_LENGTH)
+    assert lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
+
+
+def test_too_small_model_is_rejected_before_loading(monkeypatch):
+    warning = Mock()
+    monkeypatch.setattr(lm.messagebox, "showwarning", warning)
+    panel = SimpleNamespace(model_list=Mock(curselection=lambda: (0,)),
+                            models=[{"id": "small", "context_length": lm.MINIMUM_CONTEXT_LENGTH // 2}])
+    lm.LMStudioPanel._load_model(panel)
+    warning.assert_called_once()
+
+
 def test_loaded_sdk_models_use_identifier_not_debug_repr():
     model = SimpleNamespace(identifier="hermes-live-instance")
     assert lm.LMStudioClient._extract_model_id(model) == "hermes-live-instance"

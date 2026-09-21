@@ -19,6 +19,9 @@ from typing import List, Dict, Optional
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
 from gui.i18n import t
 from hermes_constants import get_hermes_home
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+DEFAULT_CONTEXT_LENGTH = max(65536, MINIMUM_CONTEXT_LENGTH)
 
 try:
     import lmstudio
@@ -344,7 +347,7 @@ class LMStudioClient:
         return []
 
     def load_model(self, model_key: str, gpu_index: Optional[int] = None,
-                   context_length: int = 4096, flash_attention: bool = True) -> bool:
+                   context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True) -> bool:
         """Load a model via SDK with GPU and context control.
 
         Finds the model object from downloaded models by matching model_key,
@@ -603,10 +606,10 @@ class LMStudioPanel(tk.Toplevel):
                 fg=C["text_secondary"], bg=C["bg_main"], width=12,
                 anchor="w").pack(side="left")
 
-        self.ctx_var = tk.IntVar(value=32768)
+        self.ctx_var = tk.IntVar(value=DEFAULT_CONTEXT_LENGTH)
         # Use a tk.Scale for better visual control (ttk.Scale is too thin)
-        # Minimum 32768 — Hermes sends ~17K tokens of tool definitions alone
-        self.ctx_slider = tk.Scale(ctx_row, from_=32768, to=131072,
+        # Match the core's context floor rather than loading a model it rejects.
+        self.ctx_slider = tk.Scale(ctx_row, from_=MINIMUM_CONTEXT_LENGTH, to=max(131072, DEFAULT_CONTEXT_LENGTH),
                                    variable=self.ctx_var, orient="horizontal",
                                    command=self._on_ctx_change,
                                    bg=C["bg_main"], fg=C["text_primary"],
@@ -618,7 +621,7 @@ class LMStudioPanel(tk.Toplevel):
                                    font=FONTS["small"])
         self.ctx_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        self.ctx_label = tk.Label(ctx_row, text="4,096", font=FONTS["mono_small"],
+        self.ctx_label = tk.Label(ctx_row, text=f"{DEFAULT_CONTEXT_LENGTH:,}", font=FONTS["mono_small"],
                                  fg=C["accent"], bg=C["bg_main"], width=10)
         self.ctx_label.pack(side="right")
 
@@ -742,18 +745,18 @@ class LMStudioPanel(tk.Toplevel):
             m = self.models[idx]
             max_ctx = m.get("context_length") or estimate_context_length(m["id"])
             # Update slider range but keep the user's chosen value
-            self.ctx_slider.configure(to=max(max_ctx, 131072))
+            self.ctx_slider.configure(to=max(max_ctx, DEFAULT_CONTEXT_LENGTH))
             # Only set a default if user hasn't touched the slider yet
             current = self.ctx_var.get()
-            if current > max_ctx:
-                safe = min(max_ctx, 8192)
+            if current > max_ctx >= MINIMUM_CONTEXT_LENGTH:
+                safe = max(MINIMUM_CONTEXT_LENGTH, (max_ctx // 512) * 512)
                 self.ctx_var.set(safe)
                 self.ctx_label.configure(text=f"{safe:,}")
 
     def _on_ctx_change(self, val):
         v = int(float(val))
         # Snap to nearest 512
-        v = max(512, (v // 512) * 512)
+        v = max(MINIMUM_CONTEXT_LENGTH, (v // 512) * 512)
         self.ctx_var.set(v)
         self.ctx_label.configure(text=f"{v:,}")
 
@@ -768,8 +771,17 @@ class LMStudioPanel(tk.Toplevel):
         # Use 'path' for SDK loading (full model path), 'id' for display/chat
         model_path = model.get("path", model["id"])
         model_id = model["id"]
+        supported_context = model.get("context_length")
+        if supported_context and supported_context < MINIMUM_CONTEXT_LENGTH:
+            messagebox.showwarning(
+                "Model Context Too Small",
+                f"This model supports {supported_context:,} tokens. Hermes requires "
+                f"at least {MINIMUM_CONTEXT_LENGTH:,}; select a larger-context model.",
+                parent=self,
+            )
+            return
         ctx = int(self.ctx_var.get())
-        ctx = max(512, (ctx // 512) * 512)
+        ctx = max(MINIMUM_CONTEXT_LENGTH, (ctx // 512) * 512)
 
         # Parse GPU selection
         gpu_str = self.gpu_var.get()
