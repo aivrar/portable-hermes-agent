@@ -185,7 +185,7 @@
     "wait-on": "9.0.10"
   },
   "build": {
-    "electronVersion": "41.10.3",
+    "electronVersion": "41.10.6",
     "appId": "com.nousresearch.hermes",
     "productName": "Hermes",
     "executableName": "Hermes",
