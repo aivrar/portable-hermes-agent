@@ -1,6 +1,7 @@
 """
 Hermes Agent - GUI Internationalization (i18n)
-Supports Traditional Chinese (zh-hant), Simplified Chinese (zh), and English (en).
+Supports Traditional Chinese (zh-hant), Simplified Chinese (zh), English (en),
+and Spanish (es).
 Provides runtime language switching with automatic persistence under HERMES_HOME.
 """
 from __future__ import annotations
@@ -1054,7 +1055,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.placeholder": "Escribe un mensaje... (Intro para enviar, Mayús+Intro para nueva línea)",
         "chat.empty_warning": "Por favor, escribe un mensaje primero.",
         "chat.running_warning": "El agente ya está en ejecución. Espera o pulsa Detener.",
-        "chat.file_drag_drop": "Arrastra y suelta archivos aquí o haz clic en Adjuntar",
+        "chat.file_drag_drop": "Arrastra y suelta archivos aquí o haz clic en Añadir",
 
         # Message Roles & Tool widgets
         "chat.role_user": "Tú",

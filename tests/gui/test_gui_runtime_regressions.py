@@ -43,7 +43,7 @@ def test_real_app_menu_and_settings_language_switch(monkeypatch):
     gui.root.report_callback_exception = lambda *args: errors.append(args)
     try:
         gui.status_bar.set_tool("read_file")
-        for language in ("zh-hant", "zh", "en"):
+        for language in ("zh-hant", "zh", "en", "es"):
             gui._switch_language(language)
             gui.root.update()
             assert gui.send_btn.cget("text") == t("chat.send")
@@ -53,7 +53,7 @@ def test_real_app_menu_and_settings_language_switch(monkeypatch):
             assert gui.status_bar.status_lbl.cget("text") == t("status.tool_calling", tool="read_file")
         dlg = app.SettingsDialog(gui.root, bridge)
         dlg.withdraw()
-        dlg.lang_var.set(dict(app.SUPPORTED_LANGUAGES)["zh-hant"])
+        dlg.lang_var.set(dict(app.SUPPORTED_LANGUAGES)["es"])
         dlg._save()
         gui.root.update()
         assert gui.send_btn.cget("text") == t("chat.send")
