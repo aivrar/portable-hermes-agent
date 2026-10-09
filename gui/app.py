@@ -55,6 +55,8 @@ class MessageBubble(tk.Frame):
 
     def __init__(self, parent, text, msg_type="user", tool_name=None):
         super().__init__(parent, bg=C["bg_main"])
+        self._msg_type = msg_type
+        self._tool_name = tool_name
 
         if msg_type == "user":
             bg, border, label, label_fg = C["msg_user"], C["msg_user_border"], t("chat.role_user"), C["accent"]
@@ -84,8 +86,9 @@ class MessageBubble(tk.Frame):
         hdr = tk.Frame(card, bg=bg)
         hdr.pack(fill="x")
 
-        tk.Label(hdr, text=label, font=FONTS["small"] + ("bold",),
-                fg=label_fg, bg=bg).pack(side="left")
+        self._role_label = tk.Label(hdr, text=label, font=FONTS["small"] + ("bold",),
+                                    fg=label_fg, bg=bg)
+        self._role_label.pack(side="left")
 
         ts = datetime.now().strftime("%H:%M")
         tk.Label(hdr, text=ts, font=SF("Segoe UI", 8),
@@ -126,7 +129,7 @@ class MessageBubble(tk.Frame):
                 img_frame.pack(fill="x", pady=(6, 2))
 
                 # Loading label (replaced by image when downloaded)
-                loading = tk.Label(img_frame, text=f"Loading image...",
+                loading = tk.Label(img_frame, text=t("chat.loading_image"),
                                   font=FONTS["small"], fg=C["text_hint"], bg=bg)
                 loading.pack()
 
@@ -138,7 +141,7 @@ class MessageBubble(tk.Frame):
             # Fallback: show clickable link
             for match in image_matches:
                 url = match.group(2)
-                link = tk.Label(card, text=f"[Image: {url}]",
+                link = tk.Label(card, text=t("chat.image_link", url=url),
                                font=FONTS["small"], fg=C["accent"], bg=bg,
                                cursor="hand2")
                 link.pack(fill="x", pady=(4, 0))
@@ -148,8 +151,8 @@ class MessageBubble(tk.Frame):
         menu = tk.Menu(self, tearoff=0,
                       bg=C["bg_card"], fg=C["text_primary"],
                       activebackground=C["accent"], activeforeground="white")
-        menu.add_command(label="Copy All", command=lambda: self._copy(tw))
-        menu.add_command(label="Select All", command=lambda: self._select_all(tw))
+        menu.add_command(label=t("chat.copy_all"), command=lambda: self._copy(tw))
+        menu.add_command(label=t("chat.select_all"), command=lambda: self._select_all(tw))
         menu.post(event.x_root, event.y_root)
 
     def _copy(self, tw):
@@ -195,7 +198,7 @@ class MessageBubble(tk.Frame):
                                   lambda e: __import__('webbrowser').open(url))
                     # Tooltip
                     from gui.theme import Tooltip
-                    Tooltip(img_label, f"Click to open full size\n{alt_text}")
+                    Tooltip(img_label, t("chat.open_image_tooltip", alt=alt_text))
                 except tk.TclError:
                     pass
 
@@ -204,11 +207,18 @@ class MessageBubble(tk.Frame):
         except Exception as e:
             def _show_error():
                 try:
-                    loading_label.configure(text=f"Could not load image: {e}",
+                    loading_label.configure(text=t("chat.image_load_failed", error=e),
                                            fg=C["danger"])
                 except tk.TclError:
                     pass
             frame.after(0, _show_error)
+
+    def update_ui_language(self):
+        if self._msg_type == "tool":
+            label = t("chat.tool", name=self._tool_name or "?")
+        else:
+            label = t(f"chat.role_{self._msg_type}")
+        self._role_label.configure(text=label)
 
 
 class ToolCallWidget(tk.Frame):
@@ -330,14 +340,14 @@ class Sidebar(tk.Frame):
     """Left sidebar with branding, new-chat, session history, and model switcher."""
 
     MODELS = [
-        ("google/gemini-2.5-flash", "Gemini Flash", "Fast & cheap"),
-        ("google/gemini-2.5-pro", "Gemini Pro", "Smart & affordable"),
-        ("anthropic/claude-sonnet-4", "Claude Sonnet", "Great all-rounder"),
-        ("anthropic/claude-opus-4.6", "Claude Opus", "Most capable"),
-        ("openai/gpt-4o", "GPT-4o", "OpenAI flagship"),
-        ("openai/gpt-4o-mini", "GPT-4o Mini", "Fast & cheap"),
-        ("deepseek/deepseek-chat-v3", "DeepSeek V3", "Strong & cheap"),
-        ("meta-llama/llama-4-maverick", "Llama Maverick", "Open source"),
+        ("google/gemini-2.5-flash", "Gemini Flash", "sidebar.note.fast_cheap"),
+        ("google/gemini-2.5-pro", "Gemini Pro", "sidebar.note.smart_affordable"),
+        ("anthropic/claude-sonnet-4", "Claude Sonnet", "sidebar.note.all_rounder"),
+        ("anthropic/claude-opus-4.6", "Claude Opus", "sidebar.note.most_capable"),
+        ("openai/gpt-4o", "GPT-4o", "sidebar.note.flagship"),
+        ("openai/gpt-4o-mini", "GPT-4o Mini", "sidebar.note.fast_cheap"),
+        ("deepseek/deepseek-chat-v3", "DeepSeek V3", "sidebar.note.strong_cheap"),
+        ("meta-llama/llama-4-maverick", "Llama Maverick", "sidebar.note.open_source"),
     ]
 
     def __init__(self, parent, on_new=None, on_model_change=None,
@@ -395,6 +405,7 @@ class Sidebar(tk.Frame):
 
         # -- Loading status indicator (hidden by default) --
         self._load_status_var = tk.StringVar(value="")
+        self._load_status_data = None
         self._load_status_lbl = tk.Label(model_fr, textvariable=self._load_status_var,
                                          font=FONTS["small"], fg=C["warning"],
                                          bg=C["bg_sidebar"], anchor="w")
@@ -436,12 +447,17 @@ class Sidebar(tk.Frame):
         self.session_frame.bind("<MouseWheel>", _sw)
 
         # Load sessions on startup
+        self._sessions_data = []
         self.after(500, self._load_sessions)
 
     @staticmethod
     def _display_name(entry):
         """Build display string for a model tuple (id, name, note)."""
         _, name, note = entry
+        if note == "LM Studio":
+            name = f"{t('sidebar.local_prefix')} {name}"
+        elif note.startswith("sidebar.note."):
+            note = t(note)
         return f"{name}  ({note})"
 
     def _select_model_in_combo(self, model_id):
@@ -469,14 +485,16 @@ class Sidebar(tk.Frame):
         _hermes_home = get_hermes_home()
 
         # Header
-        tk.Label(parent, text="Local Model Settings", font=FONTS["small"],
-                fg=C["accent"], bg=C["bg_sidebar"]).pack(anchor="w", pady=(4, 2))
+        self._local_header = tk.Label(parent, text=t("sidebar.local_settings"), font=FONTS["small"],
+                                      fg=C["accent"], bg=C["bg_sidebar"])
+        self._local_header.pack(anchor="w", pady=(4, 2))
 
         # GPU selector
         gpu_row = tk.Frame(parent, bg=C["bg_sidebar"])
         gpu_row.pack(fill="x", pady=2)
-        tk.Label(gpu_row, text="GPU:", font=FONTS["small"],
-                fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w").pack(side="left")
+        self._local_gpu_label = tk.Label(gpu_row, text=t("sidebar.gpu_short"), font=FONTS["small"],
+                                         fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
+        self._local_gpu_label.pack(side="left")
         self._gpu_var = tk.StringVar(value="")
         self._gpu_combo = ttk.Combobox(gpu_row, textvariable=self._gpu_var,
                                         font=FONTS["small"], state="readonly", width=22)
@@ -499,22 +517,25 @@ class Sidebar(tk.Frame):
         # Context length
         ctx_row = tk.Frame(parent, bg=C["bg_sidebar"])
         ctx_row.pack(fill="x", pady=2)
-        tk.Label(ctx_row, text="Ctx:", font=FONTS["small"],
-                fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w").pack(side="left")
+        self._local_ctx_label = tk.Label(ctx_row, text=t("sidebar.context_short"), font=FONTS["small"],
+                                         fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
+        self._local_ctx_label.pack(side="left")
         self._ctx_var = tk.IntVar(value=32768)
         ctx_spin = ttk.Spinbox(ctx_row, from_=32768, to=131072, increment=4096,
                                textvariable=self._ctx_var, font=FONTS["small"], width=8)
         ctx_spin.pack(side="left")
         ctx_spin.bind("<FocusOut>", lambda e: self._save_local_settings())
         ctx_spin.bind("<Return>", lambda e: self._save_local_settings())
-        tk.Label(ctx_row, text="tokens", font=FONTS["small"],
-                fg=C["text_disabled"], bg=C["bg_sidebar"]).pack(side="left", padx=(4, 0))
+        self._local_tokens_label = tk.Label(ctx_row, text=t("sidebar.tokens_unit"), font=FONTS["small"],
+                                            fg=C["text_disabled"], bg=C["bg_sidebar"])
+        self._local_tokens_label.pack(side="left", padx=(4, 0))
 
         # Temperature
         temp_row = tk.Frame(parent, bg=C["bg_sidebar"])
         temp_row.pack(fill="x", pady=2)
-        tk.Label(temp_row, text="Temp:", font=FONTS["small"],
-                fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w").pack(side="left")
+        self._local_temp_label = tk.Label(temp_row, text=t("sidebar.temp_short"), font=FONTS["small"],
+                                          fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
+        self._local_temp_label.pack(side="left")
         self._temp_var = tk.DoubleVar(value=0.7)
         temp_spin = ttk.Spinbox(temp_row, from_=0.0, to=2.0, increment=0.1,
                                 textvariable=self._temp_var, font=FONTS["small"], width=8,
@@ -526,8 +547,9 @@ class Sidebar(tk.Frame):
         # Top-P
         topp_row = tk.Frame(parent, bg=C["bg_sidebar"])
         topp_row.pack(fill="x", pady=2)
-        tk.Label(topp_row, text="Top-P:", font=FONTS["small"],
-                fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w").pack(side="left")
+        self._local_top_p_label = tk.Label(topp_row, text=t("sidebar.top_p"), font=FONTS["small"],
+                                           fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
+        self._local_top_p_label.pack(side="left")
         self._topp_var = tk.DoubleVar(value=0.9)
         topp_spin = ttk.Spinbox(topp_row, from_=0.0, to=1.0, increment=0.05,
                                 textvariable=self._topp_var, font=FONTS["small"], width=8,
@@ -541,24 +563,24 @@ class Sidebar(tk.Frame):
         cb_fr.pack(fill="x", pady=(4, 4))
 
         self._auto_load_var = tk.BooleanVar(value=True)
-        auto_cb = tk.Checkbutton(cb_fr, text="Auto-load",
+        self._auto_load_cb = tk.Checkbutton(cb_fr, text=t("sidebar.auto_load"),
                                  variable=self._auto_load_var,
                                  font=FONTS["small"], fg=C["text_hint"],
                                  bg=C["bg_sidebar"], selectcolor=C["bg_input"],
                                  activebackground=C["bg_sidebar"],
                                  activeforeground=C["text_primary"],
                                  command=self._save_local_settings)
-        auto_cb.pack(side="left")
+        self._auto_load_cb.pack(side="left")
 
         self._flash_attn_var = tk.BooleanVar(value=True)
-        flash_cb = tk.Checkbutton(cb_fr, text="Flash Attn",
+        self._flash_attn_cb = tk.Checkbutton(cb_fr, text=t("sidebar.flash_attention"),
                                   variable=self._flash_attn_var,
                                   font=FONTS["small"], fg=C["text_hint"],
                                   bg=C["bg_sidebar"], selectcolor=C["bg_input"],
                                   activebackground=C["bg_sidebar"],
                                   activeforeground=C["text_primary"],
                                   command=self._save_local_settings)
-        flash_cb.pack(side="left", padx=(8, 0))
+        self._flash_attn_cb.pack(side="left", padx=(8, 0))
 
     def _populate_gpus(self, gpus):
         """Populate GPU combobox (called on main thread)."""
@@ -610,10 +632,11 @@ class Sidebar(tk.Frame):
         else:
             self._local_settings_fr.pack_forget()
 
-    def _show_load_status(self, text: str = ""):
+    def _show_load_status(self, key: str = "", prefix: str = "", **kwargs):
         """Show or hide the loading status label."""
-        if text:
-            self._load_status_var.set(text)
+        self._load_status_data = (key, prefix, kwargs) if key else None
+        if key:
+            self._load_status_var.set(prefix + t(key, **kwargs))
             self._load_status_lbl.pack(fill="x", pady=(0, 2))
         else:
             self._load_status_var.set("")
@@ -640,7 +663,7 @@ class Sidebar(tk.Frame):
                             states[mid] = state
                             short = mid.split("/")[-1] if "/" in mid else mid
                             tag = "\u2713 " if state == "loaded" else ""
-                            local_models.append((mid, f"[Local] {tag}{short}", "LM Studio"))
+                            local_models.append((mid, f"{tag}{short}", "LM Studio"))
             except Exception:
                 pass
             self._lm_studio_models = local_models
@@ -688,7 +711,7 @@ class Sidebar(tk.Frame):
         if self._loading_model:
             return
         self._loading_model = True
-        self._show_load_status("Loading model...")
+        self._show_load_status("sidebar.loading_model")
         self.model_combo.configure(state="disabled")
 
         settings = self.get_local_settings()
@@ -713,7 +736,7 @@ class Sidebar(tk.Frame):
                 url = LMStudioPanel._resolve_base_url()
                 client = LMStudioClient(base_url=url)
                 if not client.connect_sdk():
-                    error_msg = "LM Studio SDK not available. Load the model manually in LM Studio."
+                    error_msg = t("sidebar.sdk_unavailable")
                     _dbg.debug("auto-load SDK connect FAILED")
                 else:
                     _dbg.debug("auto-load SDK connected, calling load_model...")
@@ -743,13 +766,13 @@ class Sidebar(tk.Frame):
         self.model_combo.configure(state="readonly")
 
         if success:
-            self._show_load_status("\u2713 Loaded")
+            self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
             self._model_states[model_id] = "loaded"
             self.after(500, self.refresh_models)
             self.after(1500, lambda: self._show_load_status(""))
         else:
-            short_err = error[:80] if error else "Unknown error"
-            self._show_load_status(f"\u2717 {short_err}")
+            short_err = error[:80] if error else t("sidebar.unknown_error")
+            self._show_load_status("sidebar.load_failed", prefix="\u2717 ", error=short_err)
             self.after(5000, lambda: self._show_load_status(""))
 
         # Notify HermesGUI of load result
@@ -765,23 +788,27 @@ class Sidebar(tk.Frame):
             from hermes_state import SessionDB
             with SessionDB() as db:
                 sessions = db.list_sessions_rich(source=None, limit=20)
-            for widget in self.session_frame.winfo_children():
-                widget.destroy()
-            if not sessions:
-                tk.Label(self.session_frame, text="No past sessions yet",
-                        font=FONTS["small"], fg=C["text_disabled"],
-                        bg=C["bg_sidebar"], padx=12).pack(anchor="w", pady=4)
-                return
-            for sess in sessions:
-                self._add_session_entry(sess)
+            self._sessions_data = sessions
+            self._render_sessions()
         except Exception:
-            tk.Label(self.session_frame, text="No sessions found",
+            self._sessions_data = []
+            self._render_sessions()
+
+    def _render_sessions(self):
+        for widget in self.session_frame.winfo_children():
+            widget.destroy()
+        self._session_widgets = {}
+        if not self._sessions_data:
+            tk.Label(self.session_frame, text=t("sidebar.no_sessions"),
                     font=FONTS["small"], fg=C["text_disabled"],
                     bg=C["bg_sidebar"], padx=12).pack(anchor="w", pady=4)
+            return
+        for sess in self._sessions_data:
+            self._add_session_entry(sess)
 
     def _add_session_entry(self, sess):
         sid = sess.get("id", "")
-        title = sess.get("title") or sess.get("preview", "Untitled")
+        title = sess.get("title") or sess.get("preview") or t("sidebar.untitled")
         if len(title) > 35:
             title = title[:32] + "..."
         model = sess.get("model", "")
@@ -809,7 +836,7 @@ class Sidebar(tk.Frame):
         del_btn.pack(side="right")
         del_btn.bind("<Button-1>", lambda e, s=sid: self._delete_session(s))
 
-        info_text = f"{msg_count} msgs"
+        info_text = t("sidebar.session_messages", count=msg_count)
         if model:
             short_model = model.split("/")[-1][:15]
             info_text += f" | {short_model}"
@@ -858,23 +885,22 @@ class Sidebar(tk.Frame):
         if self._confirm_delete:
             # Custom dialog with "don't show again" checkbox
             dlg = tk.Toplevel(self)
-            dlg.title("Delete Session")
+            dlg.title(t("sidebar.delete_title"))
             dlg.configure(bg=C["bg_main"])
             dlg.transient(self.winfo_toplevel())
             dlg.grab_set()
 
             # Content — pack first so we can measure before geometry
-            tk.Label(dlg, text="Delete this session?",
+            tk.Label(dlg, text=t("sidebar.delete_question"),
                     font=FONTS["subheading"], fg=C["text_primary"],
                     bg=C["bg_main"]).pack(pady=(20, 4))
-            tk.Label(dlg, text="This will permanently remove the conversation\n"
-                    "and all its messages. This cannot be undone.",
+            tk.Label(dlg, text=t("sidebar.delete_warning"),
                     font=FONTS["small"], fg=C["text_hint"],
                     bg=C["bg_main"], justify="center").pack(pady=(0, 12))
 
             # Don't show again checkbox
             dont_ask = tk.BooleanVar(value=False)
-            tk.Checkbutton(dlg, text="Don't ask me again",
+            tk.Checkbutton(dlg, text=t("sidebar.dont_ask_again"),
                           variable=dont_ask, font=FONTS["small"],
                           fg=C["text_secondary"], bg=C["bg_main"],
                           selectcolor=C["bg_input"],
@@ -890,9 +916,9 @@ class Sidebar(tk.Frame):
                 dlg.destroy()
                 self._perform_delete(session_id)
 
-            ttk.Button(btn_frame, text="  Delete  ", style="Danger.TButton",
+            ttk.Button(btn_frame, text=f"  {t('sidebar.delete_action')}  ", style="Danger.TButton",
                        command=_do_delete).pack(side="left", padx=8)
-            ttk.Button(btn_frame, text="  Cancel  ", style="TButton",
+            ttk.Button(btn_frame, text=f"  {t('settings.cancel')}  ", style="TButton",
                        command=dlg.destroy).pack(side="left", padx=8)
 
             set_dark_title_bar(dlg)
@@ -937,6 +963,24 @@ class Sidebar(tk.Frame):
             self.model_lbl.configure(text=t("sidebar.model"))
         if hasattr(self, "sessions_lbl"):
             self.sessions_lbl.configure(text=t("sidebar.recent_sessions"))
+        if hasattr(self, "_local_header"):
+            for widget, key in (
+                (self._local_header, "sidebar.local_settings"),
+                (self._local_gpu_label, "sidebar.gpu_short"),
+                (self._local_ctx_label, "sidebar.context_short"),
+                (self._local_tokens_label, "sidebar.tokens_unit"),
+                (self._local_temp_label, "sidebar.temp_short"),
+                (self._local_top_p_label, "sidebar.top_p"),
+                (self._auto_load_cb, "sidebar.auto_load"),
+                (self._flash_attn_cb, "sidebar.flash_attention"),
+            ):
+                widget.configure(text=t(key))
+            self._update_combobox_values()
+        if hasattr(self, "session_frame"):
+            self._render_sessions()
+        if self._load_status_data:
+            key, prefix, kwargs = self._load_status_data
+            self._load_status_var.set(prefix + t(key, **kwargs))
 
 
 # ============================================================================
@@ -1104,8 +1148,9 @@ class SkillsBrowser(tk.Toplevel):
         set_dark_title_bar(self)
         center_window(self, 650, 500, parent)
 
-        tk.Label(self, text=t("skills.heading", "Installed Skills"), font=FONTS["title"],
-                fg=C["accent"], bg=C["bg_main"]).pack(pady=(20, 8))
+        self._heading = tk.Label(self, text=t("skills.heading", "Installed Skills"), font=FONTS["title"],
+                                 fg=C["accent"], bg=C["bg_main"])
+        self._heading.pack(pady=(20, 8))
 
         self.text = tk.Text(self, wrap="word", bg=C["bg_card"], fg=C["text_primary"],
                            font=FONTS["mono_small"], relief="flat", padx=16, pady=12,
@@ -1115,13 +1160,26 @@ class SkillsBrowser(tk.Toplevel):
         sb.pack(side="right", fill="y", padx=(0, 16), pady=(0, 16))
         self.text.pack(fill="both", expand=True, padx=(16, 0), pady=(0, 16))
 
+        self._content_data = None
+        register_listener(self.update_ui_language)
         threading.Thread(target=self._load, daemon=True).start()
+
+    def destroy(self):
+        unregister_listener(self.update_ui_language)
+        super().destroy()
+
+    def update_ui_language(self, _lang_code=None):
+        self.title(t("skills.title"))
+        self._heading.configure(text=t("skills.heading"))
+        if self._content_data:
+            key, kwargs = self._content_data
+            self._set(t(key, **kwargs), key=key, **kwargs)
 
     def _load(self):
         try:
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
-                self.after(0, lambda: self._set(t("skills.no_dir", "No skills directory found.")))
+                self.after(0, lambda: self._set(t("skills.no_dir"), key="skills.no_dir"))
                 return
             cats = _discover_installed_skills(skills_dir)
             lines = []
@@ -1130,11 +1188,17 @@ class SkillsBrowser(tk.Toplevel):
                 lines.append("  " + "-" * 40)
                 for n, d in cats[cat]:
                     lines.append(f"    {n:30s} {d[:50]}" if d else f"    {n}")
-            self.after(0, lambda: self._set("\n".join(lines) or t("skills.no_skills", "No skills found.")))
+            if lines:
+                self.after(0, lambda: self._set("\n".join(lines)))
+            else:
+                self.after(0, lambda: self._set(t("skills.no_skills"), key="skills.no_skills"))
         except Exception as e:
-            self.after(0, lambda: self._set(f"Error: {e}"))
+            error = str(e)
+            self.after(0, lambda: self._set(t("skills.load_error", error=error),
+                                            key="skills.load_error", error=error))
 
-    def _set(self, txt):
+    def _set(self, txt, key=None, **kwargs):
+        self._content_data = (key, kwargs) if key else None
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", txt)
@@ -1168,6 +1232,8 @@ class StatusBar(tk.Frame):
 
         self._state_kind = "ready"
         self._state_data = ""
+        self._usage_kind = ""
+        self._usage_value = 0
 
     def set_ready(self):
         self._state_kind = "ready"
@@ -1185,6 +1251,13 @@ class StatusBar(tk.Frame):
         else:
             self.status_lbl.configure(text=t("status.thinking"))
 
+    def set_thinking_key(self, key, **kwargs):
+        """Keep a localized activity message refreshable during language changes."""
+        self._state_kind = "thinking_key"
+        self._state_data = (key, kwargs)
+        self.dot.configure(fg=C["info"])
+        self.status_lbl.configure(text=t(key, **kwargs))
+
     def set_tool(self, name):
         self._state_kind = "tool"
         self._state_data = name
@@ -1201,7 +1274,14 @@ class StatusBar(tk.Frame):
         self.model_lbl.configure(text=m)
 
     def set_iter(self, n):
-        self.iter_lbl.configure(text=f"Step {n}")
+        self._usage_kind = "step"
+        self._usage_value = n
+        self.iter_lbl.configure(text=t("status.step", count=n))
+
+    def set_tokens(self, count):
+        self._usage_kind = "tokens"
+        self._usage_value = count
+        self.iter_lbl.configure(text=t("chat.token_count", count=f"{count:,}"))
 
     def update_ui_language(self):
         """Refresh status label in current language while preserving activity state."""
@@ -1213,10 +1293,17 @@ class StatusBar(tk.Frame):
                 self.status_lbl.configure(text=display)
             else:
                 self.status_lbl.configure(text=t("status.thinking"))
+        elif self._state_kind == "thinking_key":
+            key, kwargs = self._state_data
+            self.status_lbl.configure(text=t(key, **kwargs))
         elif self._state_kind == "tool":
             self.status_lbl.configure(text=t("status.tool_calling", tool=self._state_data))
         elif self._state_kind == "error":
             self.status_lbl.configure(text=t("status.error", error=""))
+        if self._usage_kind == "step":
+            self.iter_lbl.configure(text=t("status.step", count=self._usage_value))
+        elif self._usage_kind == "tokens":
+            self.iter_lbl.configure(text=t("chat.token_count", count=f"{self._usage_value:,}"))
 
 
 # ============================================================================
@@ -1396,13 +1483,14 @@ class HermesGUI:
         if hasattr(self, "stop_tooltip"):
             self.stop_tooltip.text = t("chat.stop_tooltip")
 
-        # 6. Chat title
+        # 6. Chat title and persistent message headers
         if hasattr(self, "chat_title") and self.chat_title.winfo_exists():
-            current_title = self.chat_title.cget("text")
-            if current_title in ("New Chat", "新對話", "新建对话"):
-                self.chat_title.configure(text=t("chat.new_chat_title"))
-            elif current_title in ("Resumed Session", "恢復對話", "恢复对话"):
-                self.chat_title.configure(text=t("chat.resumed_session"))
+            key = "chat.resumed_session" if self._chat_title_kind == "resumed" else "chat.new_chat_title"
+            self.chat_title.configure(text=t(key))
+        if hasattr(self, "msg_frame"):
+            for child in self.msg_frame.winfo_children():
+                if isinstance(child, MessageBubble):
+                    child.update_ui_language()
 
     # ---- Layout ----
 
@@ -1430,6 +1518,7 @@ class HermesGUI:
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
 
+        self._chat_title_kind = "new"
         self.chat_title = tk.Label(hdr, text=t("chat.new_chat_title"), font=FONTS["subheading"],
                                   fg=C["text_primary"], bg=C["bg_sidebar"])
         self.chat_title.pack(side="left", padx=16)
@@ -1523,10 +1612,10 @@ class HermesGUI:
         """Open file dialog to attach an image."""
         from tkinter import filedialog
         paths = filedialog.askopenfilenames(
-            title="Attach Image",
+            title=t("chat.attach_image_title"),
             filetypes=[
-                ("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
-                ("All files", "*.*"),
+                (t("chat.image_files"), "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                (t("chat.all_files"), "*.*"),
             ],
             parent=self.root,
         )
@@ -1676,7 +1765,7 @@ class HermesGUI:
             self._has_streamed = True
             self._stream_bubble.append_text(text)
             self._scroll_bottom()
-            self.status_bar.set_thinking("Streaming")
+            self.status_bar.set_thinking_key("status.streaming")
 
     def _cleanup_stream_bubble(self):
         """Remove or finalize the active streaming bubble."""
@@ -1705,16 +1794,16 @@ class HermesGUI:
         self.status_bar.set_error()
 
     def _on_clarify(self, question, choices=None):
-        resp = simpledialog.askstring("Hermes needs input", question, parent=self.root)
+        resp = simpledialog.askstring(t("chat.clarify_title"), question, parent=self.root)
         self.bridge.respond_to_clarify(resp or "")
 
     def _on_approval(self, command, description=None):
         """Dangerous command approval dialog."""
-        msg = f"Hermes wants to run this command:\n\n{command}"
+        msg = t("chat.approval_intro", command=command)
         if description:
-            msg += f"\n\nReason: {description}"
-        msg += "\n\nAllow this command?"
-        approved = messagebox.askyesno("Command Approval", msg, parent=self.root)
+            msg += t("chat.approval_reason", description=description)
+        msg += t("chat.approval_question")
+        approved = messagebox.askyesno(t("chat.approval_title"), msg, parent=self.root)
         self.bridge.respond_to_approval(approved)
 
     def _on_reasoning(self, text):
@@ -1722,7 +1811,7 @@ class HermesGUI:
         if text and text.strip():
             # Truncate for status bar display
             preview = text.strip().replace('\n', ' ')[:80]
-            self.status_bar.set_thinking(f"Thinking: {preview}")
+            self.status_bar.set_thinking_key("status.reasoning_preview", preview=preview)
 
     def _on_complete(self, result):
         self._cleanup_stream_bubble()
@@ -1731,9 +1820,7 @@ class HermesGUI:
         tokens = self.bridge.get_token_usage()
         if tokens.get("total"):
             total = tokens["total"]
-            self.status_bar.iter_lbl.configure(
-                text=f"{total:,} tokens"
-            )
+            self.status_bar.set_tokens(total)
         # Refresh session list
         try:
             self.sidebar.refresh_sessions()
@@ -1746,6 +1833,7 @@ class HermesGUI:
         self.bridge.new_session()
         for w in self.msg_frame.winfo_children():
             w.destroy()
+        self._chat_title_kind = "new"
         self.chat_title.configure(text=t("chat.new_chat_title"))
         self.status_bar.set_ready()
         self._add_msg(t("chat.session_started", "New session started."), "system")
@@ -1759,9 +1847,9 @@ class HermesGUI:
     def _on_auto_load_status(self, model_id, success, error):
         """Called when a local model auto-load completes."""
         if success:
-            self._add_msg(f"Model loaded: {model_id}", "system")
+            self._add_msg(t("chat.auto_load_success", model=model_id), "system")
         else:
-            self._add_msg(f"Failed to load {model_id}: {error}", "error")
+            self._add_msg(t("chat.auto_load_failed", model=model_id, error=error), "error")
 
     def _on_model_change(self, model_id):
         """Called when user picks a model from the sidebar dropdown."""
@@ -1782,7 +1870,7 @@ class HermesGUI:
                 break
         is_local = self.bridge._active_provider == "local"
         self.status_bar.set_model(f"LM Studio: {display}" if is_local else display)
-        self._add_msg(f"Switched to {display}.", "system")
+        self._add_msg(t("chat.model_switched", model=display), "system")
 
     def _on_session_select(self, session_id):
         """Load a past session into the chat view."""
@@ -1791,7 +1879,7 @@ class HermesGUI:
             with SessionDB() as db:
                 messages = db.get_messages_as_conversation(session_id)
             if not messages:
-                self._add_msg("Could not load that session.", "error")
+                self._add_msg(t("chat.session_load_failed"), "error")
                 return
 
             # Clear current chat
@@ -1801,6 +1889,7 @@ class HermesGUI:
             # Load conversation into bridge
             self.bridge.conversation_history = messages
             self.bridge.agent = None  # Force recreation
+            self._chat_title_kind = "resumed"
             self.chat_title.configure(text=t("chat.resumed_session"))
 
             # Display messages
@@ -1828,7 +1917,7 @@ class HermesGUI:
             self.input_text.focus_set()
 
         except Exception as e:
-            self._add_msg(f"Error loading session: {e}", "error")
+            self._add_msg(t("chat.session_load_error", error=e), "error")
 
     def _interrupt(self):
         if self.bridge.is_running:
@@ -1852,7 +1941,7 @@ class HermesGUI:
 
     def _on_permissions_saved(self, perms):
         self.bridge.agent = None  # Force agent recreation with new permissions
-        self._add_msg("Permissions updated. Click '+ New Chat' to apply.", "system")
+        self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
@@ -1868,18 +1957,15 @@ class HermesGUI:
             self.status_bar.set_model(f"LM Studio: {short}")
             self.sidebar.set_model(model_id)
 
-        self._add_msg(
-            f"Switched to LM Studio (local model).\n"
-            f"Model: {model_id or 'default loaded model'}\n"
-            f"Click '+ New Chat' to start using it.",
-            "system"
-        )
+        self._add_msg(t("chat.local_model_ready",
+                        model=model_id or t("chat.default_loaded_model"),
+                        new_chat=t("sidebar.new_chat")), "system")
 
     def _show_api_setup(self):
         def on_done(saved_keys):
             if saved_keys:
                 names = ", ".join(saved_keys.keys())
-                self._add_msg(f"API keys saved: {names}\nNew tools are now available!", "system")
+                self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
                 self.bridge.agent = None
             m = self.bridge.get_model()
@@ -1900,10 +1986,10 @@ class HermesGUI:
     def _about(self):
         messagebox.showinfo(t("about.title"),
                            f"{t('app.title')}\n\n"
-                           f"Hermes Agent core v{HERMES_CORE_VERSION}\n\n"
+                           f"{t('about.core_version', version=HERMES_CORE_VERSION)}\n\n"
                            f"{t('about.description')}\n"
-                           "Portable Windows distribution by aivrar\n"
-                           "Built on Hermes Agent by Nous Research\n\n"
+                           f"{t('about.portable_credit')}\n"
+                           f"{t('about.upstream_credit')}\n\n"
                            f"{t('about.license')}\n"
                            "github.com/aivrar/portable-hermes-agent",
                            parent=self.root)

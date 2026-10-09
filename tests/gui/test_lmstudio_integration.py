@@ -119,7 +119,7 @@ def test_save_failure_does_not_connect_or_change_active_credentials(monkeypatch)
     panel = SimpleNamespace(_key_var=Mock(get=lambda: "new"),
                             _ep_var=Mock(get=lambda: "http://localhost:1234"),
                             client=SimpleNamespace(api_key="old"),
-                            status_lbl=Mock(), _connect=Mock())
+                            status_lbl=Mock(), _connect=Mock(), _set_status=Mock())
     lm.LMStudioPanel._apply_api_key(panel)
     lm.LMStudioPanel._apply_endpoint(panel)
     assert panel.client.api_key == "old"
