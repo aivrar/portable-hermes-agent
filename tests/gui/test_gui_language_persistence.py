@@ -160,6 +160,15 @@ class TestGuiLanguagePersistence(unittest.TestCase):
         os.environ.pop("HERMES_LANGUAGE", None)
         self.assertEqual(load_saved_language(), "en", "Must reload en from saved gui_config.json")
 
+        # 4. Switch to Spanish
+        set_language("es", persist=True)
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual(data.get("language"), "es")
+
+        os.environ.pop("HERMES_LANGUAGE", None)
+        self.assertEqual(load_saved_language(), "es", "Must reload es from saved gui_config.json")
+
     def test_env_override_takes_precedence_over_file(self):
         """HERMES_LANGUAGE environment variable should override file configuration."""
         cfg_file = self.isolated_home / "gui_config.json"

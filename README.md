@@ -18,7 +18,7 @@ Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agen
 
 ### Desktop GUI
 - Dark-themed Tkinter interface with chat, sidebar, and session management
-- Multi-language support — English, Traditional Chinese (繁體中文), and Simplified Chinese (简体中文) with runtime switching
+- Multi-language support — English, Traditional Chinese (繁體中文), Simplified Chinese (简体中文), and Spanish (Español) with runtime switching
 - Image attachment with thumbnails (vision model support)
 - Guided mode — works even without an AI model connected
 - API key setup wizard with individual service configuration

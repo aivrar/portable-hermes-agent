@@ -5,6 +5,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from string import Formatter
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -46,8 +47,22 @@ class TestGuiI18n(unittest.TestCase):
             self.assertFalse(missing, f"Language '{lang_code}' is missing keys: {missing}")
             self.assertFalse(extra, f"Language '{lang_code}' has extra keys: {extra}")
 
+    def test_catalog_placeholders_parity(self):
+        """Translations must accept the same format arguments as English."""
+        formatter = Formatter()
+
+        def fields(value):
+            return {field for _, field, _, _ in formatter.parse(value) if field is not None}
+
+        for lang_code, _ in SUPPORTED_LANGUAGES:
+            for key, english in TRANSLATIONS["en"].items():
+                self.assertEqual(
+                    fields(TRANSLATIONS[lang_code][key]), fields(english),
+                    f"Language '{lang_code}' has different placeholders for '{key}'",
+                )
+
     def test_language_switching(self):
-        """Test switching between Traditional Chinese, Simplified Chinese, and English."""
+        """Test switching between every supported GUI language."""
         # 1. Traditional Chinese
         set_language("zh-hant", persist=False)
         self.assertEqual(get_language(), "zh-hant")
@@ -71,6 +86,13 @@ class TestGuiI18n(unittest.TestCase):
         self.assertEqual(t("sidebar.new_chat"), "+ New Chat")
         self.assertEqual(t("chat.send"), "Send")
         self.assertEqual(t("status.ready"), "Ready")
+
+        # 4. Spanish
+        set_language("es", persist=False)
+        self.assertEqual(get_language(), "es")
+        self.assertEqual(t("sidebar.new_chat"), "+ Nuevo Chat")
+        self.assertEqual(t("chat.send"), "Enviar")
+        self.assertEqual(t("status.ready"), "Listo")
 
     def test_formatting(self):
         """Test string formatting interpolation with format_kwargs."""
