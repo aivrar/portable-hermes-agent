@@ -1,16 +1,6 @@
-<p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
-</p>
+# Portable Hermes Agent
 
-# Hermes Agent ☤
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
-</p>
-<p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentación"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge" alt="Licencia: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Creado%20por-Nous%20Research-blueviolet?style=for-the-badge" alt="Creado por Nous Research"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Language-English-blue?style=for-the-badge" alt="English"></a>
   <a href="README.zh-TW.md"><img src="https://img.shields.io/badge/語言-繁體中文-purple?style=for-the-badge" alt="繁體中文"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/语言-简体中文-red?style=for-the-badge" alt="简体中文"></a>
@@ -18,205 +8,114 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/زبان-اردو-green?style=for-the-badge" alt="اردو"></a>
 </p>
 
-**El agente de IA con mejora continua creado por [Nous Research](https://nousresearch.com).** Es el único agente con un bucle de aprendizaje integrado: crea habilidades a partir de la experiencia, las mejora durante el uso, se impulsa a sí mismo a persistir el conocimiento, busca en sus propias conversaciones pasadas y construye un modelo cada vez más profundo de quién eres a lo largo de las sesiones. Ejecútalo en un VPS de $5, un clúster de GPUs o infraestructura sin servidor que cuesta casi nada cuando está inactivo. No está atado a tu laptop — habla con él desde Telegram mientras trabaja en una VM en la nube.
+**Agente de IA portátil para Windows**: interfaz gráfica, 100 herramientas, modelos locales mediante LM Studio, voz, música, ComfyUI, flujos de trabajo y creación de herramientas. Sin instalación en el sistema, Docker ni permisos de administrador.
 
-Usa cualquier modelo que quieras — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (más de 200 modelos), [NovitaAI](https://novita.ai), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, o tu propio endpoint. Cambia con `hermes model` — sin cambios de código, sin dependencias.
-
-<table>
-<tr><td><b>Una interfaz de terminal real</b></td><td>TUI completa con edición multilínea, autocompletado de comandos, historial de conversaciones, interrupción y redirección, y salida de herramientas en streaming.</td></tr>
-<tr><td><b>Vive donde tú vives</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal y CLI — todo desde un único proceso gateway. Transcripción de notas de voz, continuidad de conversación entre plataformas.</td></tr>
-<tr><td><b>Un bucle de aprendizaje cerrado</b></td><td>Memoria curada por el agente con recordatorios periódicos. Creación autónoma de habilidades tras tareas complejas. Las habilidades mejoran solas durante el uso. Búsqueda FTS5 de sesiones con resumención por LLM para recuperación entre sesiones. Modelado de usuario dialéctico <a href="https://github.com/plastic-labs/honcho">Honcho</a>. Compatible con el estándar abierto de <a href="https://agentskills.io">agentskills.io</a>.</td></tr>
-<tr><td><b>Automatizaciones programadas</b></td><td>Planificador cron integrado con entrega a cualquier plataforma. Informes diarios, copias de seguridad nocturnas, auditorías semanales — todo en lenguaje natural, ejecutándose de forma autónoma.</td></tr>
-<tr><td><b>Delega y paraleliza</b></td><td>Lanza subagentes aislados para flujos de trabajo paralelos. Escribe scripts de Python que llaman a herramientas vía RPC, convirtiendo pipelines de múltiples pasos en turnos de coste cero de contexto.</td></tr>
-<tr><td><b>Funciona en cualquier lugar, no solo en tu laptop</b></td><td>Seis backends de terminal — local, Docker, SSH, Singularity, Modal y Daytona. Daytona y Modal ofrecen persistencia sin servidor — el entorno de tu agente hiberna cuando está inactivo y se activa bajo demanda, costando casi nada entre sesiones. Ejecútalo en un VPS de $5 o un clúster de GPUs.</td></tr>
-<tr><td><b>Listo para investigación</b></td><td>Generación de trayectorias en lote, compresión de trayectorias para entrenar la próxima generación de modelos de llamadas a herramientas.</td></tr>
-</table>
+Basado en [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (licencia MIT), con personalizaciones para usuarios no técnicos. Este repositorio es **la distribución portátil de aivrar**, no el instalador del proyecto original.
 
 ---
 
-## Instalación rápida
+## Funciones
 
-### Linux, macOS, WSL2, Termux
+### Interfaz gráfica
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
+- Interfaz Tkinter con tema oscuro, chat, barra lateral e historial de sesiones.
+- Idiomas: inglés, chino tradicional, chino simplificado y español; se pueden cambiar sin reiniciar.
+- Imágenes adjuntas con miniaturas para modelos con visión.
+- Modo guiado que funciona incluso sin un modelo conectado.
+- Asistente de configuración de claves API por servicio.
+- Panel de permisos para controlar el acceso a archivos, red y sistema.
 
-### Windows (nativo, PowerShell)
+### Herramientas
 
-> **Nota:** En Windows nativo, Hermes funciona sin WSL — la CLI, el gateway, la TUI y las herramientas funcionan de forma nativa. Si prefieres usar WSL2, el comando de Linux/macOS de arriba también funciona allí. ¿Encontraste un error? Por favor [crea un issue](https://github.com/NousResearch/hermes-agent/issues).
+| Conjunto | Herramientas | Función |
+|---|---:|---|
+| **LM Studio** | 10 | Cargar y descargar modelos, buscar en Hugging Face, tokenizar, crear embeddings, chatear y gestionar la clave API |
+| **Música** | 7 | Generar música, gestionar modelos y trabajadores de GPU, explorar resultados |
+| **Voz (TTS)** | 7 | Texto a voz, modelos de voz, clonación, trabajos |
+| **ComfyUI** | 7 | Generar imágenes y gestionar instancias, modelos y nodos |
+| **Flujos de trabajo** | 6 | Crear, ejecutar, programar y gestionar automatizaciones |
+| **Creador de herramientas** | 3 | Crear herramientas de API o Python en tiempo de ejecución |
+| **Serper, guía, GPU y modelos** | 4 | Búsqueda, manual integrado, estado de GPU y cambio de modelo |
+| **Actualización de Hermes** | 2 | Actualizar el agente original conservando las funciones portátiles |
 
-Ejecuta esto en PowerShell:
+También se incluyen las herramientas del agente original: búsqueda web, archivos, navegador, terminal, memoria, habilidades, mensajería y otras.
 
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
-```
+El panel de LM Studio guarda la dirección del servidor y la clave API en el `HERMES_HOME` activo (`.lmstudio_config`), fuera del código de la aplicación. Ambas vías de actualización conservan estos datos; el archivo no se incluye en las descargas. Mantén la clave en privado. Borrar el campo y pulsar **Guardar** elimina la clave guardada. El SDK opcional necesita compatibilidad con `api_token` para cargar modelos con autenticación; la búsqueda REST y el chat siguen disponibles sin esa conexión del SDK.
 
-El instalador se encarga de todo: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **y un Git Bash portátil** (MinGit, descomprimido en `%LOCALAPPDATA%\hermes\git` — no requiere administrador, completamente aislado de cualquier instalación de Git del sistema). Hermes usa este Git Bash incluido para ejecutar comandos de shell.
+### Extensiones
 
-Si ya tienes Git instalado, el instalador lo detecta y lo usa en su lugar. De lo contrario, una descarga de ~45MB de MinGit es todo lo que necesitas — no tocará ni interferirá con ningún Git del sistema.
+Tres servidores portátiles de [aivrar](https://github.com/aivrar), instalados al usarlos por primera vez:
 
-> **Android / Termux:** La ruta manual probada está documentada en la [guía de Termux](https://hermes-agent.nousresearch.com/docs/getting-started/termux). En Termux, Hermes instala el extra `.[termux]` curado porque el extra completo `.[all]` actualmente incluye dependencias de voz incompatibles con Android.
->
-> **Windows:** Windows nativo es totalmente compatible — el comando de PowerShell de arriba instala todo. Si prefieres usar WSL2, el comando de Linux también funciona allí. La instalación nativa de Windows se encuentra en `%LOCALAPPDATA%\hermes`; WSL2 instala en `~/.hermes` como en Linux.
+| Extensión | Puerto | Uso |
+|---|---:|---|
+| [Servidor de voz](https://github.com/aivrar/portable-tts-server) | 8200 | Modelos TTS y clonación de voz |
+| [Servidor de música](https://github.com/aivrar/portable-music-server) | 9150 | Modelos de música y efectos de sonido |
+| [ComfyUI](https://github.com/aivrar/comfyui-portable-installer) | 5000 | Generación de imágenes |
 
-Después de la instalación:
-
-```bash
-source ~/.bashrc    # recargar shell (o: source ~/.zshrc)
-hermes              # ¡empieza a chatear!
-```
-
----
-
-## Primeros pasos
-
-```bash
-hermes              # CLI interactiva — inicia una conversación
-hermes model        # Elige tu proveedor y modelo LLM
-hermes tools        # Configura qué herramientas están habilitadas
-hermes config set   # Establece valores de configuración individuales
-hermes gateway      # Inicia el gateway de mensajería (Telegram, Discord, etc.)
-hermes setup        # Ejecuta el asistente de configuración completo
-hermes claw migrate # Migra desde OpenClaw (si vienes de OpenClaw)
-hermes update       # Actualiza a la última versión
-hermes doctor       # Diagnostica cualquier problema
-```
-
-📖 **[Documentación completa →](https://hermes-agent.nousresearch.com/docs/)**
+Los flujos de trabajo conectan herramientas con condiciones, bucles, ejecución paralela y programación. El creador de herramientas permite añadir integraciones de API o Python; las herramientas creadas se conservan entre sesiones.
 
 ---
 
-## Evita la colección de claves API — Nous Portal
+## Inicio rápido
 
-Hermes funciona con cualquier proveedor que quieras — eso no cambiará. Pero si prefieres no recopilar cinco claves API separadas para el modelo, búsqueda web, generación de imágenes, TTS y un navegador en la nube, **[Nous Portal](https://portal.nousresearch.com)** las cubre todas bajo una sola suscripción:
+### 1. Descargar
 
-- **Más de 300 modelos** — elige cualquiera con `/model <nombre>`
-- **Tool Gateway** — búsqueda web (Firecrawl), generación de imágenes (FAL), texto a voz (OpenAI), navegador en la nube (Browser Use), todo enrutado a través de tu suscripción. Sin cuentas adicionales.
+Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones de Portable Hermes Agent](https://github.com/aivrar/portable-hermes-agent/releases/latest) y extráelo en una carpeta normal, por ejemplo `C:\Users\TuNombre\Portable-Hermes-Agent`. Evita carpetas protegidas como `C:\Program Files`.
 
-Un comando desde una instalación nueva:
+**No uses el instalador de `NousResearch/hermes-agent` para instalar esta versión portátil:** es un proyecto distinto y no contiene los lanzadores ni las herramientas personalizadas de esta distribución.
 
-```bash
-hermes setup --portal
-```
+### 2. Iniciar
 
-Esto te autentica vía OAuth, establece Nous como tu proveedor y activa el Tool Gateway. Comprueba qué está conectado en cualquier momento con `hermes portal info`. Detalles completos en la [página de documentación del Tool Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
+Haz doble clic en `START.bat`. En el primer inicio prepara Python integrado, dependencias, el SDK de LM Studio y las herramientas de Node.js **dentro de la carpeta portátil**. No requiere Python ni Node.js instalados en el sistema, ni permisos de administrador.
 
-Puedes seguir usando tus propias claves por herramienta cuando quieras — el gateway es por backend, no todo o nada.
+También puedes ejecutar `install.bat` para la preparación manual, o `scripts\install.ps1` desde PowerShell.
 
----
+| Archivo | Función |
+|---|---|
+| `START.bat` | Inicio más sencillo de la interfaz gráfica |
+| `UPDATE.bat` | Actualización de la distribución portátil |
+| `hermes_gui.bat` | Abrir la interfaz gráfica |
+| `hermes.bat` | Abrir la línea de comandos |
 
-## Referencia rápida: CLI vs Mensajería
+### 3. Configurar un modelo
 
-Hermes tiene dos puntos de entrada: inicia la interfaz de terminal con `hermes`, o ejecuta el gateway y habla con él desde Telegram, Discord, Slack, WhatsApp, Signal o Email. Una vez en una conversación, muchos comandos de barra son compartidos entre ambas interfaces.
+**En la nube:** abre **Archivo > Configurar Clave API**, elige OpenRouter, crea una clave y pégala en el asistente.
 
-| Acción                              | CLI                                           | Plataformas de mensajería                                                         |
-| ----------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------- |
-| Empezar a chatear                   | `hermes`                                      | Ejecuta `hermes gateway setup` + `hermes gateway start`, luego envía un mensaje al bot |
-| Nueva conversación                  | `/new` o `/reset`                             | `/new` o `/reset`                                                                 |
-| Cambiar modelo                      | `/model [proveedor:modelo]`                   | `/model [proveedor:modelo]`                                                       |
-| Establecer personalidad             | `/personality [nombre]`                       | `/personality [nombre]`                                                           |
-| Reintentar o deshacer último turno  | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                 |
-| Comprimir contexto / ver uso        | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                         |
-| Explorar habilidades                | `/skills` o `/<nombre-habilidad>`             | `/<nombre-habilidad>`                                                             |
-| Interrumpir trabajo actual          | `Ctrl+C` o enviar un nuevo mensaje            | `/stop` o enviar un nuevo mensaje                                                 |
-| Estado específico de plataforma     | `/platforms`                                  | `/status`, `/sethome`                                                             |
-
-Para las listas de comandos completas, consulta la [guía de CLI](https://hermes-agent.nousresearch.com/docs/user-guide/cli) y la [guía del Gateway de Mensajería](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
+**En tu equipo:** instala [LM Studio](https://lmstudio.ai), descarga un modelo, inicia su servidor y abre **LM Studio (Modelos Locales)** en el menú de la interfaz. Carga el modelo y selecciona **Usar para el Chat**. Para modelos locales se recomienda una GPU NVIDIA con al menos 8 GB.
 
 ---
 
-## Documentación
+## Dos tipos de actualización
 
-Toda la documentación está en **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+Portable Hermes tiene **dos vías independientes**. Actualizar una no actualiza automáticamente la otra.
 
-| Sección                                                                                             | Contenido                                                    |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| [Inicio rápido](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)              | Instalar → configurar → primera conversación en 2 minutos   |
-| [Uso de CLI](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                             | Comandos, atajos de teclado, personalidades, sesiones        |
-| [Configuración](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)               | Archivo de configuración, proveedores, modelos, todas las opciones |
-| [Gateway de Mensajería](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)           | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant   |
-| [Seguridad](https://hermes-agent.nousresearch.com/docs/user-guide/security)                        | Aprobación de comandos, emparejamiento por DM, aislamiento en contenedor |
-| [Herramientas y Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)   | Más de 40 herramientas, sistema de toolsets, backends de terminal |
-| [Sistema de Habilidades](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)   | Memoria procedimental, Skills Hub, creación de habilidades   |
-| [Memoria](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                   | Memoria persistente, perfiles de usuario, mejores prácticas  |
-| [Integración MCP](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)              | Conecta cualquier servidor MCP para capacidades extendidas   |
-| [Programación Cron](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)           | Tareas programadas con entrega a plataforma                  |
-| [Archivos de Contexto](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Contexto de proyecto que da forma a cada conversación      |
-| [Arquitectura](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)            | Estructura del proyecto, bucle del agente, clases principales |
-| [Contribuir](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)              | Configuración de desarrollo, proceso de PR, estilo de código |
-| [Referencia de CLI](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)             | Todos los comandos y flags                                   |
-| [Variables de Entorno](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Referencia completa de variables de entorno                  |
+| Vía | Origen | Qué actualiza |
+|---|---|---|
+| **Distribución portátil** | `aivrar/portable-hermes-agent` | Lanzadores de Windows, interfaz gráfica, integraciones, herramientas portátiles y la versión del agente probada con este repositorio |
+| **Agente Hermes original** | `NousResearch/hermes-agent` | Código más reciente del núcleo del agente, conservando los archivos propios de Portable Hermes |
+
+Para la actualización normal, cierra Hermes y ejecuta `UPDATE.bat`. También puedes usar `hermes.bat update --backup --yes`. La actualización conserva los datos de ejecución, las herramientas personalizadas, extensiones y el Python integrado.
+
+Si además deseas código más reciente del proyecto original, inicia Hermes y pídele primero que **compruebe** si hay una actualización del agente original, sin instalarla. Si decides aplicarla, pídele que actualice el agente original **conservando Portable Hermes**. Reinicia Hermes después para cargar los módulos nuevos. Una instalación desde ZIP puede actualizarse aunque no tenga historial de Git.
+
+Consulta [Cómo mantener actualizado Portable Hermes](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated) para el proceso completo, copias de seguridad y solución de problemas.
 
 ---
 
-## Migración desde OpenClaw
+## Requisitos y documentación
 
-Si vienes de OpenClaw, Hermes puede importar automáticamente tu configuración, memorias, habilidades y claves API.
+- Windows 10 u 11.
+- Conexión a Internet para IA en la nube, o una GPU adecuada para modelos locales.
+- No requiere permisos de administrador, Python del sistema ni Docker.
 
-**Durante la configuración inicial:** El asistente de configuración (`hermes setup`) detecta automáticamente `~/.openclaw` y ofrece migrar antes de que comience la configuración.
-
-**En cualquier momento después de instalar:**
-
-```bash
-hermes claw migrate              # Migración interactiva (preset completo)
-hermes claw migrate --dry-run    # Vista previa de qué se migraría
-hermes claw migrate --preset user-data   # Migrar sin secretos
-hermes claw migrate --overwrite  # Sobreescribir conflictos existentes
-```
-
-Qué se importa:
-
-- **SOUL.md** — archivo de personalidad
-- **Memorias** — entradas de MEMORY.md y USER.md
-- **Habilidades** — habilidades creadas por el usuario → `~/.hermes/skills/openclaw-imports/`
-- **Lista de comandos permitidos** — patrones de aprobación
-- **Configuración de mensajería** — configuración de plataformas, usuarios permitidos, directorio de trabajo
-- **Claves API** — secretos en lista de permitidos (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **Assets de TTS** — archivos de audio del espacio de trabajo
-- **Instrucciones del espacio de trabajo** — AGENTS.md (con `--workspace-target`)
-
-Consulta `hermes claw migrate --help` para todas las opciones, o usa la habilidad `openclaw-migration` para una migración guiada interactiva por el agente con vistas previas de dry-run.
+Hay una guía consultable dentro del agente (`search_guide`). El [manual en PDF](https://github.com/aivrar/portable-hermes-agent/releases/latest) se incluye en cada versión. Para los detalles técnicos y novedades que aún no estén traducidos, consulta el [README portátil en inglés](README.md).
 
 ---
 
-## Contribuir
+## Créditos y licencia
 
-¡Las contribuciones son bienvenidas! Consulta la [Guía de Contribución](CONTRIBUTING.es.md) para la configuración del desarrollo, el estilo de código y el proceso de PR.
+- Framework original: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), licencia MIT.
+- Extensiones portátiles: [aivrar](https://github.com/aivrar).
+- Herramientas personalizadas, interfaz e integraciones: creadas con [Claude Code](https://claude.ai/claude-code).
 
-Inicio rápido para colaboradores — clona y comienza con `setup-hermes.sh`:
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # instala uv, crea venv, instala .[all], enlaza ~/.local/bin/hermes
-./hermes              # detecta automáticamente el venv, no necesitas hacer `source` primero
-```
-
-Ruta manual (equivalente a lo anterior):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
-```
-
----
-
-## Comunidad
-
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Servidor MCP de control de escritorio Linux para Hermes y otros hosts MCP, con árboles de accesibilidad AT-SPI, entrada Wayland/X11, capturas de pantalla y targeting de ventanas del compositor.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Puente WeChat comunitario: Ejecuta Hermes Agent y OpenClaw en la misma cuenta de WeChat.
-
----
-
-## Licencia
-
-MIT — ver [LICENSE](LICENSE).
-
-Creado por [Nous Research](https://nousresearch.com).
+Licencia MIT; consulta [LICENSE](LICENSE). Copyright del framework original © 2025 Nous Research.
