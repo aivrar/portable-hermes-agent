@@ -112,12 +112,16 @@ def test_release_required_surface_is_tracked_and_not_excluded():
 
 
 def test_readme_download_links_target_the_portable_release_page():
-    content = (Path(build_release.PROJECT_ROOT) / "README.md").read_text(
-        encoding="utf-8"
-    )
+    root = Path(build_release.PROJECT_ROOT)
+    for readme_name in ("README.md", "README.es.md"):
+        content = (root / readme_name).read_text(encoding="utf-8")
+        assert "https://github.com/aivrar/portable-hermes-agent/releases/latest" in content
+        assert "NousResearch/hermes-agent/releases" not in content
+        assert "UPDATE.bat" in content
 
-    assert "https://github.com/aivrar/portable-hermes-agent/releases/latest" in content
-    assert "NousResearch/hermes-agent/releases" not in content
+    spanish_readme = (root / "README.es.md").read_text(encoding="utf-8")
+    assert "hermes_gui.bat" in spanish_readme
+    assert "hermes-agent.nousresearch.com/install" not in spanish_readme
 
 
 def test_windows_launchers_keep_runtime_state_in_active_hermes_home():
