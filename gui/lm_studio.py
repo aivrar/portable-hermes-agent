@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
-from gui.i18n import t
+from gui.i18n import t, register_listener, unregister_listener
 from hermes_constants import get_hermes_home
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
@@ -482,11 +482,31 @@ class LMStudioPanel(tk.Toplevel):
         self.models = []
 
         self._build_ui()
+        register_listener(self.update_ui_language)
         self.after(100, self._connect)
         def discover_gpus():
             gpus = get_available_gpus()
             self.after(0, lambda: self._set_gpus(gpus))
         threading.Thread(target=discover_gpus, daemon=True).start()
+
+    def destroy(self):
+        unregister_listener(self.update_ui_language)
+        super().destroy()
+
+    def _set_status(self, key, **kwargs):
+        self._status_key = key
+        self._status_kwargs = kwargs
+        self.status_lbl.configure(text=t(key, **kwargs))
+
+    def update_ui_language(self, _lang_code=None):
+        self.title(t("lmstudio.title"))
+        for widget, key in self._localized_widgets:
+            widget.configure(text=t(key))
+        self._model_frame.configure(text=f"  {t('lmstudio.available_models')}  ")
+        if hasattr(self, "_cancel_btn"):
+            self._cancel_btn.configure(text=t("lmstudio.cancel_load"))
+        self._set_status(self._status_key, **self._status_kwargs)
+        self._display_models(self.models)
 
     def _set_gpus(self, gpus):
         self.gpus = gpus
@@ -517,52 +537,68 @@ class LMStudioPanel(tk.Toplevel):
         # Title
         hdr = tk.Frame(self, bg=C["bg_main"], padx=20, pady=16)
         hdr.pack(fill="x")
-        tk.Label(hdr, text=t("lmstudio.heading", "LM Studio"), font=FONTS["title"],
-                fg=C["accent"], bg=C["bg_main"]).pack(side="left")
+        self._localized_widgets = []
+        heading = tk.Label(hdr, text=t("lmstudio.heading"), font=FONTS["title"],
+                           fg=C["accent"], bg=C["bg_main"])
+        heading.pack(side="left")
+        self._localized_widgets.append((heading, "lmstudio.heading"))
 
         self.status_dot = tk.Label(hdr, text="\u25CF", font=SF("Segoe UI", 12),
                                   fg=C["text_disabled"], bg=C["bg_main"])
         self.status_dot.pack(side="left", padx=(8, 4))
-        self.status_lbl = tk.Label(hdr, text=t("lmstudio.status_connecting", "Connecting..."), font=FONTS["small"],
+        self._status_key = "lmstudio.status_connecting"
+        self._status_kwargs = {}
+        self.status_lbl = tk.Label(hdr, text=t(self._status_key), font=FONTS["small"],
                                   fg=C["text_hint"], bg=C["bg_main"])
         self.status_lbl.pack(side="left")
 
         if not HAS_SDK:
-            tk.Label(hdr, text="(SDK not installed)", font=FONTS["small"],
-                    fg=C["danger"], bg=C["bg_main"]).pack(side="right")
+            sdk_label = tk.Label(hdr, text=t("lmstudio.sdk_missing"), font=FONTS["small"],
+                                 fg=C["danger"], bg=C["bg_main"])
+            sdk_label.pack(side="right")
+            self._localized_widgets.append((sdk_label, "lmstudio.sdk_missing"))
 
         # Endpoint config
         ep_row = tk.Frame(self, bg=C["bg_main"], padx=20)
         ep_row.pack(fill="x", pady=(0, 8))
-        tk.Label(ep_row, text=t("lmstudio.endpoint", "Endpoint:"), font=FONTS["body"],
-                fg=C["text_secondary"], bg=C["bg_main"]).pack(side="left")
+        endpoint_label = tk.Label(ep_row, text=t("lmstudio.endpoint"), font=FONTS["body"],
+                                  fg=C["text_secondary"], bg=C["bg_main"])
+        endpoint_label.pack(side="left")
+        self._localized_widgets.append((endpoint_label, "lmstudio.endpoint"))
         self._ep_var = tk.StringVar(value=self.client.base_url)
         ep_entry = tk.Entry(ep_row, textvariable=self._ep_var,
                            font=FONTS["mono_small"], bg=C["bg_input"],
                            fg=C["text_primary"], insertbackground=C["text_primary"],
                            relief="flat")
         ep_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), ipady=2)
-        ttk.Button(ep_row, text=t("lmstudio.connect", "Connect"), style="Small.TButton",
-                   command=self._apply_endpoint).pack(side="left")
+        connect_btn = ttk.Button(ep_row, text=t("lmstudio.connect"), style="Small.TButton",
+                                 command=self._apply_endpoint)
+        connect_btn.pack(side="left")
+        self._localized_widgets.append((connect_btn, "lmstudio.connect"))
 
         # API Key config
         key_row = tk.Frame(self, bg=C["bg_main"], padx=20)
         key_row.pack(fill="x", pady=(0, 8))
-        tk.Label(key_row, text=t("lmstudio.api_key", "API Key:"), font=FONTS["body"],
-                fg=C["text_secondary"], bg=C["bg_main"]).pack(side="left")
+        key_label = tk.Label(key_row, text=t("lmstudio.api_key"), font=FONTS["body"],
+                             fg=C["text_secondary"], bg=C["bg_main"])
+        key_label.pack(side="left")
+        self._localized_widgets.append((key_label, "lmstudio.api_key"))
         self._key_var = tk.StringVar(value=self._resolve_api_key())
         key_entry = tk.Entry(key_row, textvariable=self._key_var,
                             font=FONTS["mono_small"], bg=C["bg_input"],
                             fg=C["text_primary"], insertbackground=C["text_primary"],
                             show="*", relief="flat")
         key_entry.pack(side="left", fill="x", expand=True, padx=(8, 4), ipady=2)
-        ttk.Button(key_row, text=t("lmstudio.save_key", "Save"), style="Small.TButton",
-                   command=self._apply_api_key).pack(side="left")
+        save_btn = ttk.Button(key_row, text=t("lmstudio.save_key"), style="Small.TButton",
+                              command=self._apply_api_key)
+        save_btn.pack(side="left")
+        self._localized_widgets.append((save_btn, "lmstudio.save_key"))
 
         # Model list
-        model_frame = tk.LabelFrame(self, text=f"  {t('lmstudio.available_models', 'Available Models')}  ",
+        self._model_frame = tk.LabelFrame(self, text=f"  {t('lmstudio.available_models')}  ",
                                     bg=C["bg_main"], fg=C["text_secondary"],
                                     font=FONTS["subheading"], padx=12, pady=8)
+        model_frame = self._model_frame
         model_frame.pack(fill="both", expand=True, padx=20, pady=(0, 8))
 
         self.model_list = tk.Listbox(model_frame, bg=C["bg_input"], fg=C["text_primary"],
@@ -583,9 +619,11 @@ class LMStudioPanel(tk.Toplevel):
         # GPU selector
         gpu_row = tk.Frame(ctrl, bg=C["bg_main"])
         gpu_row.pack(fill="x", pady=4)
-        tk.Label(gpu_row, text=t("lmstudio.gpu", "GPU:"), font=FONTS["body"],
-                fg=C["text_secondary"], bg=C["bg_main"], width=12,
-                anchor="w").pack(side="left")
+        gpu_label = tk.Label(gpu_row, text=t("lmstudio.gpu"), font=FONTS["body"],
+                             fg=C["text_secondary"], bg=C["bg_main"], width=12,
+                             anchor="w")
+        gpu_label.pack(side="left")
+        self._localized_widgets.append((gpu_label, "lmstudio.gpu"))
         self.gpu_var = tk.StringVar()
         self.gpu_combo = ttk.Combobox(gpu_row, textvariable=self.gpu_var,
                                       values=self.gpus, font=FONTS["body"],
@@ -602,9 +640,11 @@ class LMStudioPanel(tk.Toplevel):
         from gui.theme import S as _S
         ctx_row = tk.Frame(ctrl, bg=C["bg_main"])
         ctx_row.pack(fill="x", pady=4)
-        tk.Label(ctx_row, text=t("lmstudio.context", "Context:"), font=FONTS["body"],
-                fg=C["text_secondary"], bg=C["bg_main"], width=12,
-                anchor="w").pack(side="left")
+        context_label = tk.Label(ctx_row, text=t("lmstudio.context"), font=FONTS["body"],
+                                 fg=C["text_secondary"], bg=C["bg_main"], width=12,
+                                 anchor="w")
+        context_label.pack(side="left")
+        self._localized_widgets.append((context_label, "lmstudio.context"))
 
         self.ctx_var = tk.IntVar(value=DEFAULT_CONTEXT_LENGTH)
         # Use a tk.Scale for better visual control (ttk.Scale is too thin)
@@ -632,17 +672,22 @@ class LMStudioPanel(tk.Toplevel):
         self.load_btn = ttk.Button(btn_row, text=t("lmstudio.load", "Load Model"), style="Primary.TButton",
                                    command=self._load_model)
         self.load_btn.pack(side="left", padx=(0, 8))
+        self._localized_widgets.append((self.load_btn, "lmstudio.load"))
 
         self.unload_btn = ttk.Button(btn_row, text=t("lmstudio.unload", "Unload"), style="Danger.TButton",
                                      command=self._unload_model)
         self.unload_btn.pack(side="left", padx=(0, 8))
+        self._localized_widgets.append((self.unload_btn, "lmstudio.unload"))
 
-        ttk.Button(btn_row, text=t("lmstudio.refresh", "Refresh"), style="TButton",
-                   command=self._refresh_models).pack(side="left", padx=(0, 8))
+        refresh_btn = ttk.Button(btn_row, text=t("lmstudio.refresh"), style="TButton",
+                                 command=self._refresh_models)
+        refresh_btn.pack(side="left", padx=(0, 8))
+        self._localized_widgets.append((refresh_btn, "lmstudio.refresh"))
 
         self.use_btn = ttk.Button(btn_row, text=t("lmstudio.use_chat", "Use for Chat"), style="Primary.TButton",
                                   command=self._use_model)
         self.use_btn.pack(side="right")
+        self._localized_widgets.append((self.use_btn, "lmstudio.use_chat"))
 
     def _connect(self):
         """Connect to LM Studio in background."""
@@ -661,14 +706,11 @@ class LMStudioPanel(tk.Toplevel):
     def _on_connected(self, running, sdk_ok):
         if running:
             self.status_dot.configure(fg=C["success"])
-            status = t("lmstudio.status_connected", "Connected")
-            if sdk_ok:
-                status += " (SDK active)"
-            self.status_lbl.configure(text=status)
+            self._set_status("lmstudio.status_connected_sdk" if sdk_ok else "lmstudio.status_connected")
             self._refresh_models()
         else:
             self.status_dot.configure(fg=C["danger"])
-            self.status_lbl.configure(text=t("lmstudio.status_not_running", "Not running — start LM Studio first"))
+            self._set_status("lmstudio.status_not_running")
 
     def _apply_endpoint(self):
         """Apply a new LM Studio endpoint URL and reconnect."""
@@ -676,12 +718,12 @@ class LMStudioPanel(tk.Toplevel):
         if not url:
             return
         if not _write_lmstudio_config(base_url=url, api_key=self._key_var.get().strip()):
-            self.status_lbl.configure(text=t("lmstudio.save_failed", "Failed to save configuration"))
+            self._set_status("lmstudio.save_failed")
             return
         self.client = LMStudioClient(base_url=url, api_key=self._key_var.get().strip())
         # Update status and reconnect
         self.status_dot.configure(fg=C["text_disabled"])
-        self.status_lbl.configure(text=t("lmstudio.status_connecting", "Connecting..."))
+        self._set_status("lmstudio.status_connecting")
         self._connect()
 
     def _apply_api_key(self):
@@ -689,12 +731,12 @@ class LMStudioPanel(tk.Toplevel):
         key = self._key_var.get().strip()
         saved = _write_lmstudio_config(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         if not saved:
-            self.status_lbl.configure(text=t("lmstudio.save_failed", "Failed to save configuration"))
+            self._set_status("lmstudio.save_failed")
             return
         elif key:
-            self.status_lbl.configure(text=t("lmstudio.api_key_saved", "API key saved"))
+            self._set_status("lmstudio.api_key_saved")
         else:
-            self.status_lbl.configure(text=t("lmstudio.api_key_cleared", "API key cleared"))
+            self._set_status("lmstudio.api_key_cleared")
         self.client = LMStudioClient(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         self._connect()
 
@@ -722,6 +764,7 @@ class LMStudioPanel(tk.Toplevel):
         threading.Thread(target=_do, daemon=True).start()
 
     def _display_models(self, models):
+        selected = self.model_list.curselection()
         self.models = models
         self.model_list.delete(0, "end")
         for m in models:
@@ -731,10 +774,12 @@ class LMStudioPanel(tk.Toplevel):
             ctx = m.get("context_length")
             label = display
             if state == "loaded":
-                label = f"[LOADED] {display}"
+                label = f"{t('lmstudio.loaded_tag')} {display}"
             if ctx:
-                label += f"  ({ctx:,} ctx)"
+                label += f"  {t('lmstudio.context_suffix', count=f'{ctx:,}')}"
             self.model_list.insert("end", label)
+        if selected and selected[0] < len(models):
+            self.model_list.selection_set(selected[0])
 
     def _on_model_select(self, event):
         sel = self.model_list.curselection()
@@ -763,7 +808,8 @@ class LMStudioPanel(tk.Toplevel):
     def _load_model(self):
         sel = self.model_list.curselection()
         if not sel:
-            messagebox.showwarning("No Model", "Select a model first.", parent=self)
+            messagebox.showwarning(t("lmstudio.no_model_title"),
+                                   t("lmstudio.select_model_first"), parent=self)
             return
 
         idx = sel[0]
@@ -774,9 +820,9 @@ class LMStudioPanel(tk.Toplevel):
         supported_context = model.get("context_length")
         if supported_context and supported_context < MINIMUM_CONTEXT_LENGTH:
             messagebox.showwarning(
-                "Model Context Too Small",
-                f"This model supports {supported_context:,} tokens. Hermes requires "
-                f"at least {MINIMUM_CONTEXT_LENGTH:,}; select a larger-context model.",
+                t("lmstudio.context_too_small_title"),
+                t("lmstudio.context_too_small_msg", supported=f"{supported_context:,}",
+                  required=f"{MINIMUM_CONTEXT_LENGTH:,}"),
                 parent=self,
             )
             return
@@ -793,12 +839,12 @@ class LMStudioPanel(tk.Toplevel):
                 pass
 
         short = model_id.split("/")[-1] if "/" in model_id else model_id
-        self.status_lbl.configure(text=f"Loading {short}...")
+        self._set_status("lmstudio.loading_model", model=short)
         self.status_dot.configure(fg=C["warning_dark"])
 
         # Show cancel button, hide load button
         self.load_btn.pack_forget()
-        self._cancel_btn = ttk.Button(self.load_btn.master, text="Cancel Load",
+        self._cancel_btn = ttk.Button(self.load_btn.master, text=t("lmstudio.cancel_load"),
                                        style="Danger.TButton",
                                        command=self._cancel_load)
         self._cancel_btn.pack(side="left", padx=(0, 8))
@@ -819,7 +865,8 @@ class LMStudioPanel(tk.Toplevel):
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
-                    err = f"Model: {model_path}\nContext: {ctx}\nGPU: {gpu_index}\n\n{e}"
+                    err = t("lmstudio.load_error_details", model=model_path, context=ctx,
+                            gpu=gpu_index, error=e)
                     self.after(0, lambda: self._on_load_error(err))
 
         threading.Thread(target=_do, daemon=True).start()
@@ -827,7 +874,7 @@ class LMStudioPanel(tk.Toplevel):
     def _cancel_load(self):
         """Cancel an in-progress model load by unloading all models."""
         self._loading = False
-        self.status_lbl.configure(text="Cancelling...")
+        self._set_status("lmstudio.cancelling")
         def _do():
             try:
                 # Unload whatever was loaded
@@ -845,7 +892,7 @@ class LMStudioPanel(tk.Toplevel):
     def _on_cancel_done(self):
         self._restore_load_btn()
         self.status_dot.configure(fg=C["text_disabled"])
-        self.status_lbl.configure(text="Load cancelled")
+        self._set_status("lmstudio.load_cancelled")
         self._refresh_models()
 
     def _restore_load_btn(self):
@@ -859,13 +906,13 @@ class LMStudioPanel(tk.Toplevel):
         self._restore_load_btn()
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         self.status_dot.configure(fg=C["success"])
-        self.status_lbl.configure(text=f"Loaded: {short}")
+        self._set_status("lmstudio.loaded_model", model=short)
         self._refresh_models()
 
     def _on_load_error(self, error):
         self._restore_load_btn()
         self.status_dot.configure(fg=C["danger"])
-        self.status_lbl.configure(text="Load failed")
+        self._set_status("lmstudio.load_failed")
         # Unload to stop JIT retry loops
         try:
             if self.client._sdk_client:
@@ -876,7 +923,7 @@ class LMStudioPanel(tk.Toplevel):
                         pass
         except Exception:
             pass
-        messagebox.showerror("Load Error", error, parent=self)
+        messagebox.showerror(t("lmstudio.load_error_title"), error, parent=self)
 
     def _unload_model(self):
         sel = self.model_list.curselection()

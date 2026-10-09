@@ -238,6 +238,8 @@ class TestApplicationLanguageSwitchingRegression(unittest.TestCase):
         status_bar.iter_lbl = HeadlessWidgetStub()
         status_bar._state_kind = "ready"
         status_bar._state_data = ""
+        status_bar._usage_kind = ""
+        status_bar._usage_value = 0
         gui.status_bar = status_bar
 
         # Composer controls & tooltips

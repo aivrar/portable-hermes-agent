@@ -14,7 +14,7 @@ from pathlib import Path
 from datetime import datetime
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, S, SF
-from gui.i18n import t
+from gui.i18n import t, register_listener, unregister_listener
 
 PROJECT_ROOT = Path(__file__).parent.parent
 EXTENSIONS_DIR = PROJECT_ROOT / "extensions"
@@ -115,13 +115,21 @@ def get_extension_status():
     return status
 
 
-def install_extension(ext_id, progress_callback=None, done_callback=None):
+def install_extension(ext_id, progress_callback=None, done_callback=None,
+                      progress_event_callback=None):
     """Install an extension by cloning repo and running install.bat."""
     ext = next((e for e in EXTENSIONS if e["id"] == ext_id), None)
     if not ext:
         if done_callback:
-            done_callback(False, "Unknown extension")
+            done_callback(False, t("extensions.unknown_extension"))
         return
+
+    def report_progress(key):
+        ext_name = t(f"extensions.{ext_id}.name", ext["name"])
+        if progress_event_callback:
+            progress_event_callback(key, ext_id)
+        if progress_callback:
+            progress_callback(t(key, name=ext_name))
 
     def _run():
         try:
@@ -129,8 +137,7 @@ def install_extension(ext_id, progress_callback=None, done_callback=None):
             ext_dir = EXTENSIONS_DIR / ext["id"]
 
             # Clone
-            if progress_callback:
-                progress_callback(f"Cloning {ext['name']}...")
+            report_progress("extensions.cloning")
 
             if not ext_dir.exists():
                 result = subprocess.run(
@@ -139,12 +146,11 @@ def install_extension(ext_id, progress_callback=None, done_callback=None):
                 )
                 if result.returncode != 0:
                     if done_callback:
-                        done_callback(False, f"Git clone failed: {result.stderr}")
+                        done_callback(False, t("extensions.clone_failed", error=result.stderr))
                     return
 
             # Run install.bat
-            if progress_callback:
-                progress_callback(f"Installing {ext['name']}... (this may take a while)")
+            report_progress("extensions.installing")
 
             install_bat = ext_dir / "install.bat"
             if install_bat.exists():
@@ -156,11 +162,12 @@ def install_extension(ext_id, progress_callback=None, done_callback=None):
                 )
 
             if done_callback:
-                done_callback(True, f"{ext['name']} installed successfully!")
+                done_callback(True, t("extensions.install_success",
+                                      name=t(f"extensions.{ext_id}.name", ext["name"])))
 
         except subprocess.TimeoutExpired:
             if done_callback:
-                done_callback(False, "Installation timed out (30 min limit)")
+                done_callback(False, t("extensions.install_timeout"))
         except Exception as e:
             if done_callback:
                 done_callback(False, str(e))
@@ -215,11 +222,13 @@ class ExtensionsManager(tk.Toplevel):
         from gui.theme import center_window
         center_window(self, 700, 550, parent)
 
-        tk.Label(self, text=t("menu.extensions"), font=FONTS["title"],
-                fg=C["accent"], bg=C["bg_main"]).pack(pady=(20, 4))
-        tk.Label(self, text=t("extensions.subtitle", "Add powerful AI capabilities to Hermes"),
-                font=FONTS["small"], fg=C["text_hint"],
-                bg=C["bg_main"]).pack()
+        self._heading = tk.Label(self, text=t("menu.extensions"), font=FONTS["title"],
+                                 fg=C["accent"], bg=C["bg_main"])
+        self._heading.pack(pady=(20, 4))
+        self._subtitle = tk.Label(self, text=t("extensions.subtitle"),
+                                  font=FONTS["small"], fg=C["text_hint"],
+                                  bg=C["bg_main"])
+        self._subtitle.pack()
 
         # Scrollable extension cards
         container = tk.Frame(self, bg=C["bg_main"])
@@ -247,8 +256,21 @@ class ExtensionsManager(tk.Toplevel):
         # Load extension status in background to avoid freeze
         self.status = {}
         self._build_cards()
+        register_listener(self.update_ui_language)
         import threading
         threading.Thread(target=self._load_status, daemon=True).start()
+
+    def destroy(self):
+        unregister_listener(self.update_ui_language)
+        super().destroy()
+
+    def update_ui_language(self, _lang_code=None):
+        self.title(t("extensions.title"))
+        self._heading.configure(text=t("menu.extensions"))
+        self._subtitle.configure(text=t("extensions.subtitle"))
+        self._build_cards()
+        if hasattr(self, "_progress_label") and hasattr(self, "_progress_key"):
+            self._show_progress(self._progress_key, self._progress_ext_id)
 
     def _load_status(self):
         """Load extension status in background, then refresh cards."""
@@ -354,18 +376,24 @@ class ExtensionsManager(tk.Toplevel):
                                     parent=self):
             return
 
-        self._show_progress(f"Installing {ext['name']}...")
+        self._show_progress("extensions.installing", ext_id)
 
-        def on_progress(msg):
-            self.after(0, lambda: self._show_progress(msg))
+        def on_progress_event(key, event_ext_id):
+            self.after(0, lambda: self._show_progress(key, event_ext_id))
 
         def on_done(success, msg):
             self.after(0, lambda: self._install_done(success, msg))
 
-        install_extension(ext_id, progress_callback=on_progress, done_callback=on_done)
+        install_extension(ext_id, done_callback=on_done,
+                          progress_event_callback=on_progress_event)
 
-    def _show_progress(self, msg):
+    def _show_progress(self, key, ext_id):
         # Simple progress indicator
+        self._progress_key = key
+        self._progress_ext_id = ext_id
+        ext = next(e for e in EXTENSIONS if e["id"] == ext_id)
+        name = t(f"extensions.{ext_id}.name", ext["name"])
+        msg = t(key, name=name)
         if hasattr(self, '_progress_label'):
             self._progress_label.configure(text=msg)
         else:
@@ -379,9 +407,9 @@ class ExtensionsManager(tk.Toplevel):
             del self._progress_label
 
         if success:
-            messagebox.showinfo("Success", msg, parent=self)
+            messagebox.showinfo(t("extensions.success_title"), msg, parent=self)
         else:
-            messagebox.showerror("Error", msg, parent=self)
+            messagebox.showerror(t("extensions.error_title"), msg, parent=self)
 
         # Refresh
         self.status = get_extension_status()
