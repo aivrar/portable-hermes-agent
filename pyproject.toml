@@ -93,9 +93,10 @@ dependencies = [
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]==2.14.0",  # Security hardening for JWK/JWKS and key validation
-  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3",
+  # urllib3 2.8.0 fixes GHSA-vxq7-64xx-v4gw (unbounded chunk-size line),
+  # and retains the 2.7.0 fixes for GHSA-mf9v-mfxr-j63j and GHSA-qccp-gfcp-xxvc.
+  # Keep this floor in sync with uv.lock so existing portable installs upgrade.
+  "urllib3>=2.8.0,<3",
   # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
   # that the WeCom and Weixin crypto paths cannot fall below the patched
   # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
