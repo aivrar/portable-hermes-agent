@@ -92,7 +92,7 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.14.0",  # Security hardening for JWK/JWKS and key validation
+  "PyJWT[crypto]==2.15.0",  # Security hardening for JWK/JWKS and key validation
   # urllib3 2.8.0 fixes GHSA-vxq7-64xx-v4gw (unbounded chunk-size line),
   # and retains the 2.7.0 fixes for GHSA-mf9v-mfxr-j63j and GHSA-qccp-gfcp-xxvc.
   # Keep this floor in sync with uv.lock so existing portable installs upgrade.
@@ -198,10 +198,10 @@ daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.12.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+messaging = ["python-telegram-bot[webhooks]==22.8", "tornado==6.5.9", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "multidict==6.9.1", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
-matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3", "multidict==6.9.1"]
+matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3", "multidict==6.9.1"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -212,6 +212,7 @@ tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
   "faster-whisper==1.2.1",
+  "fsspec==2026.6.0",  # patched transitive used by huggingface-hub
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
@@ -273,9 +274,9 @@ mcp = ["mcp==2.0.0", "httpx2==2.12.0", "starlette==1.3.1"]  # starlette: CVE-202
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
-homeassistant = ["aiohttp==3.14.3"]
-sms = ["aiohttp==3.14.3"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+homeassistant = ["aiohttp==3.14.3", "multidict==6.9.1"]
+sms = ["aiohttp==3.14.3", "multidict==6.9.1"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3", "multidict==6.9.1"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
@@ -302,6 +303,7 @@ azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
+  "tornado==6.5.9",
   "hermes-agent[cron]",
   "hermes-agent[mcp]",
   "hermes-agent[honcho]",
@@ -381,6 +383,9 @@ all = [
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
+  # aiohttp is installed by several included extras. Force an already-installed
+  # vulnerable multidict forward during portable and all-extra updates.
+  "multidict==6.9.1",
 ]
 
 [build-system]
@@ -439,7 +444,9 @@ exclude-newer = "14 days"
 # oauthlib 4.0.0: the reviewed security fix is newer than the normal 14-day
 # window; the google extra carries a fixed minimum so older versions cannot
 # be selected while this temporary exception is active.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false }
+# Security fixes published inside the normal 14-day age gate; remove these
+# four exceptions once their patched releases are older than 14 days.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false, pyjwt = false, fsspec = false, tornado = false, multidict = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
