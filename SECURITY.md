@@ -1,3 +1,5 @@
+> **About this repository.** This repository is a downstream Windows distribution of Nous Research's Hermes Agent, maintained by [@aivrar](https://github.com/aivrar). For a vulnerability in the packaging, GUI, installer or tooling added by this distribution, please use this repository's private **Report a vulnerability** button (Security tab) instead of a public issue. For a vulnerability in upstream Hermes Agent itself, follow the upstream process below.
+
 # Hermes Agent Security Policy
 
 This document describes Hermes Agent's trust model, names the one
