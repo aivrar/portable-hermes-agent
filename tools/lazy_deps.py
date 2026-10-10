@@ -145,6 +145,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
+        "fsspec==2026.6.0",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
@@ -203,7 +204,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
+    "platform.telegram": ("python-telegram-bot[webhooks]==22.8", "tornado==6.5.9"),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -217,11 +218,13 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # can't keep an already-installed vulnerable aiohttp satisfying that
         # range — mirrors the messaging extra and platform.slack.
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "multidict==6.9.1",
     ),
     "platform.slack": (
         "slack-bolt==1.30.0",
         "slack-sdk==3.43.0",
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "multidict==6.9.1",
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.1",
@@ -232,6 +235,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # aiohttp transitively, so a vulnerable already-installed aiohttp still
         # satisfies both — pin the patched floor here too, like platform.discord.
         "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "multidict==6.9.1",
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -250,7 +254,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3", "multidict==6.9.1"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
