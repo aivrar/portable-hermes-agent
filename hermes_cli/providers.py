@@ -530,6 +530,18 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
             for ev in overlay.extra_env_vars:
                 if ev not in env_vars:
                     env_vars.append(ev)
+        # Keep env vars declared by a plugin profile (e.g. commandcode's
+        # COMMANDCODE_API_KEY) when models.dev later adds the provider under
+        # a different env var name (models.dev lists CMD_API_KEY).
+        try:
+            from providers import get_provider_profile as _profile
+
+            _prof = _profile(canonical)
+            for ev in (getattr(_prof, "env_vars", None) or ()):
+                if ev not in env_vars:
+                    env_vars.append(ev)
+        except Exception:
+            pass
 
         return ProviderDef(
             id=canonical,
