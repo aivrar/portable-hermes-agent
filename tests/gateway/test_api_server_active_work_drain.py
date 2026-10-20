@@ -130,8 +130,16 @@ class TestDrainWaitsForApiWork:
         original_create_task = asyncio.create_task
         task_started = asyncio.Event()
         allow_task = asyncio.Event()
+        delayed_run_tasks = []
 
         def delayed_create_task(coro):
+            # Patching asyncio.create_task on the imported module also affects
+            # aiohttp's server tasks. Only delay the API run we are testing;
+            # gating aiohttp's request task deadlocks client.post() itself.
+            if coro.cr_code.co_name != "_run_and_close":
+                return original_create_task(coro)
+            delayed_run_tasks.append(coro)
+
             async def delayed():
                 task_started.set()
                 await allow_task.wait()
@@ -164,6 +172,7 @@ class TestDrainWaitsForApiWork:
                 _snapshot, timed_out = await drain_task
 
         assert timed_out is False
+        assert len(delayed_run_tasks) == 1
 
     @pytest.mark.asyncio
     async def test_drain_times_out_if_api_run_outlives_the_window(self):
