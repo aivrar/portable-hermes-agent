@@ -173,13 +173,21 @@ def test_lmstudio_connect_action_starts_one_connection(monkeypatch):
 
 @pytest.mark.skipif(not _has_display(), reason="requires a Tk display")
 def test_lmstudio_panel_keeps_event_loop_responsive(monkeypatch):
+    import threading
     import time
     import tkinter as tk
     from gui import lm_studio as lm
     root = tk.Tk()
     root.withdraw()
-    errors, heartbeats = [], []
+    errors, heartbeats, off_thread_callbacks = [], [], []
     root.report_callback_exception = lambda *args: errors.append(args)
+    original_after = lm.LMStudioPanel.after
+    ui_thread = threading.current_thread()
+    def checked_after(self, *args):
+        if threading.current_thread() is not ui_thread:
+            off_thread_callbacks.append(args)
+        return original_after(self, *args)
+    monkeypatch.setattr(lm.LMStudioPanel, "after", checked_after)
     monkeypatch.setattr(lm, "get_available_gpus", lambda: ["CPU"])
     monkeypatch.setattr(lm, "HAS_SDK", False)
     def slow_probe(self):
@@ -197,5 +205,6 @@ def test_lmstudio_panel_keeps_event_loop_responsive(monkeypatch):
         assert heartbeats == [0], "Tk must respond while the network probe is pending"
         assert panel.model_list.size() == 1
         assert not errors
+        assert not off_thread_callbacks, "workers must not call Tk.after"
     finally:
         root.destroy()
