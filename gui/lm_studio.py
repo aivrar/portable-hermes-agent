@@ -8,6 +8,7 @@ import sys
 import json
 import subprocess
 import threading
+import queue
 import time
 import tempfile
 from urllib.parse import urlsplit
@@ -480,18 +481,42 @@ class LMStudioPanel(tk.Toplevel):
         self.client = LMStudioClient(base_url=base_url, api_key=api_key)
         self.gpus = ["CPU"]
         self.models = []
+        self._ui_results = queue.SimpleQueue()
+        self._closed = False
 
         self._build_ui()
         register_listener(self.update_ui_language)
+        self._ui_poll_id = self.after(50, self._drain_ui_results)
         self.after(100, self._connect)
         def discover_gpus():
             gpus = get_available_gpus()
-            self.after(0, lambda: self._set_gpus(gpus))
+            self._post_ui("_set_gpus", gpus)
         threading.Thread(target=discover_gpus, daemon=True).start()
 
     def destroy(self):
+        self._closed = True
+        self.after_cancel(self._ui_poll_id)
         unregister_listener(self.update_ui_language)
         super().destroy()
+
+    def _post_ui(self, method_name, *args):
+        """Workers queue results; only the Tk thread may schedule callbacks."""
+        if not self._closed:
+            self._ui_results.put((method_name, args))
+
+    def _drain_ui_results(self):
+        if self._closed:
+            return
+        try:
+            while not self._closed:
+                try:
+                    method_name, args = self._ui_results.get_nowait()
+                except queue.Empty:
+                    break
+                getattr(self, method_name)(*args)
+        finally:
+            if not self._closed:
+                self._ui_poll_id = self.after(50, self._drain_ui_results)
 
     def _set_status(self, key, **kwargs):
         self._status_key = key
@@ -698,10 +723,13 @@ class LMStudioPanel(tk.Toplevel):
             sdk_ok = False
             if running and HAS_SDK:
                 sdk_ok = client.connect_sdk()
-            self.after(0, lambda: self._on_connected(running, sdk_ok)
-                       if self.client is client else None)
+            self._post_ui("_finish_connect", client, running, sdk_ok)
 
         threading.Thread(target=_do, daemon=True).start()
+
+    def _finish_connect(self, client, running, sdk_ok):
+        if self.client is client:
+            self._on_connected(running, sdk_ok)
 
     def _on_connected(self, running, sdk_ok):
         if running:
@@ -759,7 +787,7 @@ class LMStudioPanel(tk.Toplevel):
                             })
                 except Exception:
                     pass
-            self.after(0, lambda: self._display_models(models))
+            self._post_ui("_display_models", models)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -860,14 +888,14 @@ class LMStudioPanel(tk.Toplevel):
                 self.client.load_model(model_path, gpu_index=gpu_index,
                                        context_length=ctx)
                 if self._loading:
-                    self.after(0, lambda: self._on_load_success(model_id))
+                    self._post_ui("_on_load_success", model_id)
             except Exception as e:
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
                     err = t("lmstudio.load_error_details", model=model_path, context=ctx,
                             gpu=gpu_index, error=e)
-                    self.after(0, lambda: self._on_load_error(err))
+                    self._post_ui("_on_load_error", err)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -886,7 +914,7 @@ class LMStudioPanel(tk.Toplevel):
                         pass
             except Exception:
                 pass
-            self.after(0, self._on_cancel_done)
+            self._post_ui("_on_cancel_done")
         threading.Thread(target=_do, daemon=True).start()
 
     def _on_cancel_done(self):
