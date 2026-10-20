@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import zipfile
@@ -111,13 +112,34 @@ def test_release_required_surface_is_tracked_and_not_excluded():
     assert (_PORTABLE_SOURCE_PATHS | _PORTABLE_REQUIRED_TREE_FILES) <= build_release.REQUIRED_RELEASE_FILES
 
 
-def test_readme_download_links_target_the_portable_release_page():
+def test_root_readmes_keep_portable_identity_and_consistent_language_links():
     root = Path(build_release.PROJECT_ROOT)
-    for readme_name in ("README.md", "README.es.md"):
+    readme_names = {path.name for path in root.glob("README*.md")}
+    assert "README.md" in readme_names
+    language_badges = None
+
+    for readme_name in readme_names:
         content = (root / readme_name).read_text(encoding="utf-8")
+        assert "Portable Hermes Agent" in content
         assert "https://github.com/aivrar/portable-hermes-agent/releases/latest" in content
         assert "NousResearch/hermes-agent/releases" not in content
+        assert "hermes-agent.nousresearch.com/docs" not in content
+        assert "discord.gg/NousResearch" not in content
         assert "UPDATE.bat" in content
+        badges = tuple(
+            line.strip() for line in content.splitlines()
+            if "img.shields.io/badge/Language-" in line
+        )
+        assert badges and all(line.isascii() for line in badges)
+        links = {
+            match.group(1) for line in badges
+            if (match := re.search(r'href="(README[^"]*\.md)"', line))
+        }
+        assert links == readme_names
+        if language_badges is None:
+            language_badges = badges
+        else:
+            assert badges == language_badges
 
     spanish_readme = (root / "README.es.md").read_text(encoding="utf-8")
     assert "hermes_gui.bat" in spanish_readme

@@ -1,9 +1,9 @@
 <p align="center">
   <a href="README.md"><img src="https://img.shields.io/badge/Language-English-blue?style=for-the-badge" alt="English"></a>
-  <a href="README.zh-TW.md"><img src="https://img.shields.io/badge/語言-繁體中文-purple?style=for-the-badge" alt="繁體中文"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/语言-简体中文-red?style=for-the-badge" alt="简体中文"></a>
-  <a href="README.es.md"><img src="https://img.shields.io/badge/Idioma-Español-yellow?style=for-the-badge" alt="Español"></a>
-  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/زبان-اردو-green?style=for-the-badge" alt="اردو"></a>
+  <a href="README.zh-TW.md"><img src="https://img.shields.io/badge/Language-Traditional_Chinese-purple?style=for-the-badge" alt="Traditional Chinese"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Language-Simplified_Chinese-red?style=for-the-badge" alt="Simplified Chinese"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Language-Spanish-yellow?style=for-the-badge" alt="Spanish"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
 # 便攜版 Hermes Agent (Portable Hermes Agent)
@@ -67,11 +67,20 @@
 
 ## 快速開始
 
-### 方式一：圖形化介面 (推薦)
-按兩下執行根目錄下的 **`hermes_gui.bat`**。
+從 [Portable Hermes Agent 發行頁](https://github.com/aivrar/portable-hermes-agent/releases/latest)下載 `portable-hermes-agent-v*.zip`，解壓縮到一般資料夾（例如 `C:\Users\YourName\Portable-Hermes-Agent`），避免放在 `C:\Program Files` 等受保護路徑。
 
-### 方式二：終端機命令列 (CLI)
-按兩下執行 **`START.bat`** 即可在命令列中與 Hermes 互動。
+按兩下 **`START.bat`** 啟動圖形介面；首次啟動會在便攜資料夾中準備內嵌 Python、相依套件及所需工具。`hermes_gui.bat` 也會啟動圖形介面，`hermes.bat` 則是命令列入口。無需系統 Python、Docker 或系統管理員權限。
+
+## 兩種獨立的更新方式
+
+| 更新項目 | 來源 | 操作 |
+|---|---|---|
+| **便攜版發行套件** | `aivrar/portable-hermes-agent` | 關閉 Hermes，執行 **`UPDATE.bat`**；更新啟動器、GUI、便攜工具與此專案測試過的 Hermes 版本 |
+| **內部的上游 Hermes Agent** | `NousResearch/hermes-agent` | 啟動 Hermes，先要求檢查上游更新；確認後再要求更新，同時保留便攜版自訂項目 |
+
+更新其中一項**不會**自動更新另一項。一般更新可執行 `UPDATE.bat`，或使用 `hermes.bat update --backup --yes`。更新會保留使用者資料、自訂工具、擴充套件與內嵌 Python；上游更新完成後請重新啟動 Hermes。ZIP 安裝即使沒有 Git 歷史，也能使用上游覆蓋更新模式。詳見 [便攜版更新指南](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated)。
+
+更多操作與最新細節請參閱[英文版便攜 README](README.md)及[發行頁 PDF 手冊](https://github.com/aivrar/portable-hermes-agent/releases/latest)。
 
 ---
 
