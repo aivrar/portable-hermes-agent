@@ -124,8 +124,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # monitoring.gateway_health_export / monitoring.export.otlp. Tracks the
     # `otlp` extra in pyproject.toml — bump both together.
     "export.otlp": (
-        "opentelemetry-sdk==1.39.1",
-        "opentelemetry-exporter-otlp-proto-http==1.39.1",
+        "opentelemetry-sdk==1.45.1",
+        "opentelemetry-exporter-otlp-proto-http==1.45.1",
     ),
 
     # ─── TTS providers ─────────────────────────────────────────────────────
@@ -135,14 +135,14 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     #
     # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
     # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
-    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
-    # STT + TTS share the same SDK.
-    "tts.mistral": ("mistralai==2.4.8",),
+    # 2.4.6 was removed and clean releases resumed. Voxtral STT + TTS share
+    # the SDK; this pin also permits the patched OpenTelemetry API.
+    "tts.mistral": ("mistralai==2.10.1",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
     # ─── Speech-to-text providers ──────────────────────────────────────────
-    "stt.mistral": ("mistralai==2.4.8",),
+    "stt.mistral": ("mistralai==2.10.1",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "fsspec==2026.6.0",
@@ -212,7 +212,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # "Can not decode content-encoding: br" — see #12511 / #15744.
     "platform.discord": (
         "discord.py[voice]==2.7.1",
-        "brotlicffi==1.2.0.1",
+        "brotlicffi==1.2.1.0",
         # discord.py pulls aiohttp transitively (>=3.7.4,<4) as its HTTP
         # backbone. Pin the patched floor here too so the lazy Discord path
         # can't keep an already-installed vulnerable aiohttp satisfying that
@@ -290,7 +290,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # for stripped/source-build installs that somehow dropped it. The vision
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
-    "tool.vision": ("Pillow==12.3.0",),
+    "tool.vision": ("Pillow==13.0.0",),
     # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
     # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
     # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),

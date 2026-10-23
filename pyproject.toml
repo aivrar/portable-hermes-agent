@@ -38,7 +38,7 @@ dependencies = [
   # user picks that backend. Smaller `dependencies` = smaller blast
   # radius for the next supply-chain attack.
   "openai==2.24.0",
-  "certifi==2026.5.20",
+  "certifi==2026.10.19",
   "python-dotenv==1.2.2",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
@@ -147,7 +147,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.3.0",
+  "Pillow==13.0.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -198,7 +198,7 @@ daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.2.0", "httpx2==2.12.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.8", "tornado==6.5.9", "discord.py[voice]==2.7.1", "aiohttp==3.14.4", "multidict==6.9.1", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.4: security-patched floor; mirror in tools/lazy_deps.py
+messaging = ["python-telegram-bot[webhooks]==22.8", "tornado==6.5.9", "discord.py[voice]==2.7.1", "aiohttp==3.14.4", "multidict==6.9.1", "brotlicffi==1.2.1.0", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.4: security-patched floor; mirror in tools/lazy_deps.py
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.4", "multidict==6.9.1"]
 matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.4", "multidict==6.9.1"]  # aiohttp 3.14.4: direct security pin (mautrix/aiohttp-socks permit older 3.x); mirror in tools/lazy_deps.py
@@ -285,18 +285,19 @@ computer-use = ["mcp==2.2.0", "httpx2==2.12.0", "starlette==1.3.1"]  # starlette
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
-# 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
-# project is serving clean releases again (2.4.7 2026-05-25, 2.4.8 2026-05-28).
+# 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI. Keep
+# the reviewed exact pin. 2.10.1 also permits the patched OpenTelemetry
+# semantic-conventions version needed by the optional OTLP exporter.
 # Like other opt-in TTS/STT backends, this is lazy-installed via
 # tools/lazy_deps.py (stt.mistral / tts.mistral) at first use — deliberately
 # NOT re-added to [all] so a future quarantined release can't break fresh
 # installs (see [all] policy comment below).
-mistral = ["mistralai==2.4.8"]
+mistral = ["mistralai==2.10.1"]
 # OTLP gateway monitoring export (optional). Provides the OpenTelemetry SDK +
 # OTLP/HTTP exporter for monitoring.gateway_health_export. Lazy-installed via
 # tools/lazy_deps.py on first use; never a core dependency and deliberately
 # NOT in [all].
-otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
+otlp = ["opentelemetry-sdk==1.45.1", "opentelemetry-exporter-otlp-proto-http==1.45.1"]
 bedrock = ["boto3==1.42.89"]
 vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
@@ -444,9 +445,10 @@ exclude-newer = "14 days"
 # oauthlib 4.0.0: the reviewed security fix is newer than the normal 14-day
 # window; the google extra carries a fixed minimum so older versions cannot
 # be selected while this temporary exception is active.
-# Security fixes published inside the normal 14-day age gate; remove these
-# four exceptions once their patched releases are older than 14 days.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false, pyjwt = false, fsspec = false, tornado = false, multidict = false }
+# Security fixes published inside the normal 14-day age gate (including
+# certifi, brotlicffi, and OpenTelemetry); remove these exceptions once their
+# patched releases are older than 14 days.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false, pyjwt = false, fsspec = false, tornado = false, multidict = false, certifi = false, brotlicffi = false, opentelemetry-sdk = false, opentelemetry-exporter-otlp-proto-http = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

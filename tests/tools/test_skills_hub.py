@@ -1880,8 +1880,8 @@ class TestLoadHermesIndex:
     """Regression coverage for the Skills-Hub index fetch.
 
     The centralized index is a large body served with Content-Encoding: br.
-    httpx's streaming Brotli decoder (brotlicffi 1.2.0.1, pinned for Discord
-    attachment decoding) raises DecodingError on payloads this size, which
+    httpx's streaming Brotli decoder (brotlicffi, pinned for Discord
+    attachment decoding) can raise DecodingError on payloads this size, which
     used to cascade into a silently-empty Skills Hub. The fetch must therefore
     (a) not ask for Brotli, and (b) survive a DecodingError by retrying
     uncompressed instead of blanking the hub.
