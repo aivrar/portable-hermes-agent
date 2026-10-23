@@ -41,7 +41,7 @@
     "minimatch": "10.2.6",
     "nanoid": "3.3.18",
     "js-yaml": "4.3.2",
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "katex": "0.18.2",
     "tinypool": "2.1.2",
     "postcss-selector-parser": "7.1.6",
