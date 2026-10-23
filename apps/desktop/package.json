@@ -116,7 +116,7 @@
     "cmdk": "1.1.1",
     "d3-force": "3.0.0",
     "dnd-core": "14.0.1",
-    "dompurify": "3.4.16",
+    "dompurify": "3.4.17",
     "driver.js": "1.8.0",
     "emojibase-data": "16.0.3",
     "fflate": "0.8.3",
@@ -181,7 +181,7 @@
     "tsx": "4.23.1",
     "typescript": "6.0.3",
     "vite": "8.2.4",
-    "vitest": "4.1.11",
+    "vitest": "4.1.12",
     "wait-on": "9.0.10"
   },
   "build": {
