@@ -24,10 +24,12 @@ import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
+const require = createRequire(import.meta.url)
 
 // ── Canned reply ───────────────────────────────────────────────────────
 
@@ -175,11 +177,9 @@ providers:
 // ── Electron launch ────────────────────────────────────────────────────
 
 function findElectron() {
-  const local = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
-  if (fs.existsSync(local)) return local
-  const r = spawnSync('which', ['electron'], { encoding: 'utf8' })
-  if (r.status === 0 && r.stdout.trim()) return r.stdout.trim()
-  throw new Error('Electron binary not found. Run "npm install" from the repo root.')
+  // Electron 42 downloads its binary when the package is first required.
+  // Resolving the package also handles npm workspace hoisting and Windows.
+  return require('electron')
 }
 
 function assertDistBuilt() {
