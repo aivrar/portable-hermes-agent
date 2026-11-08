@@ -198,7 +198,7 @@ daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.2.0", "httpx2==2.12.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==84.1.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.8", "tornado==6.5.9", "discord.py[voice]==2.7.1", "aiohttp==3.14.4", "multidict==6.9.1", "brotlicffi==1.2.1.0", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.4: security-patched floor; mirror in tools/lazy_deps.py
+messaging = ["python-telegram-bot[webhooks]==22.8", "tornado==6.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.4", "multidict==6.9.1", "brotlicffi==1.2.1.0", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.4: security-patched floor; mirror in tools/lazy_deps.py
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.4", "multidict==6.9.1"]
 matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.4", "multidict==6.9.1"]  # aiohttp 3.14.4: direct security pin (mautrix/aiohttp-socks permit older 3.x); mirror in tools/lazy_deps.py
@@ -243,7 +243,7 @@ honcho = ["honcho-ai==2.2.0"]
 # excluded from [all] like honcho/hindsight so a quarantined upstream release
 # can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
-mem0 = ["mem0ai==2.0.10"]
+mem0 = ["mem0ai==2.0.18"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
 # (see the main `dependencies` list above) since the byte/pixel shrink paths are on
 # the default vision-embed path and the mid-session lazy install deadlocked the
@@ -304,7 +304,7 @@ azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.8",
-  "tornado==6.5.9",
+  "tornado==6.6",
   "hermes-agent[cron]",
   "hermes-agent[mcp]",
   "hermes-agent[honcho]",
@@ -338,9 +338,9 @@ google = [
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
+  # pyasn1 0.6.5, google-auth 2.55.1.
   "httplib2==0.32.0",
-  "pyasn1==0.6.4",
+  "pyasn1==0.6.5",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -447,8 +447,9 @@ exclude-newer = "14 days"
 # be selected while this temporary exception is active.
 # Security fixes published inside the normal 14-day age gate (including
 # certifi, brotlicffi, and OpenTelemetry); remove these exceptions once their
-# patched releases are older than 14 days.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false, pyjwt = false, fsspec = false, tornado = false, multidict = false, certifi = false, brotlicffi = false, opentelemetry-sdk = false, opentelemetry-exporter-otlp-proto-http = false }
+# patched releases are older than 14 days. The reviewed pyasn1, mem0ai, and
+# msgpack security fixes also need this exception until they pass the age gate.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false, firecrawl-anydoc = false, oauthlib = false, pyjwt = false, fsspec = false, tornado = false, multidict = false, certifi = false, brotlicffi = false, opentelemetry-sdk = false, opentelemetry-exporter-otlp-proto-http = false, pyasn1 = false, mem0ai = false, msgpack = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
