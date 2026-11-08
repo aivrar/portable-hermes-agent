@@ -106,7 +106,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # google-auth is NOT in [all] so plain installs don't carry it.
     "provider.vertex": (
         "google-auth==2.55.1",
-        "pyasn1==0.6.4",
+        "pyasn1==0.6.5",
     ),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
     # service principal, az login, VS Code, azd, PowerShell). Only loaded
@@ -201,10 +201,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ensure() call at the import site, the SDK never installs on a hosted
     # instance and the provider silently reports itself unavailable.
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    "memory.mem0": ("mem0ai==2.0.18",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
-    "platform.telegram": ("python-telegram-bot[webhooks]==22.8", "tornado==6.5.9"),
+    "platform.telegram": ("python-telegram-bot[webhooks]==22.8", "tornado==6.6"),
     # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
     # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
     # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
@@ -271,7 +271,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
         # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
         "httplib2==0.32.0",
-        "pyasn1==0.6.4",
+        "pyasn1==0.6.5",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
