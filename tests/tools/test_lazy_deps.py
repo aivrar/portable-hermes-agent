@@ -248,6 +248,7 @@ class TestIsSatisfiedVersionAware:
                     "google-api-python-client": "2.194.0",
                     "google-auth": "2.55.0",
                     "google-auth-oauthlib": "1.3.1",
+                    "oauthlib": "4.0.1",
                     "google-auth-httplib2": "0.3.1",
                     "httplib2": "0.31.2",
                     "pyasn1": "0.6.3",

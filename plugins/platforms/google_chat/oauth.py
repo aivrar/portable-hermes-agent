@@ -166,9 +166,10 @@ _REQUIRED_PACKAGES = [
     "google-api-python-client==2.194.0",
     "google-auth==2.55.1",
     "google-auth-oauthlib==1.3.1",
+    "oauthlib==4.0.1",
     "google-auth-httplib2==0.3.1",
     "httplib2==0.32.0",
-    "pyasn1==0.6.4",
+    "pyasn1==0.6.5",
 ]
 
 # Out-of-band redirect: Google deprecated the ``urn:ietf:wg:oauth:2.0:oob``
