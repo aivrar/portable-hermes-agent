@@ -266,6 +266,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "google-api-python-client==2.194.0",
         "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
+        "oauthlib==4.0.1",
         "google-auth-httplib2==0.3.1",
         # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
         # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
