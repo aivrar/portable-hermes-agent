@@ -13,7 +13,7 @@ if not exist "%PYTHON_EXE%" (
     if not exist "%PYTHON_EXE%" exit /b 1
 )
 
-:: Set up PATH (portable Python + node tools FIRST — overrides system)
+:: Set up PATH (portable Python + node tools FIRST - overrides system)
 set "PATH=%PYTHON_DIR%;%PYTHON_DIR%\Scripts;%SCRIPT_DIR%node_modules\.bin;%PATH%"
 
 :: Lock ALL pip installs to portable Python
@@ -30,9 +30,14 @@ set "TK_LIBRARY=%PYTHON_DIR%\tcl\tk8.6"
 :: Terminal tool working directory
 set "TERMINAL_CWD=%SCRIPT_DIR%"
 
-:: Launch Hermes GUI
 cd /d "%SCRIPT_DIR%"
 chcp 65001 >nul 2>&1
+
+:: Launch-time repair: restore portable files an upstream update replaced and
+:: settle an interrupted update. Fast, and never blocks or fails the launch.
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, sys.argv.pop(1)); from portable_hermes.__main__ import main; main(['repair', '--quiet'])" "%SCRIPT_DIR%." 2>nul
+
+:: Launch Hermes GUI
 "%PYTHON_EXE%" -c "from gui.app import main; main()" %*
 
 if errorlevel 1 (

@@ -25,6 +25,11 @@ if /i "%~1"=="install" (
     goto :eof
 )
 
+:: "hermes update" goes to the portable updater: the wrapper channel first,
+:: then an optional core refresh. Upstream's own updater would swap the whole
+:: tree from NousResearch and drop the portable files until the next launch.
+if /i "%~1"=="update" goto :portable_update
+
 if /i "%~1"=="help" (
     echo.
     echo   Hermes Agent - Windows Launcher
@@ -34,6 +39,7 @@ if /i "%~1"=="help" (
     echo     hermes.bat              Launch interactive CLI
     echo     hermes.bat setup        Run the setup wizard
     echo     hermes.bat install      Run full install/reinstall
+    echo     hermes.bat update       Update Portable Hermes, then optionally the core
     echo     hermes.bat model        Choose LLM provider/model
     echo     hermes.bat tools        Configure enabled tools
     echo     hermes.bat gateway      Start messaging gateway
@@ -79,7 +85,7 @@ if not exist "%HERMES_HOME%\SOUL.md" (
 )
 
 :: Clear stray API keys from other tools (LM Studio, OpenAI CLI, etc.)
-:: Hermes manages its own credentials via ~/.hermes/.env — external keys
+:: Hermes manages its own credentials via ~/.hermes/.env - external keys
 :: from the user's shell cause auth mismatches and silent failures.
 set "OPENAI_API_KEY="
 set "OPENAI_BASE_URL="
@@ -106,7 +112,24 @@ chcp 65001 >nul 2>&1
 
 :: Launch Hermes
 cd /d "%SCRIPT_DIR%"
+
+:: Launch-time repair: restore portable files an upstream update replaced and
+:: settle an interrupted update. Fast, and never blocks or fails the launch.
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, sys.argv.pop(1)); from portable_hermes.__main__ import main; main(['repair', '--quiet'])" "%SCRIPT_DIR%." 2>nul
+
 echo   Loading Hermes Agent...
 "%PYTHON_EXE%" -m hermes_cli.main %*
 
 endlocal
+goto :eof
+
+:portable_update
+if not exist "%PYTHON_EXE%" (
+    echo Python not found. Running first-time install...
+    call "%SCRIPT_DIR%install.bat"
+    goto :eof
+)
+cd /d "%SCRIPT_DIR%"
+set "PYTHONIOENCODING=utf-8"
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, sys.argv.pop(1)); from portable_hermes.__main__ import main; sys.exit(main(sys.argv[1:]))" "%SCRIPT_DIR%." %*
+exit /b %ERRORLEVEL%

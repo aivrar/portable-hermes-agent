@@ -7,18 +7,17 @@ echo   Hermes Agent - Windows Installer
 echo ============================================
 echo.
 echo   This script sets up EVERYTHING from scratch:
-echo   - Embedded Python 3.13 (portable, no system install)
+echo   - Embedded Python 3.14 (portable, no system install)
 echo   - Tkinter GUI support
-echo   - All Python dependencies + extras
-echo   - LM Studio SDK
-echo   - Node.js dependencies (browser tools)
-echo   - Git submodules (mini-swe-agent)
-echo   - Skills sync (89+ skills)
-echo   - Environment configuration
-echo   - Default permissions
+echo   - The latest Hermes Agent core from NousResearch/hermes-agent
+echo   - All Python dependencies + extras, LM Studio SDK
+echo   - Skills sync, environment configuration, default permissions
 echo.
 echo   No admin rights needed. No system changes.
 echo   Everything stays inside this folder.
+echo.
+echo   Unattended install: install.bat --yes  (or HERMES_PORTABLE_NONINTERACTIVE=1)
+echo   Core source overrides: HERMES_PORTABLE_CORE_ZIP, HERMES_PORTABLE_CORE_REF
 echo.
 
 set "SCRIPT_DIR=%~dp0"
@@ -26,10 +25,21 @@ set "PYTHON_DIR=%SCRIPT_DIR%python_embedded"
 set "PYTHON_EXE=%PYTHON_DIR%\python.exe"
 if not defined HERMES_HOME set "HERMES_HOME=%USERPROFILE%\.hermes"
 
-set "PYTHON_VERSION=3.13.12"
-set "PYTHON_URL=https://www.python.org/ftp/python/3.13.12/python-3.13.12-embed-amd64.zip"
+:: Non-interactive mode never waits for a key press.
+set "PH_PAUSE=1"
+if defined HERMES_PORTABLE_NONINTERACTIVE if not "%HERMES_PORTABLE_NONINTERACTIVE%"=="0" set "PH_PAUSE="
+for %%A in (%*) do (
+    if /i "%%~A"=="--yes" set "PH_PAUSE="
+    if /i "%%~A"=="-y" set "PH_PAUSE="
+)
+if not defined PH_PAUSE set "HERMES_PORTABLE_NONINTERACTIVE=1"
+
+:: Current upstream Hermes runs on Python 3.14 only.
+set "PYTHON_VERSION=3.14.9"
+set "PYTHON_MINOR=314"
+set "PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON_VERSION%-embed-amd64.zip"
 set "PYTHON_ZIP=%SCRIPT_DIR%python_embedded.zip"
-set "TCLTK_URL=https://www.python.org/ftp/python/3.13.12/amd64/tcltk.msi"
+set "TCLTK_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/amd64/tcltk.msi"
 set "TCLTK_MSI=%SCRIPT_DIR%tcltk.msi"
 set "TCLTK_TEMP=%SCRIPT_DIR%_tcltk_temp"
 
@@ -38,6 +48,13 @@ set "TCLTK_TEMP=%SCRIPT_DIR%_tcltk_temp"
 :: ============================================
 if exist "%PYTHON_EXE%" (
     echo [OK] Embedded Python already installed.
+    "%PYTHON_EXE%" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 14) else 5)" >nul 2>&1
+    if errorlevel 5 (
+        echo [WARN] This folder uses an older portable Python. It is kept as it is.
+        echo        Current upstream Hermes needs Python 3.14, so the core stays at the
+        echo        newest version this runtime can run. For the newest core, extract a
+        echo        new Portable Hermes release into a new folder and run START.bat.
+    )
     goto :check_pip
 )
 
@@ -49,8 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 if not exist "%PYTHON_ZIP%" (
     echo ERROR: Failed to download Python. Check your internet connection.
-    pause
-    exit /b 1
+    goto :fail
 )
 
 echo [STEP 1/10] Extracting Python...
@@ -59,8 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python extraction failed.
-    pause
-    exit /b 1
+    goto :fail
 )
 del "%PYTHON_ZIP%" 2>nul
 
@@ -77,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "if ($pthFiles.Count -gt 0) {" ^
     "  $pth = $pthFiles[0];" ^
     "  $zipName = (Get-ChildItem '%PYTHON_DIR%\python*.zip' | Select-Object -First 1).Name;" ^
-    "  if (-not $zipName) { $zipName = 'python313.zip' };" ^
+    "  if (-not $zipName) { $zipName = 'python%PYTHON_MINOR%.zip' };" ^
     "  $content = @($zipName, '.', 'Lib', 'Lib\site-packages', 'DLLs', '', 'import site');" ^
     "  $content | Set-Content -Path $pth.FullName -Encoding ASCII;" ^
     "  Write-Host '   Configured:' $pth.Name" ^
@@ -97,8 +112,7 @@ if %errorlevel% neq 0 (
     "%PYTHON_EXE%" "%PYTHON_DIR%\get-pip.py" --quiet
     if errorlevel 1 (
         echo ERROR: Failed to install pip.
-        pause
-        exit /b 1
+        goto :fail
     )
     del "%PYTHON_DIR%\get-pip.py" 2>nul
     "%PYTHON_EXE%" -m pip install --upgrade pip --quiet 2>nul
@@ -113,7 +127,7 @@ echo [STEP 4/10] Installing build tools...
 "%PYTHON_EXE%" -m pip install setuptools wheel --quiet 2>nul
 if errorlevel 1 (
     echo ERROR: Failed to install Python build tools.
-    exit /b 1
+    goto :fail
 )
 
 :: ============================================
@@ -145,13 +159,13 @@ if not exist "%PYTHON_DIR%\Lib\tkinter" (
         ) else (
             echo ERROR: Tkinter extraction failed.
             del "!TCLTK_MSI!" 2>nul
-            exit /b 1
+            goto :fail
         )
         rmdir /S /Q "!TCLTK_TEMP!" 2>nul
         del "!TCLTK_MSI!" 2>nul
     ) else (
         echo ERROR: Could not download Tkinter.
-        exit /b 1
+        goto :fail
     )
 ) else (
     echo [OK] Tkinter already installed.
@@ -162,13 +176,17 @@ set "TK_LIBRARY=%PYTHON_DIR%\tcl\tk8.6"
 "%PYTHON_EXE%" -c "import tkinter; tkinter.Tcl()" >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Embedded Python cannot load Tkinter after installation.
-    exit /b 1
+    goto :fail
 )
 
 :: ============================================
-:: Step 6: Git submodules
+:: Step 6: Git submodules (developer clones only)
 :: ============================================
-echo [STEP 6/10] Initializing git submodules...
+echo [STEP 6/10] Checking git submodules...
+if not exist "%SCRIPT_DIR%.git" (
+    echo [OK] Release install - no submodules needed.
+    goto :after_submodules
+)
 where git >nul 2>&1
 if %errorlevel% equ 0 (
     cd /d "%SCRIPT_DIR%"
@@ -181,6 +199,7 @@ if %errorlevel% equ 0 (
 ) else (
     echo [INFO] Git not found - skipping submodules.
 )
+:after_submodules
 
 :: ============================================
 :: Step 6b: Create run_py.sh helper (Unix line endings!)
@@ -190,54 +209,51 @@ echo [STEP 6b] Creating Python helper script...
 echo [OK] run_py.sh created.
 
 :: ============================================
-:: Step 7: Install ALL Python dependencies
+:: Step 7: Hermes core + Python dependencies
 :: ============================================
-echo [STEP 7/10] Installing Python dependencies...
-echo        (this may take several minutes on first run)
-
-:: Main package
-"%PYTHON_EXE%" -m pip install -e "%SCRIPT_DIR%." --quiet 2>nul
-if errorlevel 1 (
-    "%PYTHON_EXE%" -m pip install -r "%SCRIPT_DIR%requirements.txt" --quiet 2>nul
-    if errorlevel 1 (
-        echo ERROR: Failed to install required Python dependencies.
-        exit /b 1
-    )
-)
-
-:: Guarantee the project root is on sys.path regardless of editable-install outcome.
-:: Embedded Python does not create .egg-link / .pth files the same way as regular
-:: Python, so pip install -e . may succeed (exit 0) but leave hermes_cli unreachable.
+:: Put this folder on the embedded interpreter's path (rewritten every run so a
+:: moved or renamed folder keeps working).
 set "PTH_FILE=%PYTHON_DIR%\Lib\site-packages\hermes_project.pth"
-if not exist "!PTH_FILE!" (
-    echo %SCRIPT_DIR%> "!PTH_FILE!"
-    echo [OK] hermes_project.pth created.
-)
-
-:: All optional extras
-"%PYTHON_EXE%" -m pip install -e "%SCRIPT_DIR%.[messaging,cron,cli,mcp,honcho,pty,tts-premium,homeassistant]" --quiet 2>nul
+"%PYTHON_EXE%" -c "import sys; open(sys.argv[1], 'w', encoding='utf-8').write(sys.argv[2] + chr(10))" "!PTH_FILE!" "%SCRIPT_DIR%."
 if errorlevel 1 (
-    echo [WARN] Some optional integrations could not be installed.
+    echo ERROR: Could not write hermes_project.pth.
+    goto :fail
 )
 
-:: Mini-swe-agent
+echo [STEP 7/10] Installing the Hermes core and its Python dependencies...
+echo        (downloads NousResearch/hermes-agent; several minutes on first run)
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, sys.argv.pop(1)); from portable_hermes.__main__ import main; sys.exit(main(sys.argv[1:]))" "%SCRIPT_DIR%." core install
+set "CORE_EXIT=%ERRORLEVEL%"
+if "%CORE_EXIT%"=="3" (
+    echo [WARN] The newest Hermes core could not be installed; the existing core was kept.
+) else if not "%CORE_EXIT%"=="0" (
+    echo ERROR: Failed to install the Hermes core. See the reason above.
+    goto :fail
+)
+
+:: Developer clones only: the optional mini-swe-agent submodule.
 if exist "%SCRIPT_DIR%mini-swe-agent\pyproject.toml" (
     "%PYTHON_EXE%" -m pip install -e "%SCRIPT_DIR%mini-swe-agent" --quiet 2>nul
 )
 
-:: Extra packages needed for Windows GUI
-"%PYTHON_EXE%" -m pip install Pillow ddgs lmstudio --quiet 2>nul
-if errorlevel 1 (
-    echo ERROR: Failed to install required Windows GUI packages.
-    exit /b 1
-)
-
-echo [OK] Python dependencies installed.
+echo [OK] Hermes core and Python dependencies installed.
 
 :: ============================================
 :: Step 8: Node.js dependencies
 :: ============================================
 echo [STEP 8/10] Installing Node.js dependencies...
+set "NODE_DONE="
+if exist "%SCRIPT_DIR%pnpm-workspace.yaml" (
+    echo [INFO] This Hermes core manages its Node.js packages with pnpm workspaces.
+    echo        Skipped: optional for the portable bundle. Browser tools that need
+    echo        Node.js packages stay unavailable until they are installed.
+    goto :node_install_complete
+)
+"%PYTHON_EXE%" -c "import sys, hermes_constants; sys.exit(0 if hasattr(hermes_constants, 'bootstrap_hermes_managed_node') else 7)" >nul 2>&1
+if errorlevel 7 (
+    echo [INFO] This Hermes core has no managed Node.js bootstrap. Skipped - optional.
+    goto :node_install_complete
+)
 echo        Provisioning a portable Hermes-managed Node.js runtime...
 set "NPM_PATH_FILE=%SCRIPT_DIR%.portable_npm_path.tmp"
 "%PYTHON_EXE%" -c "from pathlib import Path; from hermes_constants import bootstrap_hermes_managed_node; Path(r'%NPM_PATH_FILE%').write_text(bootstrap_hermes_managed_node() or '', encoding='utf-8')" 2>nul
@@ -251,16 +267,17 @@ set "PATH=%MANAGED_NODE_DIR%;%PATH%"
 cd /d "%SCRIPT_DIR%"
 call "%NPM_CMD%" install --quiet 2>nul
 if errorlevel 1 goto :node_dependencies_failed
+set "NODE_DONE=1"
 echo [OK] Portable Node.js dependencies installed.
 goto :node_install_complete
 
 :node_install_failed
 echo ERROR: Could not provision the portable Node.js runtime.
-exit /b 1
+goto :fail
 
 :node_dependencies_failed
 echo ERROR: Failed to install Node.js dependencies.
-exit /b 1
+goto :fail
 
 :node_install_complete
 
@@ -327,19 +344,21 @@ echo [OK] Skills synced.
 :: Final verification - never claim success for a partial install
 :: ============================================
 echo [VERIFY] Checking embedded agent runtime, GUI, profile, and portable skills...
-"%PYTHON_EXE%" -c "import run_agent, hermes_logging; from run_agent import AIAgent" >nul 2>&1
+:: Fresh-process check of the installed tree: core imports, portable tools in
+:: the default CLI and GUI tool selection, GUI modules, Python version.
+"%PYTHON_EXE%" -c "import sys; sys.path.insert(0, sys.argv.pop(1)); from portable_hermes.__main__ import main; sys.exit(main(sys.argv[1:]))" "%SCRIPT_DIR%." verify
 if errorlevel 1 (
-    echo ERROR: Agent runtime dependency verification failed. Run install.bat again to repair it.
-    exit /b 1
+    echo ERROR: Agent runtime verification failed. Run install.bat again to repair it.
+    goto :fail
 )
-"%PYTHON_EXE%" -c "import os, tkinter; from pathlib import Path; import gui.app, hermes_cli; tkinter.Tcl(); h=Path(os.environ['HERMES_HOME']); required=['.env','config.yaml','permissions.json','SOUL.md','node/node.exe','node/npm.cmd','skills/getting-started/SKILL.md','skills/lm-studio/SKILL.md','skills/extensions/portable-comfyui/SKILL.md','skills/extensions/music-server/SKILL.md','skills/extensions/tts-server/SKILL.md']; missing=[p for p in required if not (h/p).is_file()]; assert not missing, 'missing profile files: '+', '.join(missing)" >nul 2>&1
+"%PYTHON_EXE%" -c "import os, tkinter; from pathlib import Path; import gui.app, hermes_cli; tkinter.Tcl(); h=Path(os.environ['HERMES_HOME']); required=['.env','config.yaml','permissions.json','SOUL.md','skills/getting-started/SKILL.md','skills/lm-studio/SKILL.md','skills/extensions/portable-comfyui/SKILL.md','skills/extensions/music-server/SKILL.md','skills/extensions/tts-server/SKILL.md']+(['node/node.exe','node/npm.cmd'] if os.environ.get('NODE_DONE') else []); missing=[p for p in required if not (h/p).is_file()]; assert not missing, 'missing profile files: '+', '.join(missing)" >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Installation verification failed. Run install.bat again to repair it.
-    exit /b 1
+    goto :fail
 )
-if not exist "%SCRIPT_DIR%node_modules\.package-lock.json" (
+if defined NODE_DONE if not exist "%SCRIPT_DIR%node_modules\.package-lock.json" (
     echo ERROR: Node.js dependency verification failed. Run install.bat again to repair it.
-    exit /b 1
+    goto :fail
 )
 echo [OK] Embedded GUI, profile, and portable skills verified.
 
@@ -352,12 +371,12 @@ echo   Installation Complete!
 echo ============================================
 echo.
 echo   What's installed:
-echo     - Python 3.13 (portable)
+echo     - Python 3.14 (portable)
 echo     - Tkinter GUI
-echo     - 100 AI tools across 20+ toolsets
-echo     - 88+ skills
-echo     - LM Studio SDK
-echo     - Browser automation
+echo     - The latest Hermes Agent core plus the portable tools
+echo     - Skills and the LM Studio SDK
+echo.
+echo   Updates: UPDATE.bat (portable wrapper first, then optionally the core)
 echo.
 echo   To start:
 echo     hermes_gui.bat     Desktop GUI (recommended)
@@ -367,5 +386,10 @@ echo   First time? The app will guide you through
 echo   setting up your API keys on first launch.
 echo.
 
-pause
+if defined PH_PAUSE pause
 endlocal
+exit /b 0
+
+:fail
+if defined PH_PAUSE pause
+exit /b 1
