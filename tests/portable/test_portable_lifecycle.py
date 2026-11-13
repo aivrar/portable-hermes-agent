@@ -669,6 +669,12 @@ def test_wrapper_update_replaces_only_wrapper_paths(root, tmp_path):
     assert any(".env" in s for s in result["skipped"])
     assert any("run_agent.py" in s for s in result["skipped"])
     assert json.loads((root / ".portable/wrapper-state.json").read_text())["version"] == "v9.0.0"
+    assert result["changed"] is True
+    # Forcing the same release again writes nothing and says so (UPDATE.bat
+    # only hands the core step to a new process when wrapper code changed).
+    again = WrapperUpdater(root, quiet=True, run_verify=verify).update(
+        zip_path=str(archive), force=True)
+    assert again["ok"] and again["changed"] is False and again["files_written"] == 0
 
 
 def test_wrapper_update_refuses_pre_evergreen_releases(root, tmp_path):

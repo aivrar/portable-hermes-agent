@@ -359,10 +359,12 @@ class WrapperUpdater:
             "schema": 1, "version": version, "source": source,
             "installed_at": common.now_iso(), "files": hashes,
         })
+        changed = bool(txn.ops)
         return {
-            "ok": True, "changed": True, "version": version, "source": source,
+            "ok": True, "changed": changed, "version": version, "source": source,
             "files_written": len(txn.ops) - len(removed), "files_removed": len(removed),
             "kept_modified": kept, "skipped": skipped[:50], "skipped_count": len(skipped),
             "verification": verification,
-            "message": f"wrapper updated to {version}",
+            "message": (f"wrapper updated to {version}" if changed else
+                        f"wrapper files already match {version}"),
         }
