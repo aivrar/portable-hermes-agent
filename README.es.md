@@ -66,14 +66,14 @@ Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones 
 
 ### 2. Iniciar
 
-Haz doble clic en `START.bat`. En el primer inicio prepara Python integrado, dependencias, el SDK de LM Studio y las herramientas de Node.js **dentro de la carpeta portátil**. No requiere Python ni Node.js instalados en el sistema, ni permisos de administrador.
+Haz doble clic en `START.bat`. En el primer inicio descarga Python 3.14 integrado, el **núcleo más reciente de Hermes Agent desde `NousResearch/hermes-agent`**, sus dependencias exactas y el SDK de LM Studio **dentro de la carpeta portátil**. No requiere Python instalado en el sistema ni permisos de administrador. Antes de terminar, comprueba en un proceso aparte que el núcleo nuevo funciona con las herramientas portátiles y la interfaz gráfica.
 
-También puedes ejecutar `install.bat` para la preparación manual, o `scripts\install.ps1` desde PowerShell.
+También puedes ejecutar `install.bat` para la preparación manual, o `install.bat --yes` para una instalación sin preguntas.
 
 | Archivo | Función |
 |---|---|
 | `START.bat` | Inicio más sencillo de la interfaz gráfica |
-| `UPDATE.bat` | Actualización de la distribución portátil |
+| `UPDATE.bat` | Actualizar la parte portátil y, si lo confirmas, el núcleo |
 | `hermes_gui.bat` | Abrir la interfaz gráfica |
 | `hermes.bat` | Abrir la línea de comandos |
 
@@ -87,18 +87,16 @@ También puedes ejecutar `install.bat` para la preparación manual, o `scripts\i
 
 ## Dos tipos de actualización
 
-Portable Hermes tiene **dos vías independientes**. Actualizar una no actualiza automáticamente la otra.
+Portable Hermes tiene **dos partes que se actualizan por separado**:
 
-| Vía | Origen | Qué actualiza |
+| Parte | Origen | Qué contiene |
 |---|---|---|
-| **Distribución portátil** | `aivrar/portable-hermes-agent` | Lanzadores de Windows, interfaz gráfica, integraciones, herramientas portátiles y la versión del agente probada con este repositorio |
-| **Agente Hermes original** | `NousResearch/hermes-agent` | Código más reciente del núcleo del agente, conservando los archivos propios de Portable Hermes |
+| **Parte portátil** | [versiones de `aivrar/portable-hermes-agent`](https://github.com/aivrar/portable-hermes-agent/releases/latest) | Lanzadores de Windows, interfaz gráfica, herramientas y habilidades portátiles, instalador y actualizador |
+| **Núcleo de Hermes** | `NousResearch/hermes-agent` (rama `main` más reciente) | El agente en sí |
 
-Para la actualización normal, cierra Hermes y ejecuta `UPDATE.bat`. También puedes usar `hermes.bat update --backup --yes`. La actualización conserva los datos de ejecución, las herramientas personalizadas, extensiones y el Python integrado.
+Cierra Hermes y ejecuta `UPDATE.bat`. Primero actualiza la parte portátil (comprueba cada archivo, sustituye solo archivos portátiles y deshace todo si algo falla). Después indica cuántos cambios lleva de retraso el núcleo y pregunta si quieres actualizarlo. Sin preguntas: `UPDATE.bat --yes` (solo la parte portátil) o `UPDATE.bat --yes --core` (ambas). También puedes pedirle a Hermes en el chat que compruebe o instale la actualización del núcleo.
 
-Si además deseas código más reciente del proyecto original, inicia Hermes y pídele primero que **compruebe** si hay una actualización del agente original, sin instalarla. Si decides aplicarla, pídele que actualice el agente original **conservando Portable Hermes**. Reinicia Hermes después para cargar los módulos nuevos. Una instalación desde ZIP puede actualizarse aunque no tenga historial de Git.
-
-Consulta [Cómo mantener actualizado Portable Hermes](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated) para el proceso completo, copias de seguridad y solución de problemas.
+El núcleo nuevo se prepara y se prueba en un proceso aparte antes de reemplazar ningún archivo; si algo falla, los archivos y los paquetes vuelven a su estado anterior. Nunca se modifican `.env`, `cli-config.yaml`, la carpeta `HERMES_HOME` (herramientas personalizadas, configuración de LM Studio e idioma), `python_embedded\`, `extensions\` ni `workflows\`. Reinicia Hermes después de actualizar el núcleo. Las copias de Git (desarrolladores) se actualizan con `git pull`.
 
 ---
 

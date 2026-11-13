@@ -29,29 +29,31 @@ LM Studio پینل سرور کا پتہ اور اختیاری API کلید فع�
 ## آغاز
 
 1. [Portable Hermes Agent کے ریلیز صفحے](https://github.com/aivrar/portable-hermes-agent/releases/latest) سے تازہ `portable-hermes-agent-v*.zip` ڈاؤن لوڈ کریں۔ اسے عام فولڈر، مثلاً `C:\Users\YourName\Portable-Hermes-Agent`، میں کھولیں؛ `C:\Program Files` جیسے محفوظ سسٹم فولڈر سے بچیں۔
-2. **`START.bat`** پر ڈبل کلک کریں۔ پہلی بار یہ پورٹیبل فولڈر کے اندر ہی Python، ضروری پیکیج، LM Studio SDK اور Node.js ٹولز تیار کرتا ہے۔
+2. **`START.bat`** پر ڈبل کلک کریں۔ پہلی بار یہ پورٹیبل فولڈر کے اندر ہی Python 3.14، **`NousResearch/hermes-agent` سے Hermes Agent کا تازہ ترین بنیادی حصہ (core)**، اس کے مقررہ پیکیج اور LM Studio SDK ڈاؤن لوڈ کرتا ہے، اور ایک الگ عمل میں جانچتا ہے کہ نیا core پورٹیبل ٹولز اور GUI کے ساتھ کام کرتا ہے۔
 3. کلاؤڈ ماڈل کے لیے GUI میں API کلید سیٹ کریں، یا [LM Studio](https://lmstudio.ai) کا مقامی سرور چلا کر GUI کے LM Studio پینل میں ماڈل منتخب کریں۔
 
 | فائل | کام |
 |---|---|
 | `START.bat` | گرافیکل انٹرفیس شروع کرنے کا آسان ترین راستہ |
-| `UPDATE.bat` | پورٹیبل تقسیم کو اپ ڈیٹ کرنا |
+| `UPDATE.bat` | پورٹیبل حصہ اپ ڈیٹ کرنا، اور منظوری پر core بھی |
 | `hermes_gui.bat` | گرافیکل انٹرفیس کھولنا |
 | `hermes.bat` | کمانڈ لائن کھولنا |
 | `install.bat` | پہلی بار دستی سیٹ اَپ |
 
-PowerShell سے دستی سیٹ اَپ کے لیے `scripts\install.ps1` بھی موجود ہے۔
+بغیر سوالات کے سیٹ اَپ کے لیے `install.bat --yes` چلائیں۔
 
 ## دو الگ اپ ڈیٹ راستے
 
-پورٹیبل تقسیم اور اس کے اندر موجود اصل Hermes Agent کی اپ ڈیٹس **ایک دوسرے سے الگ** ہیں۔ ایک کو اپ ڈیٹ کرنے سے دوسرا خود بخود اپ ڈیٹ نہیں ہوتا۔
+Portable Hermes کے **دو حصے ہیں جو الگ الگ اپ ڈیٹ ہوتے ہیں**:
 
-| اپ ڈیٹ | ماخذ | طریقہ اور اثر |
+| حصہ | ماخذ | مواد |
 |---|---|---|
-| **پورٹیبل تقسیم** | `aivrar/portable-hermes-agent` | Hermes بند کریں اور **`UPDATE.bat`** چلائیں؛ Windows لانچرز، GUI، پورٹیبل ٹولز، توسیعات کے انضمام اور اس ریپوزٹری میں آزمودہ Agent ورژن تازہ ہوں گے |
-| **اندر کا اصل Hermes Agent** | `NousResearch/hermes-agent` | Hermes کھول کر پہلے اصل منصوبے کی اپ ڈیٹ **صرف چیک** کرنے کو کہیں؛ منظوری کے بعد اسے پورٹیبل ٹولز اور ذاتی فولڈر محفوظ رکھتے ہوئے اپ ڈیٹ کرنے کو کہیں |
+| **پورٹیبل حصہ** | [`aivrar/portable-hermes-agent` ریلیزز](https://github.com/aivrar/portable-hermes-agent/releases/latest) | Windows لانچرز، GUI، پورٹیبل ٹولز اور اسکلز، انسٹالر اور اپ ڈیٹر |
+| **Hermes core** | `NousResearch/hermes-agent` (تازہ ترین `main`) | خود Agent |
 
-عام دیکھ بھال کے لیے `UPDATE.bat` استعمال کریں؛ متبادل کمانڈ `hermes.bat update --backup --yes` ہے۔ پورٹیبل اپ ڈیٹ ذاتی ڈیٹا، کسٹم ٹولز، توسیعات اور اندر موجود Python کو محفوظ رکھتی ہے۔ اصل Agent کی اپ ڈیٹ کے بعد Hermes دوبارہ شروع کریں۔ ZIP سے حاصل کردہ نسخہ Git تاریخ کے بغیر بھی اصل Agent کے تازہ کوڈ کی اوورلے اپ ڈیٹ کر سکتا ہے۔ مکمل ہدایات [پورٹیبل اپ ڈیٹ رہنما](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated) میں ہیں۔
+Hermes بند کریں اور **`UPDATE.bat`** چلائیں۔ یہ پہلے پورٹیبل حصہ اپ ڈیٹ کرتا ہے (ہر فائل کی جانچ، صرف پورٹیبل فائلیں تبدیل، کسی ناکامی پر سب کچھ واپس)، پھر بتاتا ہے کہ core کتنی تبدیلیاں پیچھے ہے اور پوچھتا ہے کہ کیا اسے اپ ڈیٹ کیا جائے۔ بغیر سوالات کے: `UPDATE.bat --yes` (صرف پورٹیبل حصہ) یا `UPDATE.bat --yes --core` (دونوں)۔ آپ چیٹ میں Hermes سے بھی core کی اپ ڈیٹ چیک یا انسٹال کرنے کو کہہ سکتے ہیں۔
+
+نیا core فائلیں بدلنے سے پہلے ایک عارضی فولڈر میں تیار اور الگ عمل میں جانچا جاتا ہے؛ ناکامی پر فائلیں اور پیکیج پہلے جیسے ہو جاتے ہیں۔ `.env`، `cli-config.yaml`، `HERMES_HOME` (کسٹم ٹولز، LM Studio ترتیبات، زبان)، `python_embedded\`، `extensions\` اور `workflows\` کبھی نہیں چھیڑے جاتے۔ core اپ ڈیٹ کے بعد Hermes دوبارہ شروع کریں۔ Git نقول (ڈویلپرز) `git pull` سے اپ ڈیٹ کریں۔
 
 ---
 

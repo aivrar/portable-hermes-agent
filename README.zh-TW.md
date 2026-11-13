@@ -69,16 +69,20 @@
 
 從 [Portable Hermes Agent 發行頁](https://github.com/aivrar/portable-hermes-agent/releases/latest)下載 `portable-hermes-agent-v*.zip`，解壓縮到一般資料夾（例如 `C:\Users\YourName\Portable-Hermes-Agent`），避免放在 `C:\Program Files` 等受保護路徑。
 
-按兩下 **`START.bat`** 啟動圖形介面；首次啟動會在便攜資料夾中準備內嵌 Python、相依套件及所需工具。`hermes_gui.bat` 也會啟動圖形介面，`hermes.bat` 則是命令列入口。無需系統 Python、Docker 或系統管理員權限。
+按兩下 **`START.bat`** 啟動圖形介面；首次啟動會在便攜資料夾中下載內嵌 Python 3.14、**來自 `NousResearch/hermes-agent` 的最新 Hermes Agent 核心**、其精確鎖定的相依套件及 LM Studio SDK，並在另一個程序中確認新核心能與便攜工具及圖形介面一起運作。無人值守安裝可執行 `install.bat --yes`。`hermes_gui.bat` 也會啟動圖形介面，`hermes.bat` 則是命令列入口。無需系統 Python、Docker 或系統管理員權限。
 
 ## 兩種獨立的更新方式
 
-| 更新項目 | 來源 | 操作 |
-|---|---|---|
-| **便攜版發行套件** | `aivrar/portable-hermes-agent` | 關閉 Hermes，執行 **`UPDATE.bat`**；更新啟動器、GUI、便攜工具與此專案測試過的 Hermes 版本 |
-| **內部的上游 Hermes Agent** | `NousResearch/hermes-agent` | 啟動 Hermes，先要求檢查上游更新；確認後再要求更新，同時保留便攜版自訂項目 |
+Portable Hermes 由**兩個分開更新的部分**組成：
 
-更新其中一項**不會**自動更新另一項。一般更新可執行 `UPDATE.bat`，或使用 `hermes.bat update --backup --yes`。更新會保留使用者資料、自訂工具、擴充套件與內嵌 Python；上游更新完成後請重新啟動 Hermes。ZIP 安裝即使沒有 Git 歷史，也能使用上游覆蓋更新模式。詳見 [便攜版更新指南](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated)。
+| 部分 | 來源 | 內容 |
+|---|---|---|
+| **便攜外殼** | [`aivrar/portable-hermes-agent` 發行頁](https://github.com/aivrar/portable-hermes-agent/releases/latest) | Windows 啟動器、圖形介面、便攜工具與技能、安裝與更新程式 |
+| **Hermes 核心** | `NousResearch/hermes-agent`（最新 `main`） | Agent 本身 |
+
+關閉 Hermes，執行 **`UPDATE.bat`**。它會先更新便攜外殼（逐一檢查檔案雜湊、只替換便攜檔案，任何步驟失敗都會完整還原），接著顯示核心落後上游多少個提交，並詢問是否更新核心。無人值守：`UPDATE.bat --yes`（只更新便攜外殼）或 `UPDATE.bat --yes --core`（兩者都更新）。也可以在聊天中請 Hermes 檢查或安裝核心更新。
+
+新核心會先在暫存資料夾中安裝相依套件並在另一個程序中測試，通過後才替換檔案；失敗時檔案與套件都會還原。`.env`、`cli-config.yaml`、`HERMES_HOME`（自訂工具、LM Studio 設定、語言偏好）、`python_embedded\`、`extensions\` 與 `workflows\` 永遠不會被更動。核心更新後請重新啟動 Hermes。Git 複本（開發者）請使用 `git pull` 更新。
 
 更多操作與最新細節請參閱[英文版便攜 README](README.md)及[發行頁 PDF 手冊](https://github.com/aivrar/portable-hermes-agent/releases/latest)。
 

@@ -54,7 +54,7 @@ You type a message in plain English, and Hermes figures out what tools to use, i
 
 ### Step 1: Launch Hermes
 
-Double-click `hermes.bat` or `hermes_gui.bat` to start the application. The main window will open centered on your screen.
+The first time, double-click `START.bat`: it runs the portable setup (embedded Python and the latest Hermes core, see Part 11) and then opens the application. After that, double-click `START.bat`, `hermes_gui.bat` (GUI) or `hermes.bat` (command line). The main window will open centered on your screen.
 
 You'll see:
 - A **sidebar** on the left (for conversation sessions)
@@ -884,8 +884,8 @@ See Part 5 for complete details on all 10 LM Studio tools.
 
 | Tool | What It Does | Requirements |
 |------|-------------|-------------|
-| **update_hermes** | Update upstream Hermes from `NousResearch/hermes-agent` while preserving Portable Hermes tools/extensions | None |
-| **check_hermes_updates** | Check whether upstream Hermes updates are available | None |
+| **update_hermes** | Install the latest Hermes core from `NousResearch/hermes-agent` (tested before it replaces anything; rolled back on failure). Restart afterwards. See Part 11 | None |
+| **check_hermes_updates** | Report how many upstream commits behind the core is, and whether a new Portable Hermes release exists | None |
 | **search_guide** | Search this user guide | None |
 
 ### Messaging Tools
@@ -1027,6 +1027,60 @@ These settings are selected through the interface and do not need to be edited m
 - **Cloud vs Local provider** — automatically set when you pick a cloud model or click "Use for Chat" in LM Studio
 - **LM Studio endpoint** — configured in the LM Studio panel's Endpoint field
 - **GPU selection, context length, temperature** — configured in the sidebar's local model settings or the LM Studio panel
+
+---
+
+## Part 11: Installing and Updating Portable Hermes
+
+### What gets installed
+
+Portable Hermes has two parts:
+
+- **The portable wrapper** — the launchers (`START.bat`, `UPDATE.bat`, `hermes.bat`, `hermes_gui.bat`), this desktop GUI, the portable tools (LM Studio, TTS, Music, ComfyUI, workflows, tool maker, Serper, GPU, guide, model switcher, Hermes update) and their skills. It comes from the Portable Hermes Agent release ZIP (`aivrar/portable-hermes-agent`).
+- **The Hermes core** — the agent itself, from `NousResearch/hermes-agent`. The first setup downloads the **latest** core, installs the exact dependency versions it pins, and tests it before finishing.
+
+First-time setup (`START.bat` or `install.bat`) puts everything inside the portable folder: embedded Python 3.14, the core, its packages and the LM Studio SDK. No admin rights are needed. For an unattended setup run `install.bat --yes`.
+
+If the newest upstream core cannot run in the portable runtime, a first-time setup falls back to the last upstream version this release has verified. To choose a specific upstream version, set `HERMES_PORTABLE_CORE_REF` (branch, tag or commit) or `HERMES_PORTABLE_CORE_ZIP` (a downloaded upstream source ZIP) before running `install.bat`.
+
+### How to update
+
+Close Hermes and any running gateways, then double-click `UPDATE.bat`:
+
+1. **Wrapper step** — downloads the latest Portable Hermes release, checks every file against the release's manifest, replaces only wrapper files, checks that the result starts, and rolls back if anything fails.
+2. **Core step** — shows how many upstream commits behind your core is and asks "Update the Hermes core now? [y/N]".
+
+Options (also accepted by `hermes.bat update`):
+
+| Command | What it does |
+|---------|-------------|
+| `UPDATE.bat` | Wrapper update, then asks about the core |
+| `UPDATE.bat --core` | Wrapper update, then core update without asking |
+| `UPDATE.bat --no-core` | Wrapper update only |
+| `UPDATE.bat --yes` | Never asks (wrapper only unless `--core` is given) |
+
+You can also ask Hermes in the chat. "Check whether upstream Hermes Agent has updates" uses `check_hermes_updates`, which reports how many commits behind the core is and whether a new Portable Hermes release exists. "Update upstream Hermes Agent" uses `update_hermes`. **Restart Hermes after a core update** (close and reopen the GUI or CLI) so the new code is loaded.
+
+### What an update never touches
+
+`.env`, `cli-config.yaml`, your Hermes home (normally `%USERPROFILE%\.hermes`: settings, sessions, memories, custom tools, LM Studio settings, language and other GUI preferences), `python_embedded\`, `extensions\` (TTS, Music, ComfyUI and their models), `node_modules\`, `workflows\`, `workspace\`, and desktop apps you built in `apps\desktop\release\`.
+
+### How a core update keeps your install safe
+
+- The new core is unpacked in `.portable\` inside the portable folder, its packages are installed, and it is tested in a separate process (core imports, the agent, the portable tools in both the CLI and the GUI, the GUI modules) **before** any file is replaced.
+- Files are replaced under a journal and tested again. If anything fails, every file and every changed package goes back to how it was. If the computer loses power mid-update, the next Hermes start rolls it back.
+- Only files the previous core installed, and that you have not edited, are removed. Unknown files are never deleted.
+- Every launch also restores any portable file that something else replaced or removed (for example upstream's own `hermes update`), so the portable tools never silently disappear.
+
+### Update troubleshooting
+
+| Message | What to do |
+|---------|-----------|
+| "This core needs a newer Python runtime" or "this core requires Python ..." (the existing core was kept) | Your portable folder was set up with an older embedded Python than the newest upstream core needs. Your current core keeps working. To get the newest core, extract the latest release into a **new** folder and run `START.bat`; your Hermes home (settings, sessions, keys) is shared, so nothing needs to be copied except `extensions\` if you use them. |
+| "the install folder path is N characters long" | Windows long paths are turned off and the folder is too deep for upstream's longest files. Move the portable folder to a short path such as `C:\PortableHermes`. |
+| "this install is a git checkout" | Developer clones are updated with `git pull`, not by the portable updaters. |
+| "could not reach GitHub" | Check your internet connection or proxy; nothing was changed. |
+| Browser tools unavailable after setup | Current upstream cores install their Node.js packages with pnpm, which the portable setup does not run yet. Other tools are unaffected. |
 
 ---
 
