@@ -45,7 +45,11 @@ jobs:
         shell: bash
         env:
           HERMES_PYTHON: .venv/Scripts/python.exe
-        run: scripts/run_tests.sh tests/test_portable_gui.py tests/test_build_release.py tests/tools/test_update_hermes_tool.py tests/tools/test_portable_dependency_refresh.py tests/hermes_cli/test_update_zip*.py -j 3 --file-retries 0
+        # tests/portable: ownership model, core lifecycle (install/update/
+        # rollback/adoption/fallback), wrapper updater, launch repair and the
+        # in-memory toolsets bridge on real tool definitions. The opt-in
+        # real-upstream test is marked integration and skipped here.
+        run: scripts/run_tests.sh tests/portable tests/test_portable_gui.py tests/test_build_release.py tests/tools/test_update_hermes_tool.py tests/tools/test_portable_dependency_refresh.py tests/hermes_cli/test_update_zip*.py -j 3 --file-retries 0
       - name: Build and verify every release archive member
         shell: pwsh
         env:
