@@ -57,7 +57,9 @@ def test_lockfile_dependencies_install_hash_checked_without_resolver(tmp_path):
 
     life = CoreLifecycle(tmp_path, quiet=True, run_pip=pip)
     plan = core.dependency_plan(REPO_ROOT)
-    report = life._install_dependencies(plan, tmp_path)
+    ctx: dict = {}
+    report = life._install_dependencies(plan, tmp_path, core.plan_fingerprint(plan), ctx)
+    assert ctx["deps"] is report
     install = next(c for c in calls if c[0] == "install" and "-r" in c)
     assert "--no-deps" in install and "--require-hashes" in install
     wrapper = next(c for c in calls if c[0] == "install" and "lmstudio" in c)
@@ -93,8 +95,15 @@ def test_dependency_failure_propagates_and_restores_previous_packages(tmp_path):
     life = CoreLifecycle(tmp_path, quiet=True, run_pip=pip)
     plan = {"strategy": "pyproject", "requirements": ["requests==9.9"], "extras": [],
             "missing_extras": [], "wrapper_requirements": []}
+    ctx: dict = {}
     with pytest.raises(core.UpdateError) as info:
-        life._install_dependencies(plan, tmp_path)
+        life._install_dependencies(plan, tmp_path, core.plan_fingerprint(plan), ctx)
     assert info.value.code == "dependencies_failed"
     assert "missing runtime requirement" in info.value.reason
+    # The packages are half changed; the marker records the set from before.
+    assert life.deps_marker_path.is_file()
+    assert life.pending_dependencies()["before"] == {"requests": "1.0", "pip": "25.0"}
+    # The attempt boundary restores from the report the failed step left behind.
+    assert life._restore_dependencies(ctx["deps"]) is True
     assert state == {"requests": "1.0", "pip": "25.0"}
+    assert not life.deps_marker_path.exists()
