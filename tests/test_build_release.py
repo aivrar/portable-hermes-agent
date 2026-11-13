@@ -47,6 +47,16 @@ def test_tracked_release_inventory_contains_complete_portable_surface():
         "portable_hermes/ownership.py",
         "portable_hermes/wrapper.py",
         "portable_hermes/manifests/last-known-good.json",
+        "portable_hermes/manifests/python-runtime.txt",
+        "portable_hermes/recovery.py",
+        "portable_hermes/runtime.py",
+        "portable_hermes/launch/cli.cmd",
+        "portable_hermes/launch/env.cmd",
+        "portable_hermes/launch/gui.cmd",
+        "portable_hermes/launch/prepare.cmd",
+        "portable_hermes/launch/runtime.cmd",
+        "portable_hermes/launch/start.cmd",
+        "portable_hermes/launch/update.cmd",
         "skills/extensions/portable-comfyui/SKILL.md",
         "skills/extensions/music-server/SKILL.md",
         "skills/extensions/tts-server/SKILL.md",
@@ -185,82 +195,111 @@ def test_root_readmes_keep_portable_identity_and_consistent_language_links():
     assert "hermes-agent.nousresearch.com/install" not in spanish_readme
 
 
+LAUNCH = Path(build_release.PROJECT_ROOT) / "portable_hermes" / "launch"
+
+
+def _launch(name: str) -> str:
+    return (LAUNCH / name).read_text(encoding="utf-8")
+
+
 def test_windows_launchers_keep_runtime_state_in_active_hermes_home():
     root = Path(build_release.PROJECT_ROOT)
-    start = (root / "START.bat").read_text(encoding="utf-8")
     install = (root / "install.bat").read_text(encoding="utf-8")
-    cli_launcher = (root / "hermes.bat").read_text(encoding="utf-8")
-    gui_launcher = (root / "hermes_gui.bat").read_text(encoding="utf-8")
-    updater = (root / "UPDATE.bat").read_text(encoding="utf-8")
+    env = _launch("env.cmd")
 
-    for launcher in (install, cli_launcher, gui_launcher):
-        assert 'if not defined HERMES_HOME set "HERMES_HOME=%USERPROFILE%\\.hermes"' in launcher
+    # One place decides the Hermes home; every launcher and install.bat call it.
+    assert 'if not defined HERMES_HOME set "HERMES_HOME=%USERPROFILE%\\.hermes"' in env
+    assert "call .\\portable_hermes\\launch\\env.cmd %*" in install
+    for name in ("cli.cmd", "gui.cmd", "start.cmd", "update.cmd"):
+        assert "call .\\portable_hermes\\launch\\env.cmd %*" in _launch(name), name
 
     assert "%HERMES_HOME%\\.env" in install
     assert "%HERMES_HOME%\\config.yaml" in install
     assert "%HERMES_HOME%\\permissions.json" in install
-    assert "%HERMES_HOME%\\skills\\" in install
+    assert '"%HERMES_HOME%\\skills"' in install
     assert "%USERPROFILE%\\.hermes\\permissions.json" not in install
-    assert 'call "%SCRIPT_DIR%hermes_gui.bat" %*' in start
+    assert "call .\\portable_hermes\\launch\\gui.cmd %*" in _launch("start.cmd")
 
-    for launcher in (start, cli_launcher, gui_launcher, updater):
-        assert 'set "PIP_PREFIX=' not in launcher
+    for name in ("cli.cmd", "gui.cmd", "start.cmd", "update.cmd", "env.cmd"):
+        assert 'set "PIP_PREFIX=' not in _launch(name)
 
 
 def test_launchers_route_updates_and_repair_through_the_portable_wrapper():
     root = Path(build_release.PROJECT_ROOT)
-    cli_launcher = (root / "hermes.bat").read_text(encoding="utf-8")
-    gui_launcher = (root / "hermes_gui.bat").read_text(encoding="utf-8")
-    updater = (root / "UPDATE.bat").read_text(encoding="utf-8")
+    cli = _launch("cli.cmd")
+    gui = _launch("gui.cmd")
+    update = _launch("update.cmd")
+    env = _launch("env.cmd")
     vbs = (root / "hermes_gui.vbs").read_text(encoding="utf-8")
+    assert BOOT in env
 
-    # Launch-time repair runs before Hermes starts in both launchers. START.bat
-    # and hermes_gui.vbs both go through hermes_gui.bat.
-    for launcher, start_marker in ((cli_launcher, "-m hermes_cli.main %*"),
-                                   (gui_launcher, "gui")):
-        assert BOOT in launcher
-        repair = launcher.index("main(['repair', '--quiet'])")
-        assert repair < launcher.rindex(start_marker)
-    assert "hermes_gui.bat" in vbs
+    # Setup, interrupted-update recovery and launch-time repair all run before
+    # Hermes starts. START.bat and hermes_gui.vbs both go through gui.cmd.
+    for launcher, start_marker in ((cli, "-m hermes_cli.main %*"),
+                                   (gui, "from gui.app import main")):
+        prepare = launcher.index("prepare.cmd")
+        repair = launcher.index('"%PH_BOOT%" "%PH_ROOT%\\." repair --quiet')
+        assert prepare < repair < launcher.rindex(start_marker)
+    prepare = _launch("prepare.cmd")
+    assert prepare.index("install.bat") < prepare.index("recover.py")
+    assert '-I -X utf8 "%PH_STATE%\\recover.py"' in prepare
+    assert "hermes_gui.bat" in vbs and "HERMES_PORTABLE_HIDDEN" in vbs
 
     # "hermes update" goes to the portable updater, never upstream's own one.
-    intercept = 'if /i "%~1"=="update" goto :portable_update'
-    assert intercept in cli_launcher
-    assert cli_launcher.index(intercept) < cli_launcher.index("-m hermes_cli.main %*")
-    assert "hermes_cli.main update" not in updater
-    assert '"%SCRIPT_DIR%." update %*' in updater and BOOT in updater
+    intercept = 'if /i "%~1"=="update" call .\\portable_hermes\\launch\\update.cmd %*'
+    assert intercept in cli
+    assert cli.index(intercept) < cli.index("-m hermes_cli.main %*")
+    assert "hermes_cli.main update" not in update
+    assert '"%PH_UPDATE_BOOT%" "%PH_ROOT%\\." %*' in update
+    # Exit code 4: the newest core needs a newer portable Python.
+    assert update.index('"!PH_RC!"=="4"') < update.index(
+        "call .\\portable_hermes\\launch\\runtime.cmd")
+
+
+def test_root_launchers_are_trampolines_into_the_launch_folder():
+    root = Path(build_release.PROJECT_ROOT)
+    for name, script in (("hermes.bat", "cli.cmd"), ("hermes_gui.bat", "gui.cmd"),
+                         ("START.bat", "start.cmd"), ("UPDATE.bat", "update.cmd")):
+        first = (root / name).read_bytes().split(b"\r\n", 1)[0].decode("ascii")
+        assert f"call .\\portable_hermes\\launch\\{script} %*" in first, name
+        assert first.endswith("& call exit /b %%errorlevel%%"), name
+
+
+def _batch_files():
+    root = Path(build_release.PROJECT_ROOT)
+    files = {name: root / name for name in
+             ("install.bat", "START.bat", "UPDATE.bat", "hermes.bat", "hermes_gui.bat")}
+    files.update({f"launch/{p.name}": p for p in sorted(LAUNCH.glob("*.cmd"))})
+    return files
 
 
 def test_batch_files_are_ascii_crlf_and_never_block_unattended_runs():
-    root = Path(build_release.PROJECT_ROOT)
-    for name in ("install.bat", "START.bat", "UPDATE.bat", "hermes.bat", "hermes_gui.bat"):
-        raw = (root / name).read_bytes()
+    files = _batch_files()
+    assert {"launch/env.cmd", "launch/prepare.cmd", "launch/runtime.cmd"} <= set(files)
+    for name, path in files.items():
+        raw = path.read_bytes()
         assert raw.isascii(), name
         assert raw.count(b"\n") == raw.count(b"\r\n"), name
-    for name in ("install.bat", "UPDATE.bat", "START.bat"):
-        text = (root / name).read_text(encoding="utf-8")
-        assert "HERMES_PORTABLE_NONINTERACTIVE" in text, name
-        lines = [line.strip().lower() for line in text.splitlines()]
+    assert "HERMES_PORTABLE_NONINTERACTIVE" in _launch("env.cmd")
+    for name, path in files.items():
+        lines = [line.strip().lower() for line in path.read_text(encoding="utf-8").splitlines()]
         for number, line in enumerate(lines):
-            if "pause" not in line.split():
+            if "pause" not in line.split() and not line.startswith(("set /p", "@pause")):
                 continue
-            # Either the pause itself is conditional, or an earlier line
-            # jumps over it in unattended mode.
-            guarded = "ph_pause" in line or "hermes_portable_noninteractive" in line or any(
-                "hermes_portable_noninteractive" in prev and "goto" in prev
-                for prev in lines[max(0, number - 3):number])
+            if line.startswith(("::", "rem", "@rem")):
+                continue
+            if name == "UPDATE.bat":
+                continue        # the legacy tail: only an old updater reaches it
+            # The pause or prompt itself is conditional, or sits in a block
+            # opened by "if defined PH_PAUSE (".
+            guarded = "ph_pause" in line or any(
+                "if defined ph_pause (" in prev for prev in lines[max(0, number - 3):number])
             assert guarded, (name, line)
 
 
 def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
     installer = (Path(build_release.PROJECT_ROOT) / "install.bat").read_text(
         encoding="utf-8"
-    )
-
-    # Variables referenced with percent expansion inside a parenthesized block
-    # must be assigned before that block is parsed.
-    assert installer.index('set "TCLTK_MSI=') < installer.index(
-        'if not exist "%PYTHON_DIR%\\Lib\\tkinter" ('
     )
 
     # npm is a .cmd shim on Windows. Without CALL it terminates install.bat and
@@ -278,17 +317,31 @@ def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
 
     # The core comes from upstream through the wrapper's lifecycle module,
     # after the embedded runtime exists, and the whole install is verified in
-    # a fresh process afterwards. "Kept existing core" (exit 3) is a warning.
-    core_step = installer.index('"%SCRIPT_DIR%." core install')
-    assert installer.index('if not exist "%PYTHON_DIR%\\Lib\\tkinter" (') < core_step
-    assert installer.index('"%SCRIPT_DIR%." verify') > core_step
-    assert 'if "%CORE_EXIT%"=="3"' in installer
+    # a fresh process afterwards. "Kept existing core" (exit 3) is a warning,
+    # except while upgrading the Python runtime; exit 4 starts that upgrade.
+    core_step = installer.index('"%PH_BOOT%" "%PH_ROOT%\\." core install')
+    assert installer.index("[STEP 5/10] Installing Tkinter") < core_step
+    assert installer.index('"%PH_BOOT%" "%PH_ROOT%\\." verify') > core_step
+    assert 'if "%CORE_EXIT%"=="3" if not defined PH_UPGRADE (' in installer
+    assert 'if "%CORE_EXIT%"=="4" if not defined PH_UPGRADE (' in installer
+    assert "call .\\portable_hermes\\launch\\runtime.cmd" in installer
     assert 'pip install -e "%SCRIPT_DIR%.' not in installer
     # npm cannot install a pnpm workspace core; that case is skipped, not fatal.
     assert installer.index("pnpm-workspace.yaml") < installer.index('call "%NPM_CMD%" install --quiet')
-    # Every failure path goes through one label that pauses only when attended.
-    assert installer.count("exit /b 1") == 1
-    assert installer.rstrip().endswith(":fail\nif defined PH_PAUSE pause\nexit /b 1")
+    # Every failure after the setup checks goes through one label that pauses
+    # only when attended; 11 tells runtime.cmd the core was already installed.
+    assert installer.rstrip().endswith(
+        ":fail\nif defined PH_PAUSE pause\nif defined PH_CORE_DONE exit /b 11\nexit /b 1")
+    # The installing marker is removed only after verification succeeded.
+    assert installer.rindex('del "%PH_STATE%\\installing"') > installer.index(
+        "Installation verification failed")
+    # Paths reach PowerShell and Python as environment variables or arguments.
+    assert "Invoke-WebRequest" not in installer
+    assert "r'%" not in installer and "'%PYTHON" not in installer
+    assert "$env:PH_URL" in installer and "-LiteralPath $env:PH_ZIP" in installer
+    # The skills fallback never overwrites a skill that is already there.
+    assert "xcopy /E /Y /Q \"%SCRIPT_DIR%skills" not in installer
+    assert "/XC /XN /XO" in installer
 
 
 def test_portable_comfyui_skill_does_not_collide_with_upstream_skill():

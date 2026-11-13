@@ -15,9 +15,12 @@ Three categories, checked in this order:
     Everything else. The core lifecycle installs these from upstream
     NousResearch/hermes-agent and records them in ``.portable/core-state.json``.
 
-Paths are POSIX-style and relative to the install root. Stdlib only: this file
-is also executed in a fresh process (``python -I ownership.py``) by the wrapper
-updater to read a *staged* release's rules without importing it.
+Paths are POSIX-style and relative to the install root. Windows file names are
+case-insensitive, so every comparison here ignores letter case: ``.ENV``,
+``GUI/app.py`` and ``Python_Embedded/x`` are the same paths as their
+lower-case spellings. Stdlib only: this file is also executed in a fresh
+process (``python -I ownership.py``) by the wrapper updater to read a *staged*
+release's rules without importing it.
 """
 
 from __future__ import annotations
@@ -62,6 +65,10 @@ USER_NESTED = frozenset({
     "apps/desktop/release",   # locally built desktop binaries
     "tools/custom",           # legacy tool_maker storage
 })
+
+#: Top-level name prefix of portable runtimes set aside by an in-place Python
+#: upgrade (``python_embedded.old-3.13.12``, ``python_embedded.failed-3.14.9``).
+USER_TOP_LEVEL_PREFIXES = ("python_embedded.",)
 
 #: Path components that are always runtime artefacts wherever they appear.
 USER_COMPONENTS = frozenset({"__pycache__"})
@@ -146,10 +153,20 @@ REQUIRED_RELEASE_FILES = frozenset({
     "portable_hermes/common.py",
     "portable_hermes/core.py",
     "portable_hermes/ownership.py",
+    "portable_hermes/recovery.py",
+    "portable_hermes/runtime.py",
     "portable_hermes/verify.py",
     "portable_hermes/wrapper.py",
+    "portable_hermes/launch/cli.cmd",
+    "portable_hermes/launch/env.cmd",
+    "portable_hermes/launch/gui.cmd",
+    "portable_hermes/launch/prepare.cmd",
+    "portable_hermes/launch/runtime.cmd",
+    "portable_hermes/launch/start.cmd",
+    "portable_hermes/launch/update.cmd",
     "portable_hermes/manifests/last-known-good.json",
     "portable_hermes/manifests/legacy-core-files.txt",
+    "portable_hermes/manifests/python-runtime.txt",
     "skills/extensions/music-server/SKILL.md",
     "skills/extensions/portable-comfyui/SKILL.md",
     "skills/extensions/tts-server/SKILL.md",
@@ -171,12 +188,34 @@ RELEASE_MANIFEST = "portable_hermes/release.json"
 # core install filter
 # --------------------------------------------------------------------------
 
-#: Upstream archive entries the core installer never installs. Mirrors what a
-#: release would exclude: development-only trees and generated website docs.
-CORE_EXCLUDED_COMPONENTS = frozenset({
-    ".claude", ".codex", ".github", ".plans", "codex", "plans", "tests",
+#: Top-level upstream entries the core installer never installs (checked on
+#: the first path component only: upstream ships real files deeper down with
+#: these names, such as ``skills/autonomous-ai-agents/codex/`` and plugin
+#: ``tests/`` folders). ``.github`` is CI configuration and ``tests`` /
+#: ``tests-js`` are upstream's own test suites; none is used at runtime. The
+#: dot-folders and ``codex``/``plans`` hold coding-agent notes upstream has
+#: carried at the top level at times.
+CORE_EXCLUDED_TOP_LEVEL = frozenset({
+    ".claude", ".codex", ".github", ".plans", "codex", "plans", "tests", "tests-js",
 })
+#: Generated website docs (large; the site build output, not runtime data).
 CORE_EXCLUDED_PREFIXES = ("website/docs/",)
+
+
+def _lower(names) -> frozenset:
+    return frozenset(n.lower() for n in names)
+
+
+_USER_TOP = _lower(USER_TOP_LEVEL)
+_USER_NESTED = _lower(USER_NESTED)
+_USER_COMPONENTS = _lower(USER_COMPONENTS)
+_WRAPPER_ROOT_FILES = _lower(WRAPPER_ROOT_FILES)
+_WRAPPER_DEV_ONLY = _lower(WRAPPER_DEV_ONLY)
+_WRAPPER_ROOT_TREES = _lower(WRAPPER_ROOT_TREES)
+_WRAPPER_ROOT_PATTERNS = tuple(p.lower() for p in WRAPPER_ROOT_PATTERNS)
+_WRAPPER_CORE_TREE_FILES = _lower(WRAPPER_CORE_TREE_FILES)
+_WRAPPER_CORE_TREE_DIRS = _lower(WRAPPER_CORE_TREE_DIRS)
+_CORE_EXCLUDED_TOP = _lower(CORE_EXCLUDED_TOP_LEVEL)
 
 
 def normalize(rel: str) -> str:
@@ -187,40 +226,45 @@ def normalize(rel: str) -> str:
     return rel.strip("/")
 
 
+def key(rel: str) -> str:
+    """The comparison key of a path: normalized and lower-case (Windows rules)."""
+    return normalize(rel).lower()
+
+
 def _within(rel: str, tree: str) -> bool:
     return rel == tree or rel.startswith(tree + "/")
 
 
 def is_user(rel: str) -> bool:
-    rel = normalize(rel)
+    rel = key(rel)
     if not rel:
         return False
     parts = rel.split("/")
-    if parts[0] in USER_TOP_LEVEL:
+    if parts[0] in _USER_TOP or parts[0].startswith(USER_TOP_LEVEL_PREFIXES):
         return True
-    if any(part in USER_COMPONENTS for part in parts):
+    if any(part in _USER_COMPONENTS for part in parts):
         return True
     if rel.endswith(USER_SUFFIXES):
         return True
-    return any(_within(rel, tree) for tree in USER_NESTED)
+    return any(_within(rel, tree) for tree in _USER_NESTED)
 
 
 def is_wrapper(rel: str) -> bool:
     """True for wrapper-owned paths (user paths are never wrapper paths)."""
-    rel = normalize(rel)
+    rel = key(rel)
     if not rel or is_user(rel):
         return False
     parts = rel.split("/")
     if len(parts) == 1:
-        if rel in WRAPPER_ROOT_FILES or rel in WRAPPER_DEV_ONLY:
+        if rel in _WRAPPER_ROOT_FILES or rel in _WRAPPER_DEV_ONLY:
             return True
-        if any(fnmatch.fnmatchcase(rel, pat) for pat in WRAPPER_ROOT_PATTERNS):
+        if any(fnmatch.fnmatchcase(rel, pat) for pat in _WRAPPER_ROOT_PATTERNS):
             return True
-    if parts[0] in WRAPPER_ROOT_TREES:
+    if parts[0] in _WRAPPER_ROOT_TREES:
         return True
-    if rel in WRAPPER_CORE_TREE_FILES:
+    if rel in _WRAPPER_CORE_TREE_FILES:
         return True
-    return any(_within(rel, tree) for tree in WRAPPER_CORE_TREE_DIRS)
+    return any(_within(rel, tree) for tree in _WRAPPER_CORE_TREE_DIRS)
 
 
 def classify(rel: str) -> str:
@@ -238,30 +282,30 @@ def is_payload_path(rel: str) -> bool:
     These are exposed to upstream's own update (it swaps whole top-level
     entries it ships) and therefore get a pristine copy in the release.
     """
-    rel = normalize(rel)
-    if not is_wrapper(rel) or rel in WRAPPER_DEV_ONLY:
+    rel = key(rel)
+    if not is_wrapper(rel) or rel in _WRAPPER_DEV_ONLY:
         return False
     parts = rel.split("/")
-    if parts[0] in WRAPPER_ROOT_TREES:
+    if parts[0] in _WRAPPER_ROOT_TREES:
         return False
-    return not (len(parts) == 1 and rel in WRAPPER_ROOT_FILES)
+    return not (len(parts) == 1 and rel in _WRAPPER_ROOT_FILES)
 
 
 def is_release_member(rel: str) -> bool:
     """Tracked files that belong in a wrapper-only release archive."""
-    rel = normalize(rel)
-    if not is_wrapper(rel) or rel in WRAPPER_DEV_ONLY:
+    rel = key(rel)
+    if not is_wrapper(rel) or rel in _WRAPPER_DEV_ONLY:
         return False
     return not _within(rel, PAYLOAD_DIR) and rel != RELEASE_MANIFEST
 
 
 def is_core_installable(rel: str) -> bool:
     """Upstream archive entries the core installer may install."""
-    rel = normalize(rel)
+    rel = key(rel)
     if not rel or classify(rel) != "core":
         return False
     parts = rel.split("/")
-    if any(part in CORE_EXCLUDED_COMPONENTS for part in parts):
+    if parts[0] in _CORE_EXCLUDED_TOP:
         return False
     if any(rel.startswith(prefix) for prefix in CORE_EXCLUDED_PREFIXES):
         return False
@@ -313,7 +357,9 @@ def describe() -> dict:
     """JSON-serialisable rules, read by an older wrapper from a staged release."""
     return {
         "schema": 1,
+        "case_insensitive": True,
         "user_top_level": sorted(USER_TOP_LEVEL),
+        "user_top_level_prefixes": list(USER_TOP_LEVEL_PREFIXES),
         "user_nested": sorted(USER_NESTED),
         "wrapper_root_files": sorted(WRAPPER_ROOT_FILES),
         "wrapper_root_trees": sorted(WRAPPER_ROOT_TREES),

@@ -10,19 +10,32 @@ Flow (all-or-nothing):
 1. stage the archive under ``.portable/s`` (safe extraction; refused up front
    with a precise reason if the folder path is too long for this PC);
 2. check that ``requires-python`` and the dependency set apply to this
-   interpreter;
+   interpreter. A core that needs a newer Python than this folder's portable
+   runtime is reported as ``runtime_too_old`` (exit code 4); UPDATE.bat and
+   install.bat then move the runtime to the pinned version in place
+   (``portable_hermes/launch/runtime.cmd``) and run the install again;
 3. install dependencies from the core's ``uv.lock`` (exact, hash-checked, no
-   resolver) or, without a usable lock, from ``pyproject.toml``;
+   resolver). Without a usable lock a first install refuses (and falls back
+   to the last-known-good core); an update of an existing core uses the
+   ranges in ``pyproject.toml`` without hashes and says so. A marker file
+   (``.portable/deps-pending.json``) records the package set from before the
+   change until the new core commits or the old set is fully restored;
 4. verify the staged tree in a fresh process with this interpreter;
-5. swap files with same-filesystem renames under a journal;
-6. verify the live tree again; only then drop the previous core's backup.
+5. swap files and the state file under a journal (old content kept by hard
+   link, so a file is never missing; a standalone recovery script settles a
+   kill at any point);
+6. verify the live tree again; only then commit. Files whose content was not
+   what we recorded installing (user edits, unknown files) are kept in a
+   dated ``.portable/kept/`` folder, never deleted.
 
-Any failure rolls the files and the dependency changes back. A fresh install
-whose newest upstream fails falls back to the wrapper's last-known-good commit.
+Any failure rolls the files and the dependency changes back, and says so when
+packages could not all be put back. A fresh install whose newest upstream
+fails falls back to the wrapper's last-known-good commit.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -52,7 +65,16 @@ WRAPPER_REQUIREMENTS = ("ddgs", "lmstudio", "Pillow")
 
 EXIT_OK = 0
 EXIT_FAILED = 1
-EXIT_KEPT = 3   # the update failed, the existing core was kept unchanged
+EXIT_KEPT = 3      # the update failed, the existing core was kept unchanged
+EXIT_RUNTIME = 4   # the core needs a newer portable Python (see runtime.cmd)
+
+#: Written before packages change, removed once the new core commits or the
+#: previous package set is fully back. Launchers warn while it exists.
+DEPS_MARKER = "deps-pending.json"
+#: Lives in the runtime's own site-packages: which dependency set that
+#: runtime has. A rebuilt or replaced runtime has none, so nothing is skipped.
+DEPS_STAMP = "portable_hermes_deps.json"
+RUNTIME_PIN = "python-runtime.txt"
 
 
 # --------------------------------------------------------------------------
@@ -344,12 +366,74 @@ def _pyproject_requirements(project: dict, extras: list[str], env: dict) -> list
     return out
 
 
-NEWER_PYTHON_HINT = ("To use it, extract the latest Portable Hermes release into a new "
-                     "folder and run START.bat there (your Hermes home is shared).")
+def target_python() -> str | None:
+    """The portable Python version this wrapper release installs (one pin,
+    shipped and updated by the wrapper channel, read by install.bat too)."""
+    try:
+        text = (DATA_DIR / RUNTIME_PIN).read_text(encoding="ascii").strip()
+    except OSError:
+        return None
+    return text if re.fullmatch(r"\d+\.\d+\.\d+", text) else None
 
 
-def dependency_plan(tree: Path, env: dict | None = None) -> dict:
-    """Decide how to install the dependencies of the core in *tree*."""
+def _env_for(env: dict, version: str) -> dict:
+    return dict(env, python_full_version=version,
+                python_version=".".join(version.split(".")[:2]),
+                implementation_version=version)
+
+
+def _python_fit(project: dict, env: dict) -> tuple[bool, str]:
+    """(fits, why not) for the core's requires-python and base dependency gates."""
+    python = env["python_full_version"]
+    spec = project.get("requires-python", "")
+    if spec and not specifier_matches(spec, python):
+        return False, f"requires Python {spec}"
+    base = project.get("dependencies", [])
+    if base and not any(requirement_applies(r, env) for r in base):
+        gates = sorted({r.split(";", 1)[1].strip() for r in base if ";" in r}, key=len)[:1]
+        return False, (f"none of its {len(base)} runtime dependencies apply to Python "
+                       f"{python} (they are gated on: {'; '.join(gates)})")
+    return True, ""
+
+
+def check_python(project: dict, env: dict) -> None:
+    """Raise ``runtime_too_old`` or ``python_incompatible`` when the core
+    cannot run on this interpreter."""
+    python = env["python_full_version"]
+    fits, why = _python_fit(project, env)
+    if fits:
+        return
+    spec = project.get("requires-python", "") or "a different Python"
+    target = target_python()
+    details = {"current_python": python, "target_python": target, "requires_python": spec}
+    newer = False
+    if target:
+        try:
+            newer = _version_tuple(target) > _version_tuple(python)
+        except ValueError:
+            newer = False
+    if target and newer and _python_fit(project, _env_for(env, target))[0]:
+        raise UpdateError(
+            f"this Hermes core {why}; the portable Python in this folder is {python}. "
+            f"UPDATE.bat (or install.bat) moves the portable Python to {target} in place, "
+            "keeping everything in this folder, and then installs the core.",
+            code="runtime_too_old", details=details)
+    raise UpdateError(
+        f"this Hermes core {why}; the portable Python here is {python}"
+        + (f" and this Portable Hermes release can move it to {target}, which is not enough"
+           if target and newer else "")
+        + ". Update the portable wrapper first (UPDATE.bat); a newer release moves to the "
+          "Python this core needs.", code="python_incompatible", details=details)
+
+
+def dependency_plan(tree: Path, env: dict | None = None, *, allow_unpinned: bool = True) -> dict:
+    """Decide how to install the dependencies of the core in *tree*.
+
+    Without a usable ``uv.lock`` the plan falls back to the version ranges in
+    ``pyproject.toml`` (no hashes) only when *allow_unpinned*; otherwise it
+    raises ``lock_unusable`` (a first install then tries the last-known-good
+    core instead).
+    """
     env = env or marker_environment()
     tree = Path(tree)
     pyproject = tree / "pyproject.toml"
@@ -357,18 +441,7 @@ def dependency_plan(tree: Path, env: dict | None = None) -> dict:
         raise UpdateError("the core has no pyproject.toml", code="not_a_core")
     project = read_project(pyproject)
     python = env["python_full_version"]
-    spec = project.get("requires-python", "")
-    if spec and not specifier_matches(spec, python):
-        raise UpdateError(f"this core requires Python {spec}; the portable runtime is "
-                          f"Python {python}. {NEWER_PYTHON_HINT}", code="python_incompatible")
-    base = project.get("dependencies", [])
-    applicable = [r for r in base if requirement_applies(r, env)]
-    if base and not applicable:
-        gates = sorted({r.split(";", 1)[1].strip() for r in base if ";" in r}, key=len)[:1]
-        raise UpdateError(
-            f"none of the core's {len(base)} runtime dependencies apply to Python {python} "
-            f"(they are gated on: {'; '.join(gates)}). This core needs a newer Python "
-            f"runtime than the portable one. {NEWER_PYTHON_HINT}", code="python_incompatible")
+    check_python(project, env)
     optional = project.get("optional-dependencies", {})
     extras = [e for e in WRAPPER_EXTRAS if e in optional]
     missing_extras = [e for e in WRAPPER_EXTRAS if e not in optional]
@@ -393,7 +466,12 @@ def dependency_plan(tree: Path, env: dict | None = None) -> dict:
             lock_note = exc.reason
         except (ValueError, KeyError, TypeError) as exc:
             lock_note = f"uv.lock unreadable: {exc}"
-    plan.update(strategy="pyproject", lock_note=lock_note,
+    if not allow_unpinned:
+        raise UpdateError(f"the core's dependency lock cannot be used here ({lock_note}); a "
+                          "first install only uses exact, hash-checked dependencies",
+                          code="lock_unusable")
+    plan.update(strategy="pyproject", lock_note=lock_note + "; installed from the version "
+                "ranges in pyproject.toml, without hashes",
                 requirements=_pyproject_requirements(project, extras, env))
     return plan
 
@@ -533,6 +611,44 @@ class CoreLifecycle:
         return {"archive": archive, "commit": sha, "ref": ref, "source": url}
 
     # ----- dependencies ----------------------------------------------------
+    @property
+    def deps_marker_path(self) -> Path:
+        return common.state_dir(self.root) / DEPS_MARKER
+
+    def pending_dependencies(self) -> dict | None:
+        """The marker of a package change that has not finished, if any."""
+        return common.read_json(self.deps_marker_path)
+
+    def _stamp_path(self) -> Path | None:
+        from portable_hermes import bridge
+        site = bridge.site_packages(self.root / "python_embedded")
+        return site / DEPS_STAMP if site else None
+
+    def _runtime_has(self, fingerprint: str | None) -> bool:
+        """True when this runtime has the dependency set *fingerprint*.
+
+        The stamp lives inside the runtime, so a rebuilt or upgraded
+        ``python_embedded`` never takes a "nothing to install" shortcut. A
+        tree without ``python_embedded`` (developer setups) relies on the
+        recorded state alone.
+        """
+        if not fingerprint:
+            return False
+        path = self._stamp_path()
+        if path is None:
+            return True
+        stamp = common.read_json(path) or {}
+        return stamp.get("fingerprint") == fingerprint and \
+            stamp.get("python") == common.python_tag()
+
+    def _write_stamp(self, fingerprint: str | None, commit: str | None) -> None:
+        path = self._stamp_path()
+        if path is None or not fingerprint:
+            return
+        common.write_json_atomic(path, {"fingerprint": fingerprint, "commit": commit,
+                                        "python": common.python_tag(),
+                                        "written": common.now_iso()})
+
     def _pip_list(self) -> dict[str, str]:
         rc, out = self._run_pip(["list", "--format=json", "--disable-pip-version-check"])
         if rc != 0:
@@ -544,8 +660,22 @@ class CoreLifecycle:
             raise UpdateError("pip list returned unreadable output", code="pip") from exc
         return {canonical(i["name"]): i["version"] for i in items}
 
-    def _install_dependencies(self, plan: dict, workdir: Path) -> dict:
-        before = self._pip_list()
+    def _install_dependencies(self, plan: dict, workdir: Path, fingerprint: str,
+                              ctx: dict) -> dict:
+        marker = self.pending_dependencies() or {}
+        before = marker.get("before")
+        if not (isinstance(before, dict) and marker.get("python") == common.python_tag()):
+            before = self._pip_list()
+        # An earlier interrupted change keeps its original "before" set, so a
+        # restore puts back what the user really had.
+        common.write_json_atomic(self.deps_marker_path, {
+            "schema": 1, "started": common.now_iso(), "python": common.python_tag(),
+            "target": fingerprint, "strategy": plan["strategy"], "before": before,
+        })
+        report = {"strategy": plan["strategy"], "before": before,
+                  "requirements": len(plan["requirements"]),
+                  "extras": plan["extras"], "missing_extras": plan["missing_extras"]}
+        ctx["deps"] = report
         req_file = workdir / "core-requirements.txt"
         req_file.write_text("\n".join(plan["requirements"]) + "\n", encoding="utf-8")
         args = ["install", "--no-input", "--disable-pip-version-check", "-r", str(req_file)]
@@ -554,14 +684,12 @@ class CoreLifecycle:
         self.say(f"Installing core dependencies ({plan['strategy']}, "
                  f"{len(plan['requirements'])} requirements) ...")
         rc, out = self._run_pip(args)
-        report = {"strategy": plan["strategy"], "before": before,
-                  "requirements": len(plan["requirements"]),
-                  "extras": plan["extras"], "missing_extras": plan["missing_extras"]}
         if rc != 0:
             report["error"] = out.strip()[-2000:]
-            self._restore_dependencies(report)
             raise UpdateError("installing the core's dependencies failed: "
                               + _last_error_line(out), code="dependencies_failed")
+        if not plan["wrapper_requirements"]:
+            return report
         wrapper_args = ["install", "--no-input", "--disable-pip-version-check"]
         if plan["strategy"] == "uv.lock":
             pins = workdir / "core-constraints.txt"
@@ -575,18 +703,24 @@ class CoreLifecycle:
             self.say("  warning: " + report["wrapper_warning"])
         return report
 
-    def _restore_dependencies(self, report: dict) -> dict:
-        """Put the package set back to what ``pip list`` showed before."""
+    def _restore_dependencies(self, report: dict) -> bool:
+        """Put the package set back to what ``pip list`` showed before.
+
+        Returns True only when a fresh ``pip list`` matches the old set
+        exactly; then the marker is removed. Otherwise the marker stays (the
+        launchers warn, the next update reinstalls) and the report says what
+        is still different.
+        """
         before = report.get("before") or {}
+        notes = []
         try:
             after = self._pip_list()
         except UpdateError as exc:
-            report["restore"] = f"not restored: {exc.reason}"
-            return report
+            report.update(restore=f"not restored: {exc.reason}", restored=False)
+            return False
         changed = sorted(f"{name}=={ver}" for name, ver in before.items()
                          if after.get(name) != ver)
         added = sorted(name for name in after if name not in before)
-        notes = []
         if changed:
             rc, out = self._run_pip(["install", "--no-input", "--no-deps",
                                      "--disable-pip-version-check", *changed])
@@ -596,46 +730,99 @@ class CoreLifecycle:
             rc, out = self._run_pip(["uninstall", "-y", *added])
             notes.append(f"removed {len(added)} new packages" if rc == 0 else
                          f"could not remove new packages: {_last_error_line(out)}")
+        try:
+            final = self._pip_list()
+        except UpdateError as exc:
+            notes.append(f"could not check the result: {exc.reason}")
+            final = None
         report["restore"] = "; ".join(notes) or "nothing to restore"
-        return report
+        if final is None:
+            report["restored"] = False
+            return False
+        still = [f"{name} {final.get(name, 'missing')} (was {ver})"
+                 for name, ver in sorted(before.items()) if final.get(name) != ver]
+        still += [f"{name} {final[name]} (new)" for name in sorted(final) if name not in before]
+        report["restored"] = not still
+        if still:
+            report["not_restored"] = still[:20]
+            report["not_restored_count"] = len(still)
+            return False
+        with contextlib.suppress(OSError):
+            self.deps_marker_path.unlink()
+        return True
 
     # ----- one attempt ------------------------------------------------------
-    def _attempt(self, *, ref, zip_path, commit, repo, skip_deps, force) -> dict:
+    def _attempt(self, **kwargs) -> dict:
+        """One install attempt. Any failure, expected or not, is converted to
+        an ``UpdateError`` after undoing the file swap and the package changes."""
         staging = common.staging_dir(self.root)
         _clean_dir(staging)
         staging.mkdir(parents=True)
+        ctx: dict = {"deps": None, "txn": None}
         try:
-            return self._attempt_in(staging, ref=ref, zip_path=zip_path, commit=commit,
-                                    repo=repo, skip_deps=skip_deps, force=force)
+            return self._attempt_in(staging, ctx, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - the result promise: never raise
+            error = exc if isinstance(exc, UpdateError) else UpdateError(
+                f"unexpected {type(exc).__name__} during the core update: {exc}",
+                code="internal")
+            self._undo(ctx, error)
+            if error is exc:
+                raise
+            raise error from exc
         finally:
             _clean_dir(staging)
 
-    def _attempt_in(self, staging: Path, *, ref, zip_path, commit, repo, skip_deps,
-                    force) -> dict:
+    def _undo(self, ctx: dict, error: UpdateError) -> None:
+        txn = ctx.get("txn")
+        if txn is not None and txn.applied and not txn.committed:
+            try:
+                txn.rollback()
+            except (OSError, UpdateError) as undo:
+                error.details["files_restored"] = False
+                error.reason += (f"; undoing the file swap failed ({undo}). Close every Hermes "
+                                 "window and start Hermes again: the launcher finishes the undo")
+        deps = ctx.get("deps")
+        if deps is not None and not (txn is not None and txn.committed):
+            restored = self._restore_dependencies(deps)
+            error.details["dependencies_restored"] = restored
+            error.details["dependencies"] = {k: v for k, v in deps.items() if k != "before"}
+            if not restored:
+                missing = "; ".join(deps.get("not_restored", [])[:5])
+                error.reason += (
+                    "; the previous core's files are unchanged, but its Python packages could "
+                    f"not all be put back ({deps.get('restore')}"
+                    + (f"; still different: {missing}" if missing else "")
+                    + "). Run UPDATE.bat again to finish")
+
+    def _attempt_in(self, staging: Path, ctx: dict, *, ref, zip_path, commit, repo,
+                    skip_deps, force, allow_unpinned) -> dict:
         state = self.read_state()
+        pending = self.pending_dependencies()
+        runtime_ok = self._runtime_has((state or {}).get("dependencies_fingerprint"))
+        shortcuts = bool(state) and not force and not pending and runtime_ok
         fetched = self._fetch(staging, ref=ref, zip_path=zip_path, commit=commit, repo=repo)
         sha = fetched["commit"]
-        if state and sha and state.get("commit") == sha and not force:
+        if shortcuts and sha and state.get("commit") == sha:
             return {"ok": True, "changed": False, "commit": sha, "repository": repo,
                     "message": f"core already at {sha[:12]}"}
         self.say("Unpacking ...")
         names = common.archive_names(fetched["archive"])
         top_name = common.single_top_dir(names)
         rels = [n.split("/", 1)[1] if top_name else n for n in names]
-        # Staged files sit at <root>/.portable/s/c/<rel>; backups at
-        # <root>/.portable/b/<id>/<rel> (the longer of the two).
+        # Staged files sit at <root>/.portable/s/c/<rel>, backups at
+        # .portable/b/<id>/<rel>, kept user edits at .portable/kept/<date>/<rel>.
         common.check_path_lengths(self.root, [r for r in rels if ownership.is_core_installable(r)],
-                                  overhead=len(".portable/b/123456/"), what="this core")
+                                  overhead=common.STATE_PATH_OVERHEAD, what="this core")
         top = staging / "c"
         # Only files the core may install are written (generated website docs,
-        # tests and CI files never touch the disk).
+        # upstream's test suites and CI files never touch the disk).
         extracted = common.safe_extract(fetched["archive"], top, strip_top=True,
                                         keep=ownership.is_core_installable)
         candidate = sorted({ownership.normalize(n) for n in extracted})
         if "run_agent.py" not in candidate or "pyproject.toml" not in candidate:
             raise UpdateError("the archive does not look like a Hermes core "
                               "(run_agent.py or pyproject.toml missing)", code="not_a_core")
-        plan = dependency_plan(top)
+        plan = dependency_plan(top, allow_unpinned=allow_unpinned)
 
         # Overlay the live wrapper so the staged tree is the complete product.
         for rel in ownership.iter_wrapper_files(self.root):
@@ -647,64 +834,62 @@ class CoreLifecycle:
         fingerprint = plan_fingerprint(plan)
         if skip_deps:
             deps_report["reason"] = "skipped on request"
-        elif state and state.get("dependencies_fingerprint") == fingerprint and not force:
+        elif shortcuts and state.get("dependencies_fingerprint") == fingerprint:
             deps_report["reason"] = "dependency set unchanged"
         else:
-            deps_report = self._install_dependencies(plan, staging)
+            if pending:
+                self.say("Finishing an earlier package change that was interrupted ...")
+            deps_report = self._install_dependencies(plan, staging, fingerprint, ctx)
         if plan.get("lock_note"):
             deps_report["lock_note"] = plan["lock_note"]
-
-        def fail(reason: str, code: str):
-            if not deps_report.get("skipped"):
-                self._restore_dependencies(deps_report)
-            raise UpdateError(reason, code=code)
 
         self.say("Verifying the new core in a fresh process ...")
         result = self._run_verify(top)
         if not result.get("ok"):
-            fail(f"verification of {(sha or 'the new core')[:12]} failed: {result.get('reason')}",
-                 "verify_failed")
+            raise UpdateError(f"verification of {(sha or 'the new core')[:12]} failed: "
+                              f"{result.get('reason')}", code="verify_failed")
 
-        # Plan the swap.
+        # Plan the swap. A live file whose content is not what we recorded
+        # installing (a user edit, or a file we never installed) is kept.
         hashes = {rel: common.sha256_file(top / rel) for rel in candidate}
         previous = (state or {}).get("files") or {}
         adopted = False
         if not state and (self.root / "run_agent.py").is_file():
             previous = self.legacy_files()
             adopted = True
+        recorded_by_key = {ownership.key(r): h for r, h in previous.items()}
         txn = common.Transaction(self.root, "core")
+        ctx["txn"] = txn
         for rel in candidate:
             live = self.root / rel
-            if live.is_file() and live.stat().st_size == (top / rel).stat().st_size \
-                    and common.sha256_file(live) == hashes[rel]:
-                continue
             if live.is_dir():
-                fail(f"cannot install {rel}: a directory is in the way", "swap_failed")
-            txn.put(rel, top / rel)
+                raise UpdateError(f"cannot install {rel}: a directory is in the way",
+                                  code="swap_failed")
+            preserve = False
+            if live.is_file():
+                live_hash = common.sha256_file(live)
+                if live_hash == hashes[rel]:
+                    continue
+                recorded = recorded_by_key.get(ownership.key(rel))
+                preserve = recorded is None or live_hash != recorded
+            txn.put(rel, top / rel, preserve=preserve)
         removed, kept_modified = [], []
+        candidate_keys = {ownership.key(r) for r in candidate}
         for rel, recorded in sorted(previous.items()):
-            if rel in hashes or ownership.classify(rel) != "core":
+            if ownership.key(rel) in candidate_keys or ownership.classify(rel) != "core":
                 continue
             live = self.root / rel
             if not live.is_file():
                 continue
-            if recorded is None or common.sha256_file(live) == recorded:
+            if recorded is None:            # adopted legacy file: no hash, keep a copy
+                txn.remove(rel, preserve=True)
+                removed.append(rel)
+            elif common.sha256_file(live) == recorded:
                 txn.remove(rel)
                 removed.append(rel)
             else:
                 kept_modified.append(rel)
-        self.say(f"Replacing {len(txn.ops) - len(removed)} files, removing {len(removed)} ...")
-        try:
-            txn.apply()
-        except UpdateError as exc:
-            fail(exc.reason, exc.code)
-        live_result = self._run_verify(self.root)
-        if not live_result.get("ok"):
-            common.rollback(self.root)
-            fail("the installed core failed verification and was rolled back: "
-                 f"{live_result.get('reason')}", "verify_failed")
-        txn.commit()
-        common.prune_empty_dirs(self.root, removed)
+        installed_deps = not deps_report.get("skipped")
         new_state = {
             "schema": 1,
             "repository": repo,
@@ -720,19 +905,44 @@ class CoreLifecycle:
         }
         if adopted:
             new_state["adopted_from"] = "legacy portable install"
-        common.write_json_atomic(self.state_path, new_state)
+        # The state file is swapped with the files it describes.
+        staged_state = staging / "st" / STATE_FILE
+        common.write_json_atomic(staged_state, new_state)
+        txn.put(f"{common.STATE_DIR}/{STATE_FILE}", staged_state)
+        written = len(txn.file_ops) - len(removed)
+        self.say(f"Replacing {written} files, removing {len(removed)} ...")
+        txn.apply()
+        live_result = self._run_verify(self.root)
+        if not live_result.get("ok"):
+            raise UpdateError("the installed core failed verification and was rolled back: "
+                              f"{live_result.get('reason')}", code="verify_failed")
+        kept = txn.commit()
+        # Committed: nothing below may fail the update.
+        warnings = []
+        try:
+            common.prune_empty_dirs(self.root, removed)
+            if installed_deps or deps_report.get("reason") == "dependency set unchanged":
+                self._write_stamp(new_state["dependencies_fingerprint"], sha)
+            if installed_deps:
+                self.deps_marker_path.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(f"post-install bookkeeping: {exc}")
         from portable_hermes import bridge
         hook = bridge.ensure_pth(bridge.site_packages(self.root / "python_embedded"))
         deps_report.pop("before", None)
-        return {
+        result = {
             "ok": True, "changed": True, "commit": sha, "repository": repo,
             "ref": fetched["ref"], "source": fetched["source"],
-            "files_written": len(txn.ops) - len(removed), "files_removed": len(removed),
+            "files_written": written, "files_removed": len(removed),
             "kept_modified": kept_modified[:50], "kept_modified_count": len(kept_modified),
+            "kept_edits": kept["keep"], "kept_edits_count": kept["kept"],
             "adopted": adopted, "dependencies": deps_report, "hook": hook,
             "verification": [c["name"] for c in live_result.get("checks", []) if c.get("ok")],
+            "warnings": warnings + [c["detail"] for c in live_result.get("checks", [])
+                                    if c.get("warning")],
             "message": f"core installed at {(sha or 'unknown commit')[:12]}",
         }
+        return result
 
     # ----- public -----------------------------------------------------------
     def install(self, *, ref: str | None = None, zip_path: str | None = None,
@@ -743,17 +953,21 @@ class CoreLifecycle:
             return {"ok": False, "code": "git_checkout", "exit": EXIT_KEPT,
                     "reason": "this install is a git checkout; update it with git "
                               "(the portable core updater only manages ZIP installs)"}
+        existing = "unknown"
         try:
             with common.InstallLock(self.root):
                 recovered = common.recover(self.root)
                 existing = self.existing_core()
                 try:
                     result = self._attempt(ref=ref, zip_path=zip_path, commit=commit,
-                                           repo=self.repo, skip_deps=skip_deps, force=force)
+                                           repo=self.repo, skip_deps=skip_deps, force=force,
+                                           allow_unpinned=existing != "none")
                 except UpdateError as primary:
-                    # Fall back only when there is no working core to keep and
-                    # the caller did not ask for a specific source.
-                    if existing != "none" or ref or zip_path or not allow_fallback:
+                    # Fall back only when there is no working core to keep, the
+                    # caller did not ask for a specific source and the problem
+                    # is not this folder's Python (a runtime upgrade fixes that).
+                    if (existing != "none" or ref or zip_path or not allow_fallback
+                            or primary.code == "runtime_too_old"):
                         return self._failure(primary, existing)
                     lkg = self.last_known_good()
                     if lkg is None:
@@ -764,7 +978,8 @@ class CoreLifecycle:
                         result = self._attempt(ref=lkg["commit"], zip_path=None,
                                                commit=lkg["commit"],
                                                repo=lkg.get("repository", self.repo),
-                                               skip_deps=skip_deps, force=True)
+                                               skip_deps=skip_deps, force=True,
+                                               allow_unpinned=False)
                     except UpdateError as second:
                         failure = self._failure(second, existing)
                         failure["reason"] = (f"newest core failed: {primary.reason}; "
@@ -777,13 +992,25 @@ class CoreLifecycle:
                 result["exit"] = EXIT_OK
                 return result
         except UpdateError as exc:
-            return self._failure(exc, "unknown")
+            return self._failure(exc, existing)
+        except Exception as exc:  # noqa: BLE001 - the result promise: never raise
+            return self._failure(UpdateError(f"unexpected {type(exc).__name__}: {exc}",
+                                             code="internal"), existing)
 
     def _failure(self, exc: UpdateError, existing: str) -> dict:
-        kept = existing in ("recorded", "legacy")
-        return {"ok": False, "code": exc.code, "reason": exc.reason,
-                "exit": EXIT_KEPT if kept else EXIT_FAILED,
-                "kept_existing_core": kept}
+        details = dict(exc.details)
+        restored = (details.get("dependencies_restored", True) is not False
+                    and details.get("files_restored", True) is not False)
+        kept = existing in ("recorded", "legacy") and restored
+        if exc.code == "runtime_too_old":
+            code = EXIT_RUNTIME
+        else:
+            code = EXIT_KEPT if kept else EXIT_FAILED
+        result = {"ok": False, "code": exc.code, "reason": exc.reason, "exit": code,
+                  "kept_existing_core": kept}
+        for key, value in details.items():
+            result.setdefault(key, value)
+        return result
 
     def check(self, *, ref: str = "main", timeout: float = 20) -> dict:
         """Report what is installed and how far behind upstream it is."""
@@ -799,10 +1026,16 @@ class CoreLifecycle:
             info.update(install_type="zip", repository=state.get("repository"),
                         ref=state.get("ref"), commit=state.get("commit"),
                         installed_at=state.get("installed_at"))
-            modified = sum(1 for rel, digest in list(state.get("files", {}).items())[:20000]
-                           if not (self.root / rel).is_file())
-            if modified:
-                info["missing_files"] = modified
+            # Existence only (hashing every file would make this check slow):
+            # recorded core files that are no longer on disk.
+            missing = sum(1 for rel in list(state.get("files", {}))[:20000]
+                          if not (self.root / rel).is_file())
+            if missing:
+                info["missing_files"] = missing
+            if self.pending_dependencies():
+                info["dependencies_pending"] = True
+                info["message"] = ("an earlier update was interrupted while changing Python "
+                                   "packages; the next core update finishes it")
         elif (self.root / "run_agent.py").is_file():
             info.update(install_type="legacy", commit=None,
                         message="core installed by an older portable release; "

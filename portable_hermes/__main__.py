@@ -7,11 +7,13 @@
     python -m portable_hermes update [--core | --no-core] [--yes]   (UPDATE.bat)
     python -m portable_hermes repair [--quiet]                      (launchers)
     python -m portable_hermes verify [--no-gui]
+    python -m portable_hermes runtime plan|done|undone|partial      (runtime.cmd)
 
 ``--json`` prints one machine-readable result line. Set
 ``HERMES_PORTABLE_NONINTERACTIVE=1`` (or pass ``--yes``) to never prompt.
 Exit codes: 0 success, 1 failure, 2 usage, 3 failed but the existing core
-was kept unchanged.
+was kept unchanged, 4 the newest core needs a newer portable Python (UPDATE.bat
+and install.bat then upgrade it in place, see ``launch/runtime.cmd``).
 """
 
 from __future__ import annotations
@@ -37,11 +39,22 @@ def _emit(result: dict, as_json: bool) -> None:
         return
     if result.get("ok"):
         print(result.get("message") or "done")
+    elif result.get("code") == "runtime_too_old":
+        print(f"  The newest Hermes core needs Python {result.get('requires_python')}; this "
+              f"folder's portable Python is {result.get('current_python')}.")
     else:
         print("FAILED: " + str(result.get("reason")))
     for key in ("fallback", "recovered", "kept_modified_count", "skipped_count"):
         if result.get(key):
             print(f"  {key}: {result[key]}")
+    if result.get("kept_edits_count"):
+        print(f"  {result['kept_edits_count']} file(s) that differed from what was installed "
+              f"(your edits or files we did not install) were kept in {result['kept_edits']}")
+    for warning in result.get("warnings") or []:
+        print(f"  WARNING: {warning}")
+    if result.get("dependencies_restored") is False:
+        print("  WARNING: Python packages could not all be put back; run UPDATE.bat again "
+              "to finish.")
     deps = result.get("dependencies")
     if isinstance(deps, dict):
         line = deps.get("strategy", "")
@@ -51,6 +64,8 @@ def _emit(result: dict, as_json: bool) -> None:
             line += f"; extras not in this core: {', '.join(deps['missing_extras'])}"
         if deps.get("wrapper_warning"):
             line += f"; {deps['wrapper_warning']}"
+        if deps.get("lock_note"):
+            line += f"; {deps['lock_note']}"
         print(f"  dependencies: {line}")
 
 
@@ -58,7 +73,7 @@ def _print_check(title: str, info: dict) -> None:
     print(title)
     for key in ("install_type", "installed_version", "latest_version", "repository",
                 "commit", "latest_commit", "behind_by", "update_available", "installed_at",
-                "network_error", "compare_error", "message"):
+                "missing_files", "network_error", "compare_error", "message"):
         if key in info and info[key] is not None:
             print(f"  {key}: {info[key]}")
 
@@ -126,6 +141,10 @@ def cmd_update(args) -> int:
     print("[2/2] Hermes core - the agent itself (NousResearch/hermes-agent)")
     want_core = args.core
     life = CoreLifecycle(root)
+    if want_core is not False and life.pending_dependencies():
+        print("  An earlier update was interrupted while changing Python packages; "
+              "finishing it now.")
+        want_core = True
     if want_core is None:
         info = life.check()
         behind = info.get("behind_by")
@@ -159,6 +178,9 @@ def cmd_update(args) -> int:
     if result.get("ok") and result.get("changed"):
         print("Restart Hermes (close and reopen the GUI or CLI) to load the new core.")
     core_status = int(result.get("exit", 0 if result.get("ok") else 1))
+    if core_status == 4:
+        # UPDATE.bat (launch/update.cmd) continues with the in-place runtime upgrade.
+        return 4
     return status or core_status
 
 
@@ -173,7 +195,17 @@ def cmd_repair(args) -> int:
     if not args.quiet:
         for note in report.get("notes", []):
             print(f"  {note}")
+    if report.get("bridge_problem"):
+        # Always shown: losing the portable tools silently is the worst case.
+        print("  Portable tools problem in the last Hermes session: "
+              + report["bridge_problem"])
+        print("  If the portable tools are missing, run UPDATE.bat (core update) or install.bat.")
     return 0
+
+
+def cmd_runtime(args) -> int:
+    from portable_hermes import runtime
+    return runtime.main(args)
 
 
 def cmd_verify(args) -> int:
@@ -181,7 +213,8 @@ def cmd_verify(args) -> int:
     root = Path(args.root)
     result = CoreLifecycle(root, quiet=True)._default_verify(root, gui=not args.no_gui)
     for check in result.get("checks", []):
-        print(f"[{'ok  ' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
+        mark = ("warn" if check.get("warning") else "ok  ") if check["ok"] else "FAIL"
+        print(f"[{mark}] {check['name']}: {check['detail']}")
     if not result.get("checks"):
         print(result.get("reason"))
     return 0 if result.get("ok") else 1
@@ -231,6 +264,12 @@ def build_parser() -> argparse.ArgumentParser:
     ver = sub.add_parser("verify", help="verify this install in a fresh process")
     ver.add_argument("--no-gui", action="store_true")
     ver.set_defaults(func=cmd_verify)
+
+    run = sub.add_parser("runtime", help=argparse.SUPPRESS)   # used by launch/runtime.cmd
+    run.add_argument("action", choices=["plan", "done", "undone", "partial"])
+    run.add_argument("--old", default="")
+    run.add_argument("--failed", default="")
+    run.set_defaults(func=cmd_runtime)
     return parser
 
 

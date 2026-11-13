@@ -1,9 +1,12 @@
 """Shared machinery for the portable updaters (stdlib only).
 
 * HTTPS downloads and GitHub API reads (no credentials are ever sent)
-* safe archive extraction (zip-slip, absolute paths and symlinks rejected)
-* a journaled file transaction: every file move is a same-filesystem rename
-  under ``<root>/.portable``, so an interrupted swap can always be rolled back
+* safe archive extraction (zip-slip, absolute paths, symlinks, Windows device
+  names, names Windows cannot store and case-only duplicates rejected)
+* a journaled file transaction: old content is kept by hard link (or copy)
+  under ``<root>/.portable`` before a staged file replaces it, so a file is
+  always either old or new, and an interrupted swap can always be undone -
+  even by the standalone ``.portable/recover.py`` (see :mod:`recovery`)
 * an inter-process lock and atomic JSON state files
 
 Nothing here imports Hermes core code.
@@ -25,20 +28,27 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from portable_hermes import ownership
+from portable_hermes import ownership, recovery
 
 STATE_DIR = ".portable"
 USER_AGENT = "portable-hermes-updater"
 _SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
 
+#: The recovery code of the running (known-good) wrapper, read once at import
+#: so a transaction can drop a copy into ``.portable/recover.py`` even after
+#: its own swap has started replacing ``portable_hermes/*.py``.
+_RECOVERY_SOURCE = Path(recovery.__file__).read_bytes()
+RECOVERY_SCRIPT = "recover.py"
+
 
 class UpdateError(RuntimeError):
     """A failure with a precise, user-readable reason."""
 
-    def __init__(self, reason: str, *, code: str = "error"):
+    def __init__(self, reason: str, *, code: str = "error", details: dict | None = None):
         super().__init__(reason)
         self.reason = reason
         self.code = code
+        self.details = dict(details or {})
 
 
 # --------------------------------------------------------------------------
@@ -71,6 +81,27 @@ def staging_dir(root: Path) -> Path:
 
 def backup_root(root: Path) -> Path:
     return state_dir(root) / "b"
+
+
+#: User-visible copies of files an update or repair replaced although they
+#: were not what was recorded (user edits). Never deleted automatically.
+KEPT_DIR = "kept"
+
+
+def new_kept_dir(root: Path, kind: str) -> str:
+    """A fresh ``.portable/kept/<date>-<kind>`` folder name (relative, POSIX)."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base = f"{STATE_DIR}/{KEPT_DIR}/{stamp}-{kind}"
+    rel, n = base, 1
+    while (Path(root) / rel).exists():
+        n += 1
+        rel = f"{base}-{n}"
+    return rel
+
+
+#: Longest ``.portable/...`` prefix a file gets while an update runs: kept
+#: copies of edited files (``.portable/kept/YYYYMMDD-HHMMSS-wrapper-9/``).
+STATE_PATH_OVERHEAD = len(f"{STATE_DIR}/{KEPT_DIR}/20261113-101500-wrapper-9/")
 
 
 MAX_PATH = 259
@@ -311,6 +342,12 @@ def archive_commit(zip_path: Path) -> str | None:
     return match.group(0) if match else None
 
 
+_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)})
+_BAD_CHARS = set('<>"|?*') | {chr(c) for c in range(1, 32)}
+
+
 def _unsafe_member_reason(info: zipfile.ZipInfo) -> str | None:
     name = info.filename
     if "\x00" in name:
@@ -323,9 +360,37 @@ def _unsafe_member_reason(info: zipfile.ZipInfo) -> str | None:
         return "parent directory reference"
     if any(":" in p for p in parts):
         return "drive or stream separator in name"
+    for part in parts:
+        if part.endswith((".", " ")):
+            return "a name ends with a dot or space (Windows drops it)"
+        if any(ch in _BAD_CHARS for ch in part):
+            return "a character Windows does not allow in file names"
+        if part.split(".", 1)[0].strip().lower() in _RESERVED_NAMES:
+            return "a Windows reserved device name (CON, NUL, AUX, PRN, COM1-9, LPT1-9)"
     mode = (info.external_attr >> 16) & 0o170000
     if mode == 0o120000:
         return "symbolic link"
+    return None
+
+
+def _case_conflict(names: list[str]) -> str | None:
+    """A member whose path differs from another only by letter case, if any."""
+    files, seen = set(), {}
+    for name in names:
+        key = name.lower()
+        if key in seen:
+            return name
+        seen[key] = name
+    for name in names:
+        if not name.endswith("/"):
+            files.add(name.lower())
+    for key in seen:
+        parts = key.rstrip("/").split("/")
+        if key.endswith("/") and key.rstrip("/") in files:
+            return seen[key]
+        for i in range(1, len(parts)):
+            if "/".join(parts[:i]) in files:
+                return seen[key]
     return None
 
 
@@ -351,6 +416,13 @@ def safe_extract(zip_path: Path, dest: Path, keep=None, strip_top: bool = False)
             if reason:
                 raise UpdateError(f"unsafe archive member {info.filename!r}: {reason}",
                                   code="unsafe_archive")
+        clash = _case_conflict(["/".join(p for p in i.filename.replace("\\", "/").split("/")
+                                         if p not in ("", ".")) + ("/" if i.is_dir() else "")
+                                for i in infos])
+        if clash:
+            raise UpdateError(f"unsafe archive member {clash!r}: another member has the same "
+                              "path apart from letter case (Windows would overwrite one "
+                              "with the other)", code="unsafe_archive")
         dest.mkdir(parents=True, exist_ok=True)
         root = dest.resolve()
         top = None
@@ -402,14 +474,36 @@ def single_top_dir(names: list[str]) -> str | None:
 # journaled file transaction
 # --------------------------------------------------------------------------
 
-class Transaction:
-    """Apply a planned set of file replacements atomically enough to undo.
+def _keep_old(live: Path, keep: Path) -> None:
+    """Make *keep* hold *live*'s current content without touching *live*.
 
-    The plan is written to ``.portable/journal.json`` before the first rename.
-    Every live file that is replaced or removed is first renamed into
-    ``.portable/b/<id>/``; staged files are renamed into place. If any
-    step fails, or the process dies, :func:`recover` undoes exactly what the
-    journal describes. Nothing outside the plan is touched.
+    A hard link costs nothing; where links are not supported (exFAT, FAT32,
+    some network shares) a copy is written under a temporary name first, so
+    an existing *keep* is always complete.
+    """
+    keep.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(live, keep)
+        return
+    except OSError:
+        pass
+    part = keep.with_name(keep.name + ".part")
+    shutil.copy2(live, part)
+    os.replace(part, keep)
+
+
+class Transaction:
+    """Apply a planned set of file changes so that it can always be undone.
+
+    Before the first change, the running wrapper's recovery code is copied to
+    ``.portable/recover.py`` and the plan is written to
+    ``.portable/journal.json`` (paths relative to the root, see
+    :mod:`portable_hermes.recovery`). A replaced file's old content is kept
+    under ``.portable/b/<id>/`` by hard link (or copy) and the staged file is
+    then renamed over it, so the live file is never missing. If any step fails,
+    or the process dies, the journal is undone exactly. Files marked
+    *preserve* (user edits) are moved into a dated ``.portable/kept/`` folder
+    at commit instead of being dropped with the backup.
     """
 
     def __init__(self, root: Path, kind: str):
@@ -418,22 +512,73 @@ class Transaction:
         self.id = os.urandom(3).hex()           # short: see staging_dir()
         while (backup_root(root) / self.id).exists():
             self.id = os.urandom(3).hex()
-        self.backup = backup_root(root) / self.id
-        self.journal_path = state_dir(root) / "journal.json"
+        self.backup_rel = f"{STATE_DIR}/b/{self.id}"
+        self.backup = self.root / self.backup_rel
+        self.journal_path = recovery.journal_path(self.root)
         self.ops: list[dict] = []
         self.created_dirs: list[str] = []
+        self.keep_rel: str | None = None
+        self.applied = False
+        self.committed = False
+        self._claimed: set[str] = set()
 
     # plan ---------------------------------------------------------------
-    def put(self, rel: str, staged: Path) -> None:
+    def _claim(self, rel: str) -> str:
         rel = ownership.normalize(rel)
-        live = self.root / rel
-        self.ops.append({"rel": rel, "src": str(staged),
-                         "action": "replace" if live.exists() else "add"})
+        if rel.lower() in self._claimed:
+            raise UpdateError(f"{rel} is planned twice (paths differing only by case?)",
+                              code="swap_failed")
+        self._claimed.add(rel.lower())
+        return rel
 
-    def remove(self, rel: str) -> None:
+    def _staged_rel(self, staged: Path) -> str:
+        staged = Path(staged).resolve()
+        base = staging_dir(self.root).resolve()
+        if base not in staged.parents:
+            raise UpdateError(f"staged file {staged} is not under {base}", code="internal")
+        return staged.relative_to(self.root.resolve()).as_posix()
+
+    def _mark_preserved(self, op: dict) -> None:
+        if self.keep_rel is None:
+            self.keep_rel = new_kept_dir(self.root, self.kind)
+        op["preserve"] = True
+
+    def put(self, rel: str, staged: Path, *, preserve: bool = False) -> None:
+        rel = self._claim(rel)
+        live = self.root / rel
+        op = {"rel": rel, "src": self._staged_rel(staged),
+              "action": "replace" if live.exists() else "add"}
+        if preserve and op["action"] == "replace":
+            self._mark_preserved(op)
+        self.ops.append(op)
+
+    def remove(self, rel: str, *, preserve: bool = False) -> None:
         rel = ownership.normalize(rel)
         if (self.root / rel).is_file():
-            self.ops.append({"rel": rel, "action": "remove"})
+            rel = self._claim(rel)
+            op = {"rel": rel, "action": "remove"}
+            if preserve:
+                self._mark_preserved(op)
+            self.ops.append(op)
+
+    @property
+    def preserved(self) -> int:
+        return sum(1 for op in self.ops if op.get("preserve"))
+
+    @property
+    def file_ops(self) -> list[dict]:
+        """Operations on install files (not the channel state files)."""
+        return [op for op in self.ops if op["rel"] not in recovery.STATE_RELS]
+
+    def journal(self, state: str) -> dict:
+        data = {
+            "schema": recovery.SCHEMA, "id": self.id, "kind": self.kind, "state": state,
+            "backup": self.backup_rel, "ops": self.ops,
+            "created_dirs": self.created_dirs, "started": now_iso(),
+        }
+        if self.keep_rel:
+            data["keep"] = self.keep_rel
+        return data
 
     # apply --------------------------------------------------------------
     def _plan_dirs(self) -> None:
@@ -449,99 +594,92 @@ class Transaction:
 
     def apply(self) -> None:
         if self.journal_path.exists():
-            raise UpdateError("an unfinished update journal exists; run repair first",
-                              code="journal_exists")
+            raise UpdateError("an unfinished update journal exists; start Hermes once (or "
+                              "run repair) to settle it first", code="journal_exists")
         self._plan_dirs()
-        write_json_atomic(self.journal_path, {
-            "id": self.id, "kind": self.kind, "state": "applying",
-            "backup": str(self.backup), "ops": self.ops,
-            "created_dirs": self.created_dirs, "started": now_iso(),
-        })
+        try:
+            journal = recovery.validate(self.root, self.journal("applying"))
+        except recovery.JournalError as exc:
+            raise UpdateError(f"refusing an unsafe file plan: {exc}", code="internal") from exc
+        # The standalone recovery script first, so a kill at any later point
+        # can be settled without importing the (possibly half-replaced) wrapper.
+        script = state_dir(self.root) / RECOVERY_SCRIPT
+        tmp = script.with_name(script.name + ".tmp")
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(_RECOVERY_SOURCE)
+        os.replace(tmp, script)
+        recovery.write_journal(self.root, journal)
+        self.applied = True
+        op = None
         try:
             for op in self.ops:
                 live = self.root / op["rel"]
-                if op["action"] in ("replace", "remove"):
+                if op["action"] == "replace":
+                    _keep_old(live, self.backup / op["rel"])
+                    os.replace(self.root / op["src"], live)
+                elif op["action"] == "remove":
                     keep = self.backup / op["rel"]
                     keep.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(live, keep)
-                if op["action"] in ("replace", "add"):
+                else:
                     live.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(op["src"], live)
+                    os.replace(self.root / op["src"], live)
         except OSError as exc:
-            failed = op["rel"]
-            rollback(self.root)
+            failed = op["rel"] if op else "?"
+            try:
+                recovery.rollback(self.root, journal)
+            except OSError as undo:
+                raise UpdateError(
+                    f"could not replace {failed}: {exc}; undoing the partial change also "
+                    f"failed ({undo}). Close every Hermes window and start Hermes again: "
+                    "the launcher finishes the undo.", code="rollback_failed") from exc
             raise UpdateError(f"could not replace {failed}: {exc}; all changes were rolled back",
                               code="swap_failed") from exc
 
-    def commit(self) -> None:
-        journal = read_json(self.journal_path) or {}
-        journal["state"] = "committed"
-        write_json_atomic(self.journal_path, journal)
-        finish(self.root)
+    def rollback(self) -> list[str]:
+        """Undo this transaction after a successful :meth:`apply`."""
+        journal = recovery.load(self.root)
+        if not journal or journal["id"] != self.id:
+            return []
+        return recovery.rollback(self.root, journal)
+
+    def commit(self) -> dict:
+        journal = self.journal("committed")
+        recovery.write_journal(self.root, journal)
+        self.committed = True
+        return recovery.finish(self.root, journal)
+
+
+def rollback(root: Path) -> list[str]:
+    """Undo an ``applying`` journal. Returns the paths that were put back."""
+    try:
+        journal = recovery.load(root)
+    except recovery.JournalError as exc:
+        raise UpdateError(f"the update journal is damaged ({exc}); nothing was changed",
+                          code="journal_damaged") from exc
+    if not journal:
+        return []
+    return recovery.rollback(root, journal)
+
+
+def recover(root: Path) -> str | None:
+    """Settle a journal left by an interrupted run (caller holds the lock).
+
+    Returns what was done. A damaged journal raises ``UpdateError`` and
+    nothing is changed.
+    """
+    try:
+        return recovery.recover(root)
+    except recovery.JournalError as exc:
+        raise UpdateError(
+            f"the update journal {state_dir(root) / 'journal.json'} is damaged ({exc}); "
+            "nothing was changed. Rename it to journal.damaged.json and run install.bat.",
+            code="journal_damaged") from exc
 
 
 def _rmdir_if_empty(path: Path) -> None:
     with contextlib.suppress(OSError):
         path.rmdir()
-
-
-def rollback(root: Path) -> list[str]:
-    """Undo an ``applying`` journal. Returns the paths that were restored."""
-    root = Path(root)
-    journal_path = state_dir(root) / "journal.json"
-    journal = read_json(journal_path)
-    if not journal:
-        return []
-    backup = Path(journal.get("backup", ""))
-    restored = []
-    for op in reversed(journal.get("ops", [])):
-        rel = op["rel"]
-        live = root / rel
-        keep = backup / rel
-        action = op["action"]
-        if action == "add":
-            src = Path(op["src"])
-            if live.exists() and not src.exists():
-                src.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(live, src)
-                restored.append(rel)
-        elif keep.exists():
-            if action == "replace" and live.exists():
-                src = Path(op["src"])
-                if not src.exists():
-                    src.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(live, src)
-                else:
-                    live.unlink()
-            live.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(keep, live)
-            restored.append(rel)
-    for rel in sorted(journal.get("created_dirs", []), key=lambda p: -p.count("/")):
-        _rmdir_if_empty(root / rel)
-    shutil.rmtree(backup, ignore_errors=True)
-    journal_path.unlink(missing_ok=True)
-    return restored
-
-
-def finish(root: Path) -> None:
-    """Drop the backups of a committed journal."""
-    journal_path = state_dir(root) / "journal.json"
-    journal = read_json(journal_path)
-    if journal:
-        shutil.rmtree(journal.get("backup", ""), ignore_errors=True)
-    journal_path.unlink(missing_ok=True)
-
-
-def recover(root: Path) -> str | None:
-    """Settle a journal left by an interrupted run. Returns what was done."""
-    journal = read_json(state_dir(root) / "journal.json")
-    if not journal:
-        return None
-    if journal.get("state") == "committed":
-        finish(root)
-        return "finished a committed update"
-    restored = rollback(root)
-    return f"rolled back an interrupted {journal.get('kind', '')} update ({len(restored)} files)"
 
 
 def prune_empty_dirs(root: Path, rels) -> None:

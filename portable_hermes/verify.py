@@ -9,11 +9,23 @@ The caller (the core/wrapper updaters) runs this with a scrubbed environment
 so the tree under test, not the live install, provides every module.
 
 Each check reports a precise reason. Exit status 0 means every check passed.
+A check can also pass with a visible warning (for example when a private
+upstream API the CLI probe relies on is gone).
+
+The wrapper's needs are derived, not hand-listed: every import of a core
+module in the wrapper's own Python files (``gui/`` and the portable tool
+modules), including imports inside functions, is checked against the tree
+under test, and every keyword ``gui/agent_bridge.py`` passes to ``AIAgent`` is
+checked against its signature. Imports inside a ``try`` that handles
+``ImportError``/``Exception`` are optional by design and skipped.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
+import importlib
+import inspect
 import json
 import os
 import sys
@@ -51,20 +63,28 @@ class Checks:
     def __init__(self):
         self.results: list[dict] = []
 
-    def add(self, name: str, ok: bool, detail: str = "") -> bool:
-        self.results.append({"name": name, "ok": bool(ok), "detail": detail})
+    def add(self, name: str, ok: bool, detail: str = "", warning: bool = False) -> bool:
+        entry = {"name": name, "ok": bool(ok), "detail": detail}
+        if warning:
+            entry["warning"] = True
+        self.results.append(entry)
         return ok
 
     def run(self, name: str, fn) -> bool:
         try:
-            ok, detail = fn()
+            outcome = fn()
         except BaseException as exc:  # noqa: BLE001 - report, never crash
             if isinstance(exc, KeyboardInterrupt):
                 raise
             tb = traceback.extract_tb(exc.__traceback__)
             where = f" at {Path(tb[-1].filename).name}:{tb[-1].lineno}" if tb else ""
             return self.add(name, False, f"{type(exc).__name__}: {exc}{where}")
-        return self.add(name, ok, detail)
+        ok, detail = outcome[0], outcome[1]
+        return self.add(name, ok, detail, warning=len(outcome) > 2 and bool(outcome[2]))
+
+    @property
+    def warnings(self) -> list[str]:
+        return [f"{r['name']}: {r['detail']}" for r in self.results if r.get("warning")]
 
     @property
     def ok(self) -> bool:
@@ -75,6 +95,204 @@ class Checks:
             if not r["ok"]:
                 return f"{r['name']}: {r['detail']}"
         return ""
+
+
+# --------------------------------------------------------------------------
+# the wrapper's contract with the core, derived from its own source
+# --------------------------------------------------------------------------
+
+_GUARDS = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
+
+
+def _handles_import_errors(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return True
+    nodes = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    for node in nodes:
+        name = node.id if isinstance(node, ast.Name) else \
+            node.attr if isinstance(node, ast.Attribute) else None
+        if name in _GUARDS:
+            return True
+    return False
+
+
+def required_imports(tree: ast.AST) -> list[tuple[int, str, list[str] | None]]:
+    """Absolute imports that are not optional: ``(line, module, names or None)``.
+
+    Function-level imports count. Imports in the body of a ``try`` with an
+    ``ImportError``/``Exception``/bare handler are optional and skipped.
+    """
+    found: list[tuple[int, str, list[str] | None]] = []
+    try_types = tuple(t for t in (getattr(ast, "Try", None), getattr(ast, "TryStar", None)) if t)
+
+    def visit(node, guarded: bool) -> None:
+        if isinstance(node, try_types):
+            body_guarded = guarded or any(_handles_import_errors(h) for h in node.handlers)
+            for child in node.body:
+                visit(child, body_guarded)
+            for handler in node.handlers:
+                for child in handler.body:
+                    visit(child, guarded)
+            for child in list(node.orelse) + list(node.finalbody):
+                visit(child, guarded)
+            return
+        if isinstance(node, ast.Import) and not guarded:
+            for alias in node.names:
+                found.append((node.lineno, alias.name, None))
+        elif isinstance(node, ast.ImportFrom) and not guarded and node.level == 0 \
+                and node.module:
+            found.append((node.lineno, node.module, [a.name for a in node.names]))
+        for child in ast.iter_child_nodes(node):
+            visit(child, guarded)
+
+    visit(tree, False)
+    return found
+
+
+def wrapper_python_files(root: Path) -> list[Path]:
+    """The wrapper's own Python files that run inside Hermes."""
+    from portable_hermes import ownership
+    root = Path(root)
+    files = sorted((root / "gui").rglob("*.py")) if (root / "gui").is_dir() else []
+    for rel in sorted(ownership.WRAPPER_CORE_TREE_FILES):
+        if rel.startswith("tools/") and rel.endswith(".py") and (root / rel).is_file():
+            files.append(root / rel)
+    return files
+
+
+def _module_file(root: Path, module: str) -> Path | None:
+    rel = module.replace(".", "/")
+    for cand in (f"{rel}.py", f"{rel}/__init__.py"):
+        if (root / cand).is_file():
+            return root / cand
+    return None
+
+
+def _is_core_module(root: Path, module: str) -> bool:
+    from portable_hermes import ownership
+    found = _module_file(root, module)
+    if found is not None:
+        return ownership.classify(found.relative_to(root).as_posix()) == "core"
+    top = module.split(".")[0]
+    top_file = _module_file(root, top)
+    if top_file is not None:
+        return ownership.classify(top_file.relative_to(root).as_posix()) == "core"
+    return (root / top).is_dir() and ownership.classify(f"{top}/__init__.py") == "core"
+
+
+def _top_level_names(path: Path) -> set[str]:
+    """Names a module defines at module level (static; no import)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+
+    def targets(node):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for elt in node.elts:
+                targets(elt)
+
+    def scan(body):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for target in node.targets:
+                    targets(target)
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets(node.target)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.If):
+                scan(node.body)
+                scan(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                scan(node.body)
+            elif isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+                scan(node.body)
+                for handler in node.handlers:
+                    scan(handler.body)
+                scan(node.orelse)
+                scan(node.finalbody)
+    scan(tree.body)
+    return names
+
+
+def check_import_contract(root: Path) -> tuple[bool, str]:
+    """Every name the wrapper imports from the core exists in the tree."""
+    root = Path(root)
+    problems, checked = [], 0
+    defined: dict[str, set[str]] = {}
+    for path in wrapper_python_files(root):
+        rel = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError as exc:
+            problems.append(f"{rel} does not parse: {exc}")
+            continue
+        for line, module, names in required_imports(tree):
+            if not _is_core_module(root, module):
+                continue
+            checked += 1
+            source = _module_file(root, module)
+            if source is None:
+                problems.append(f"{rel}:{line} imports {module}, which this core does not have")
+                continue
+            for name in names or []:
+                if name == "*" or _module_file(root, f"{module}.{name}") is not None:
+                    continue
+                if module not in defined:
+                    try:
+                        defined[module] = _top_level_names(source)
+                    except (OSError, SyntaxError, ValueError):
+                        defined[module] = set()
+                if name in defined[module]:
+                    continue
+                try:   # dynamic definitions: import the module and look
+                    if hasattr(importlib.import_module(module), name):
+                        continue
+                except Exception as exc:  # noqa: BLE001 - report the precise reason
+                    problems.append(f"{rel}:{line} needs {module}.{name}; importing {module} "
+                                    f"failed: {type(exc).__name__}: {exc}")
+                    continue
+                problems.append(f"{rel}:{line} needs {module}.{name}, which this core does "
+                                "not define")
+    if problems:
+        return False, "; ".join(problems[:10]) + (
+            f" (+{len(problems) - 10} more)" if len(problems) > 10 else "")
+    return True, f"{checked} core imports in the wrapper's own files resolve"
+
+
+def gui_agent_keywords(root: Path) -> list[str]:
+    """Keyword names ``gui/agent_bridge.py`` passes to ``AIAgent(...)``."""
+    path = Path(root) / "gui" / "agent_bridge.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            called = func.id if isinstance(func, ast.Name) else \
+                func.attr if isinstance(func, ast.Attribute) else None
+            if called == "AIAgent":
+                names.update(k.arg for k in node.keywords if k.arg)
+    return sorted(names)
+
+
+def check_agent_keywords(root: Path, agent_class) -> tuple:
+    passed = gui_agent_keywords(root)
+    if not passed:
+        return False, "gui/agent_bridge.py has no AIAgent(...) call to check"
+    params = inspect.signature(agent_class.__init__).parameters
+    accepted = {n for n, p in params.items()
+                if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)}
+    unknown = [n for n in passed if n not in accepted]
+    if not unknown:
+        return True, f"all {len(passed)} keywords the GUI passes are in AIAgent.__init__"
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return True, ("AIAgent takes **kwargs, so these GUI keywords may be ignored: "
+                      + ", ".join(unknown)), True
+    return False, "AIAgent.__init__ does not accept: " + ", ".join(unknown)
 
 
 def verify(root: Path, *, gui: bool = True) -> dict:
@@ -114,6 +332,15 @@ def verify(root: Path, *, gui: bool = True) -> dict:
     if not checks.run("core_imports", core_imports):
         return _result(root, checks)
 
+    checks.run("wrapper_imports", lambda: check_import_contract(root))
+
+    def gui_agent_arguments():
+        from run_agent import AIAgent
+        return check_agent_keywords(root, AIAgent)
+
+    if (root / "gui" / "agent_bridge.py").is_file():
+        checks.run("gui_agent_arguments", gui_agent_arguments)
+
     expected = set(bridge.PORTABLE_TOOLS)
 
     def portable_tools_registered():
@@ -134,9 +361,14 @@ def verify(root: Path, *, gui: bool = True) -> dict:
     def cli_selection():
         import toolsets
         from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
         if not getattr(toolsets, "_portable_hermes_augmented", False):
             return False, "portable toolsets bridge did not run for toolsets.py"
+        try:   # a private upstream API: without it the probe cannot run
+            from hermes_cli.tools_config import _get_platform_tools
+        except (ImportError, AttributeError) as exc:
+            return True, ("WARNING: the CLI tool-selection probe was skipped because "
+                          f"hermes_cli.tools_config._get_platform_tools is gone ({exc}); "
+                          "check the portable tools in the CLI by hand"), True
         selected = _get_platform_tools(load_config(), "cli")
         names = set()
         for ts in selected:
@@ -193,6 +425,7 @@ def _result(root: Path, checks: Checks) -> dict:
         "root": str(root),
         "python": sys.version.split()[0],
         "reason": checks.first_failure(),
+        "warnings": checks.warnings,
         "checks": checks.results,
     }
 
@@ -214,7 +447,7 @@ def main(argv=None) -> int:
         print("PORTABLE_VERIFY_RESULT " + json.dumps(result))
     else:
         for check in result["checks"]:
-            mark = "ok  " if check["ok"] else "FAIL"
+            mark = ("warn" if check.get("warning") else "ok  ") if check["ok"] else "FAIL"
             print(f"[{mark}] {check['name']}: {check['detail']}")
     return 0 if result["ok"] else 1
 

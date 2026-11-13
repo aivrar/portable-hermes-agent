@@ -38,9 +38,46 @@ dependencies = ["requests==2.0"]
 messaging = ["slack-sdk==1.0"]
 """
 
+
+def lock_for(requests: str = "2.0") -> bytes:
+    """A minimal hash-pinned uv.lock matching PYPROJECT with *requests*."""
+    return f"""version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "hermes-agent"
+version = "0.0.0"
+source = {{ editable = "." }}
+dependencies = [{{ name = "requests" }}]
+
+[package.optional-dependencies]
+messaging = [{{ name = "slack-sdk" }}]
+
+[[package]]
+name = "requests"
+version = "{requests}"
+source = {{ registry = "https://pypi.org/simple" }}
+sdist = {{ url = "https://example.invalid/requests.tar.gz", hash = "sha256:{'a' * 64}" }}
+
+[[package]]
+name = "slack-sdk"
+version = "1.0"
+source = {{ registry = "https://pypi.org/simple" }}
+sdist = {{ url = "https://example.invalid/slack.tar.gz", hash = "sha256:{'b' * 64}" }}
+""".encode()
+
+
+def with_requests(files: dict, version: str) -> dict:
+    """*files* with a different pinned requests version (a dependency change)."""
+    return dict(files, **{
+        "pyproject.toml": PYPROJECT.replace(b"requests==2.0", f"requests=={version}".encode()),
+        "uv.lock": lock_for(version)})
+
+
 CORE_V1 = {
     "run_agent.py": b"class AIAgent: pass\n",
     "pyproject.toml": PYPROJECT,
+    "uv.lock": lock_for(),
     "toolsets.py": b"TOOLSETS = {}\n",
     "tools/registry.py": b"registry = None\n",
     "tools/web_tools.py": b"# web v1\n",
@@ -304,21 +341,40 @@ def test_archive_commit_comes_from_zip_comment(tmp_path):
     assert common.archive_commit(make_zip(tmp_path / "n.zip", {"a": b"1"}, top=None)) is None
 
 
-def test_interrupted_swap_is_rolled_back_by_recover(tmp_path):
+class Killed(BaseException):
+    """Stands in for the process dying (not an OSError, so nothing catches it)."""
+
+
+def test_swap_killed_halfway_is_rolled_back_by_recover(tmp_path, monkeypatch):
     root = tmp_path / "r"
-    write_files(root, {"a.txt": b"old a", "b.txt": b"old b"})
-    staged = tmp_path / "r" / ".portable" / "staging"
-    write_files(staged, {"a.txt": b"new a", "c.txt": b"new c"})
+    write_files(root, {"a.txt": b"old a", "b.txt": b"old b", "d.txt": b"old d"})
+    staged = common.staging_dir(root)
+    write_files(staged, {"a.txt": b"new a", "c.txt": b"new c", "d.txt": b"new d"})
     txn = common.Transaction(root, "core")
     txn.put("a.txt", staged / "a.txt")
     txn.put("c.txt", staged / "c.txt")
     txn.remove("b.txt")
-    txn.apply()
-    assert (root / "a.txt").read_bytes() == b"new a"
-    # Simulate a crash before commit: the journal is still "applying".
+    txn.put("d.txt", staged / "d.txt")
+    real_replace, calls = os.replace, {"n": 0}
+
+    def dies_on_third_staged_rename(src, dst):
+        # Counts renames out of the staging folder (not the journal's writes).
+        if str(staged) in str(src):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise Killed()
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(common.os, "replace", dies_on_third_staged_rename)
+    with pytest.raises(Killed):
+        txn.apply()
+    monkeypatch.setattr(common.os, "replace", real_replace)
+    # a and c swapped, b moved to the backup, d untouched: a real half state.
+    assert (root / "a.txt").read_bytes() == b"new a" and not (root / "b.txt").exists()
     assert "rolled back" in common.recover(root)
     assert (root / "a.txt").read_bytes() == b"old a"
     assert (root / "b.txt").read_bytes() == b"old b"
+    assert (root / "d.txt").read_bytes() == b"old d"
     assert not (root / "c.txt").exists()
     assert not (root / ".portable" / "journal.json").exists()
 
@@ -326,7 +382,7 @@ def test_interrupted_swap_is_rolled_back_by_recover(tmp_path):
 def test_failed_rename_rolls_back_every_applied_step(tmp_path, monkeypatch):
     root = tmp_path / "r"
     write_files(root, {"a.txt": b"old a", "b.txt": b"old b"})
-    staged = root / ".portable" / "staging"
+    staged = common.staging_dir(root)
     write_files(staged, {"a.txt": b"new a", "b.txt": b"new b"})
     txn = common.Transaction(root, "core")
     txn.put("a.txt", staged / "a.txt")
@@ -334,7 +390,7 @@ def test_failed_rename_rolls_back_every_applied_step(tmp_path, monkeypatch):
     real_replace = os.replace
 
     def flaky(src, dst):
-        if str(src).endswith(os.path.join("staging", "b.txt")):
+        if str(src) == str(staged / "b.txt"):
             raise PermissionError("file in use")
         return real_replace(src, dst)
 
@@ -344,6 +400,15 @@ def test_failed_rename_rolls_back_every_applied_step(tmp_path, monkeypatch):
     monkeypatch.setattr(common.os, "replace", real_replace)
     assert (root / "a.txt").read_bytes() == b"old a"
     assert (root / "b.txt").read_bytes() == b"old b"
+    assert not (root / ".portable" / "journal.json").exists()
+
+
+def test_staged_files_must_live_in_the_staging_folder(tmp_path):
+    root = tmp_path / "r"
+    write_files(root, {"a.txt": b"old", "elsewhere/a.txt": b"new"})
+    txn = common.Transaction(root, "core")
+    with pytest.raises(common.UpdateError, match="not under"):
+        txn.put("a.txt", root / "elsewhere" / "a.txt")
 
 
 # --------------------------------------------------------------------------
@@ -424,7 +489,7 @@ def test_fresh_install_records_core_and_leaves_wrapper_and_user_data(root, tmp_p
     state = json.loads((root / ".portable/core-state.json").read_text())
     assert state["commit"] == SHA1 and state["repository"] == "NousResearch/hermes-agent"
     assert "run_agent.py" in state["files"] and "README.md" not in state["files"]
-    assert state["dependencies_strategy"] == "pyproject"
+    assert state["dependencies_strategy"] == "uv.lock"
     # Staged tree verified first (with the wrapper overlaid), then the live tree.
     assert len(verify.calls) == 2 and verify.calls[-1] == root.resolve()
     assert pip.packages["requests"] == "2.0" and pip.packages["slack-sdk"] == "1.0"
@@ -477,7 +542,7 @@ def test_staged_verification_failure_changes_nothing_and_restores_dependencies(r
     assert life.install(zip_path=str(core_zip(tmp_path, CORE_V1, SHA1, "v1.zip")))["ok"]
     live_before = snapshot(root, list(CORE_V1) + list(WRAPPER_FILES) + list(USER_FILES))
     packages_before = dict(pip.packages)
-    v2 = dict(CORE_V2, **{"pyproject.toml": PYPROJECT.replace(b"requests==2.0", b"requests==3.0")})
+    v2 = with_requests(CORE_V2, "3.0")
     verify.fail_staged = True
     result = life.install(zip_path=str(core_zip(tmp_path, v2, SHA2, "v2.zip")))
     assert not result["ok"] and result["code"] == "verify_failed"
@@ -507,7 +572,7 @@ def test_dependency_failure_rolls_back_and_keeps_core(root, tmp_path):
     packages_before = dict(pip.packages)
     live_before = snapshot(root, list(CORE_V1))
     pip.fail_requirements = True
-    v2 = dict(CORE_V2, **{"pyproject.toml": PYPROJECT.replace(b"requests==2.0", b"requests==3.0")})
+    v2 = with_requests(CORE_V2, "3.0")
     result = life.install(zip_path=str(core_zip(tmp_path, v2, SHA2, "v2.zip")))
     assert not result["ok"] and result["code"] == "dependencies_failed"
     assert "Could not find a version" in result["reason"]
@@ -752,7 +817,7 @@ def test_repair_restores_wrapper_files_after_upstream_swap(root, tmp_path):
     assert life.install(zip_path=str(core_zip(tmp_path, CORE_V1, SHA1, "v1.zip")))["ok"]
     assert WrapperUpdater(root, quiet=True, run_verify=verify).update(
         zip_path=str(release_zip(tmp_path, NEW_WRAPPER, "v9.3.0")))["ok"]
-    users_before = snapshot(root, [r for r in USER_FILES if not r.startswith("tools/")])
+    users_before = snapshot(root, USER_FILES)
     upstream_swap(root, {"tools/registry.py": b"upstream", "tools/web_tools.py": b"upstream",
                          "README.md": b"upstream readme", "skills/core-skill/SKILL.md": b"u",
                          "assets/banner.png": b"png"})
@@ -763,7 +828,18 @@ def test_repair_restores_wrapper_files_after_upstream_swap(root, tmp_path):
     assert (root / "tools/lm_studio_tools.py").read_bytes() == NEW_WRAPPER["tools/lm_studio_tools.py"]
     assert (root / "README.md").read_bytes() == NEW_WRAPPER["README.md"]
     assert (root / "tools/web_tools.py").read_bytes() == b"upstream"   # core left alone
-    assert snapshot(root, [r for r in USER_FILES if not r.startswith("tools/")]) == users_before
+    # Repair overwrote upstream's README.md, so it kept a copy first.
+    kept = root / report["kept_folder"]
+    assert (kept / "README.md").read_bytes() == b"upstream readme"
+    # Upstream's own swap replaces the whole tools/ folder, so the legacy
+    # tools/custom location is lost to it; that is why Tool Maker keeps its
+    # tools in HERMES_HOME/custom_tools (moved there on start), which survives.
+    # Every other user path is unchanged.
+    after = snapshot(root, USER_FILES)
+    lost = {rel for rel in users_before if rel not in after}
+    assert lost == {"tools/custom/my_tool.py"}
+    assert after == {rel: h for rel, h in users_before.items() if rel not in lost}
+    assert ".hermes/custom_tools/personal.py" in after
     assert wrapper.repair(root, quiet=True)["restored"] == []          # idempotent
     # The next core update adopts what upstream changed without losing anything.
     result = life.install(zip_path=str(core_zip(tmp_path, CORE_V2, SHA2, "v2.zip")))
@@ -789,11 +865,11 @@ def test_repair_skips_while_an_update_holds_the_lock(root):
 
 def test_repair_settles_an_interrupted_update(root, tmp_path):
     write_files(root, {"a.txt": b"old"})
-    staged = root / ".portable" / "staging"
+    staged = common.staging_dir(root)
     write_files(staged, {"a.txt": b"new"})
     txn = common.Transaction(root, "core")
     txn.put("a.txt", staged / "a.txt")
-    txn.apply()
+    txn.apply()          # never committed: as if the updater died right here
     report = wrapper.repair(root, quiet=True)
     assert any("rolled back" in note for note in report["notes"])
     assert (root / "a.txt").read_bytes() == b"old"

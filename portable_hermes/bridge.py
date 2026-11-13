@@ -22,6 +22,11 @@ runs from a meta-path
 hook installed at interpreter start by a ``.pth`` line in the product
 interpreter's site-packages (see :func:`ensure_pth`), so it also covers child
 processes such as upstream's gateway daemon. Every step fails soft and logs.
+
+A silent loss of the portable tools is the worst case, so when the bridge
+cannot apply (or applies only partly) it also leaves a one-line reason in
+``.portable/bridge-problem.txt``; launch-time repair prints it on the next
+start. A later successful run removes the note.
 """
 
 from __future__ import annotations
@@ -117,6 +122,41 @@ PORTABLE_TOOLS: tuple[str, ...] = tuple(
 )
 
 _APPLIED_FLAG = "_portable_hermes_augmented"
+PROBLEM_FILE = "bridge-problem.txt"
+
+
+def _problem_path(root: Path | None = None) -> Path | None:
+    """Where the note goes: only inside a portable install (``.portable``
+    exists), and never from a verification process (hook disabled)."""
+    if root is None and os.environ.get(NO_HOOK_ENV):
+        return None
+    state = Path(root or ROOT) / ".portable"
+    return state / PROBLEM_FILE if state.is_dir() else None
+
+
+def _note_problem(reason: str | None) -> None:
+    """Record why the portable tools were not (fully) offered, or clear it."""
+    try:
+        path = _problem_path()
+        if path is None:
+            return
+        if reason is None:
+            if path.exists():
+                path.unlink()
+            return
+        from datetime import datetime
+        line = f"{datetime.now().isoformat(timespec='seconds')} {reason}".replace("\n", " ")
+        path.write_text(line[:500] + "\n", encoding="utf-8")
+    except Exception:  # noqa: BLE001 - never break the agent over a note
+        pass
+
+
+def read_problem(root: Path) -> str | None:
+    path = _problem_path(Path(root))
+    try:
+        return path.read_text(encoding="utf-8").strip() or None if path else None
+    except OSError:
+        return None
 
 
 def augment(module) -> list[str]:
@@ -126,11 +166,14 @@ def augment(module) -> list[str]:
     Toolset names upstream already defines are left untouched.
     """
     changes: list[str] = []
+    problems: list[str] = []
     try:
         toolsets = getattr(module, "TOOLSETS", None)
         if not isinstance(toolsets, dict):
             logger.warning("portable toolsets not added: toolsets.TOOLSETS is %s",
                            type(toolsets).__name__)
+            _note_problem(f"portable tools not offered: toolsets.TOOLSETS is "
+                          f"{type(toolsets).__name__} in this Hermes core")
             return changes
         seen: set[int] = set()
         # Core tool list: upstream reads it lazily to decide which tools are
@@ -149,6 +192,8 @@ def augment(module) -> list[str]:
             changes.append("core-tools")
         elif core is None:
             logger.warning("portable tools not marked core: toolsets._HERMES_CORE_TOOLS missing")
+            problems.append("toolsets._HERMES_CORE_TOOLS is missing in this Hermes core, so "
+                            "the portable tools may only be offered through tool search")
         for name, spec in PORTABLE_TOOLSETS.items():
             if name in toolsets:
                 continue
@@ -176,6 +221,8 @@ def augment(module) -> list[str]:
         logger.debug("portable toolsets applied: %s", ", ".join(changes) or "nothing to do")
     except Exception as exc:  # fail soft: the agent still runs without them
         logger.warning("portable toolsets not added: %s: %s", type(exc).__name__, exc)
+        problems.append(f"portable toolsets not added: {type(exc).__name__}: {exc}")
+    _note_problem("; ".join(problems) if problems else None)
     return changes
 
 
@@ -233,6 +280,7 @@ def install_hook() -> bool:
         return True
     except Exception as exc:
         logger.warning("portable toolsets hook not installed: %s", exc)
+        _note_problem(f"portable toolsets hook not installed: {type(exc).__name__}: {exc}")
         return False
 
 

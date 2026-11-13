@@ -81,6 +81,8 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
         payload = {
             "success": True,
             "updated": bool(changed),
+            "kept_edits": result.get("kept_edits"),
+            "warnings": result.get("warnings") or None,
             "repository": result.get("repository", "NousResearch/hermes-agent"),
             "commit": result.get("commit"),
             "message": result.get("message"),
@@ -95,7 +97,19 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
             payload["next_step"] = _RESTART
         return json.dumps(payload, default=str)
     payload = {"success": False, "error": result.get("reason"), "code": result.get("code")}
-    if result.get("kept_existing_core"):
+    if result.get("code") == "runtime_too_old":
+        # The portable Python cannot be swapped by a process running from it.
+        payload["next_step"] = (
+            f"This Hermes core needs Python {result.get('requires_python')}, and this "
+            f"folder's portable Python is {result.get('current_python')}. Close Hermes and "
+            "run UPDATE.bat --core: it upgrades the portable Python in place (keeping "
+            "everything in this folder) and then installs the core. This cannot be done "
+            "from inside a running Hermes.")
+        payload["note"] = "Nothing was changed."
+    elif result.get("dependencies_restored") is False:
+        payload["note"] = ("The previous core's files were kept, but its Python packages could "
+                           "not all be put back. Run UPDATE.bat to finish.")
+    elif result.get("kept_existing_core"):
         payload["note"] = "The existing core was kept unchanged."
     if result.get("code") == "git_checkout":
         payload["install_type"] = "git"
@@ -123,7 +137,7 @@ def check_updates_handler(args: dict, **kwargs) -> str:
         lines.append(f"Portable wrapper: {wrapper.get('latest_version')} is available "
                      f"(installed {wrapper.get('installed_version') or 'unknown'}); run UPDATE.bat.")
     elif wrapper.get("update_available") is False:
-        lines.append("Portable wrapper: up to date.")
+        lines.append("Portable wrapper: " + (wrapper.get("message") or "up to date") + ".")
     else:
         lines.append("Portable wrapper: could not check "
                      f"({wrapper.get('network_error') or wrapper.get('reason')}).")
