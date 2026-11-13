@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 import build_release
+from portable_hermes import ownership
+
+BOOT = "from portable_hermes.__main__ import main"
 
 
 def test_release_zip_includes_user_launchers_and_docs():
@@ -38,6 +41,12 @@ def test_tracked_release_inventory_contains_complete_portable_surface():
         "gui/permissions.py",
         "gui/permissions_panel.py",
         "gui/theme.py",
+        "portable_hermes/__main__.py",
+        "portable_hermes/bridge.py",
+        "portable_hermes/core.py",
+        "portable_hermes/ownership.py",
+        "portable_hermes/wrapper.py",
+        "portable_hermes/manifests/last-known-good.json",
         "skills/extensions/portable-comfyui/SKILL.md",
         "skills/extensions/music-server/SKILL.md",
         "skills/extensions/tts-server/SKILL.md",
@@ -103,13 +112,43 @@ def test_incomplete_build_never_replaces_previous_archive(tmp_path, monkeypatch,
 
 
 def test_release_required_surface_is_tracked_and_not_excluded():
-    from tools.update_hermes_tool import _PORTABLE_SOURCE_PATHS, _PORTABLE_REQUIRED_TREE_FILES
-
-    candidates = {p for p in build_release.iter_release_files()
-                  if not build_release.should_exclude(p)}
+    tracked = set(build_release.iter_release_files())
+    candidates = {p for p in tracked if not build_release.should_exclude(p)}
     assert build_release.REQUIRED_RELEASE_FILES <= candidates
-    # Adding a portable-owned source must also add it to the release minimum.
-    assert (_PORTABLE_SOURCE_PATHS | _PORTABLE_REQUIRED_TREE_FILES) <= build_release.REQUIRED_RELEASE_FILES
+    # The release is wrapper-owned files only: no core file ships.
+    assert all(ownership.classify(p) == "wrapper" for p in candidates)
+    assert "run_agent.py" not in candidates and "toolsets.py" not in candidates
+    assert not any(p.startswith(("hermes_cli/", "agent/", "website/")) for p in candidates)
+    # Wrapper files inside upstream directories must stay in the release minimum.
+    assert ownership.WRAPPER_CORE_TREE_FILES <= build_release.REQUIRED_RELEASE_FILES
+
+
+def test_built_release_is_wrapper_only_with_payload_and_manifest(tmp_path, monkeypatch):
+    import hashlib
+    import json
+
+    monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "v0.0.1-test",
+                                      "--output-dir", str(tmp_path)])
+    build_release.main()
+    archive = tmp_path / "portable-hermes-agent-v0.0.1-test.zip"
+    with zipfile.ZipFile(archive) as zf:
+        names = set(zf.namelist())
+        assert all(n.startswith("portable-hermes-agent/") for n in names)
+        rels = {n.split("/", 1)[1] for n in names}
+        manifest = json.loads(zf.read("portable-hermes-agent/" + ownership.RELEASE_MANIFEST))
+        for rel, digest in manifest["files"].items():
+            data = zf.read("portable-hermes-agent/" + rel)
+            assert hashlib.sha256(data).hexdigest() == digest, rel
+    assert manifest["version"] == "v0.0.1-test"
+    assert set(manifest["files"]) == rels - {ownership.RELEASE_MANIFEST}
+    assert "run_agent.py" not in rels and "hermes_cli/main.py" not in rels
+    assert "tools/lm_studio_tools.py" in rels
+    assert ownership.PAYLOAD_DIR + "/tools/lm_studio_tools.py" in rels
+    assert ownership.PAYLOAD_DIR + "/README.md" in rels
+    assert ownership.PAYLOAD_DIR + "/gui/app.py" not in rels      # wrapper-only tree
+    assert ownership.PAYLOAD_DIR + "/START.bat" not in rels       # wrapper-only name
+    shipped = {r for r in rels if not r.startswith("portable_hermes/")}
+    assert set(manifest["payload"]) == {r for r in shipped if ownership.is_payload_path(r)}
 
 
 def test_root_readmes_keep_portable_identity_and_consistent_language_links():
@@ -168,6 +207,51 @@ def test_windows_launchers_keep_runtime_state_in_active_hermes_home():
         assert 'set "PIP_PREFIX=' not in launcher
 
 
+def test_launchers_route_updates_and_repair_through_the_portable_wrapper():
+    root = Path(build_release.PROJECT_ROOT)
+    cli_launcher = (root / "hermes.bat").read_text(encoding="utf-8")
+    gui_launcher = (root / "hermes_gui.bat").read_text(encoding="utf-8")
+    updater = (root / "UPDATE.bat").read_text(encoding="utf-8")
+    vbs = (root / "hermes_gui.vbs").read_text(encoding="utf-8")
+
+    # Launch-time repair runs before Hermes starts in both launchers. START.bat
+    # and hermes_gui.vbs both go through hermes_gui.bat.
+    for launcher, start_marker in ((cli_launcher, "-m hermes_cli.main %*"),
+                                   (gui_launcher, "gui")):
+        assert BOOT in launcher
+        repair = launcher.index("main(['repair', '--quiet'])")
+        assert repair < launcher.rindex(start_marker)
+    assert "hermes_gui.bat" in vbs
+
+    # "hermes update" goes to the portable updater, never upstream's own one.
+    intercept = 'if /i "%~1"=="update" goto :portable_update'
+    assert intercept in cli_launcher
+    assert cli_launcher.index(intercept) < cli_launcher.index("-m hermes_cli.main %*")
+    assert "hermes_cli.main update" not in updater
+    assert '"%SCRIPT_DIR%." update %*' in updater and BOOT in updater
+
+
+def test_batch_files_are_ascii_crlf_and_never_block_unattended_runs():
+    root = Path(build_release.PROJECT_ROOT)
+    for name in ("install.bat", "START.bat", "UPDATE.bat", "hermes.bat", "hermes_gui.bat"):
+        raw = (root / name).read_bytes()
+        assert raw.isascii(), name
+        assert raw.count(b"\n") == raw.count(b"\r\n"), name
+    for name in ("install.bat", "UPDATE.bat", "START.bat"):
+        text = (root / name).read_text(encoding="utf-8")
+        assert "HERMES_PORTABLE_NONINTERACTIVE" in text, name
+        lines = [line.strip().lower() for line in text.splitlines()]
+        for number, line in enumerate(lines):
+            if "pause" not in line.split():
+                continue
+            # Either the pause itself is conditional, or an earlier line
+            # jumps over it in unattended mode.
+            guarded = "ph_pause" in line or "hermes_portable_noninteractive" in line or any(
+                "hermes_portable_noninteractive" in prev and "goto" in prev
+                for prev in lines[max(0, number - 3):number])
+            assert guarded, (name, line)
+
+
 def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
     installer = (Path(build_release.PROJECT_ROOT) / "install.bat").read_text(
         encoding="utf-8"
@@ -192,6 +276,20 @@ def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
     assert "skills/extensions/tts-server/SKILL.md" in installer
     assert "Installation verification failed" in installer
 
+    # The core comes from upstream through the wrapper's lifecycle module,
+    # after the embedded runtime exists, and the whole install is verified in
+    # a fresh process afterwards. "Kept existing core" (exit 3) is a warning.
+    core_step = installer.index('"%SCRIPT_DIR%." core install')
+    assert installer.index('if not exist "%PYTHON_DIR%\\Lib\\tkinter" (') < core_step
+    assert installer.index('"%SCRIPT_DIR%." verify') > core_step
+    assert 'if "%CORE_EXIT%"=="3"' in installer
+    assert 'pip install -e "%SCRIPT_DIR%.' not in installer
+    # npm cannot install a pnpm workspace core; that case is skipped, not fatal.
+    assert installer.index("pnpm-workspace.yaml") < installer.index('call "%NPM_CMD%" install --quiet')
+    # Every failure path goes through one label that pauses only when attended.
+    assert installer.count("exit /b 1") == 1
+    assert installer.rstrip().endswith(":fail\nif defined PH_PAUSE pause\nexit /b 1")
+
 
 def test_portable_comfyui_skill_does_not_collide_with_upstream_skill():
     root = Path(build_release.PROJECT_ROOT)
@@ -214,41 +312,35 @@ def test_release_zip_excludes_development_only_dirs():
 
 
 def test_release_zip_excludes_generated_docs_but_keeps_runtime_assets():
+    """The wrapper release ships no core file at all. The generated-docs rule
+    moved to the core installer, which applies it to the upstream archive and
+    still installs runtime assets such as the model catalog."""
     flagged_doc = (
         "website/docs/user-guide/skills/optional/autonomous-ai-agents/"
         "autonomous-ai-agents-blackbox.md"
     )
     assert build_release.should_exclude(flagged_doc) is True
     assert build_release.should_exclude(flagged_doc.replace("/", "\\")) is True
+    assert not ownership.is_core_installable(flagged_doc)
+    assert not ownership.is_core_installable(flagged_doc.replace("/", "\\"))
 
     localized_doc = (
         "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/"
         "user-guide/skills/optional/autonomous-ai-agents/"
         "autonomous-ai-agents-blackbox.md"
     )
-    assert build_release.should_exclude(localized_doc) is True
-    assert build_release.should_exclude(localized_doc.replace("/", "\\")) is True
-    assert (
-        build_release.should_exclude(
-            "website/i18n/es/docusaurus-plugin-content-docs-version-v2/intro.md"
-        )
-        is True
-    )
-    assert (
-        build_release.should_exclude(
-            "website/i18n/zh-Hans/docusaurus-theme-classic/navbar.json"
-        )
-        is False
-    )
-    assert (
-        build_release.should_exclude("website/static/api/model-catalog.json") is False
-    )
-    assert (
-        build_release.should_exclude(
-            "optional-skills/autonomous-ai-agents/blackbox/SKILL.md"
-        )
-        is False
-    )
+    assert not ownership.is_core_installable(localized_doc)
+    assert not ownership.is_core_installable(localized_doc.replace("/", "\\"))
+    assert not ownership.is_core_installable(
+        "website/i18n/es/docusaurus-plugin-content-docs-version-v2/intro.md")
+    assert ownership.is_core_installable(
+        "website/i18n/zh-Hans/docusaurus-theme-classic/navbar.json")
+    assert ownership.is_core_installable("website/static/api/model-catalog.json")
+    assert ownership.is_core_installable(
+        "optional-skills/autonomous-ai-agents/blackbox/SKILL.md")
+    for core_path in (localized_doc, "website/static/api/model-catalog.json",
+                      "optional-skills/autonomous-ai-agents/blackbox/SKILL.md"):
+        assert build_release.should_exclude(core_path) is True
 
 
 def test_release_zip_excludes_portable_runtime_dirs():
