@@ -6,7 +6,9 @@ For Windows users:
 1. Extract the release zip to a normal folder with a short path, for example:
    C:\PortableHermes
    (Avoid C:\Program Files. If Windows long paths are turned off, setup tells
-   you when a folder path is too long.)
+   you when a folder path is too long. Spaces are fine, but the folder path
+   must not contain ! % or ^ - the launchers refuse to start from such a
+   folder.)
 
 2. Double-click START.bat.
 
@@ -14,10 +16,12 @@ For Windows users:
    It downloads into this folder only:
    - embedded Python 3.14
    - the latest Hermes Agent core from NousResearch/hermes-agent
-   - the exact dependency versions that core pins, and the LM Studio SDK
+   - the exact dependency versions that core pins (hash-checked, from its
+     uv.lock), and the LM Studio SDK
    Before it finishes, it checks in a separate process that the new core
    loads, that the portable tools are offered in the CLI and the GUI, and
    that the GUI modules import. No admin rights are required.
+   If setup is interrupted, the next launch runs it again.
 
 3. After setup finishes, Hermes opens the desktop GUI.
 
@@ -66,15 +70,34 @@ You can also ask Hermes in the chat: "Check whether upstream Hermes Agent has
 updates. Do not install anything yet." and later "Update upstream Hermes
 Agent. When finished, tell me whether I should restart."
 
+Coming from v1.4.18 or older: the first UPDATE.bat installs the new
+launchers and asks you to run UPDATE.bat once more. The second run finishes.
+
+When the newest core needs a newer Python (installs from v1.4.18 and older
+have Python 3.13; the current core needs 3.14), the core step explains what
+will happen and asks "Upgrade the portable Python to 3.14.9 now? [y/N]".
+It renames python_embedded to python_embedded.old-<version> (kept, not
+deleted), downloads the new Python (about 18 MB) and packages (typically
+150-300 MB), and installs the newest core. If that fails, the upgrade is
+undone and everything stays as it was. Answering N changes nothing. Delete
+the python_embedded.old-<version> folder yourself once Hermes works.
+UPDATE.bat --yes --core upgrades without asking.
+
 A core update installs and tests the new core in a staging folder (.portable)
-before any file is replaced. If anything fails, every file and every changed
-Python package goes back to how it was. An interrupted update is rolled back
-the next time Hermes starts. Restart Hermes after a core update.
+before any file is replaced. If anything fails, every file goes back to how
+it was, and changed Python packages are put back and checked. If packages
+cannot all be put back (for example a file is in use), the update says so
+and running UPDATE.bat again finishes it. An interrupted update is settled
+the next time Hermes starts, before Hermes itself runs. A file you edited
+that an update would replace is first copied to .portable\kept. Restart
+Hermes after a core update.
 
 Never changed by either update: .env, cli-config.yaml, your Hermes home
 (normally %USERPROFILE%\.hermes: settings, sessions, custom tools, LM Studio
-settings, language), python_embedded, extensions, node_modules, workflows,
-workspace, and built desktop apps in apps\desktop\release.
+settings, language), extensions, node_modules, workflows, workspace, and
+built desktop apps in apps\desktop\release. python_embedded changes only
+when a core update installs the packages that core needs, and in the Python
+upgrade above.
 
 Most users do not need daily updates. Run UPDATE.bat for new Portable
 releases, fixes, or security notices (or every week or two).
@@ -93,6 +116,8 @@ Notes:
   python_embedded, extensions, and node_modules stay beside the app.
 - Every launch quietly restores any portable file that something else (for
   example upstream's own "hermes update") replaced or removed.
+- START.bat, UPDATE.bat, hermes.bat and hermes_gui.bat are one-line files
+  that call the real scripts in portable_hermes\launch.
 - API keys belong in the setup wizard or the Hermes-home .env file, not in Git.
 - Extension servers for TTS, Music, and ComfyUI install on first use.
 - Developers working from a git clone: the updaters do not rewrite git

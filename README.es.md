@@ -60,7 +60,7 @@ Los flujos de trabajo conectan herramientas con condiciones, bucles, ejecución 
 
 ### 1. Descargar
 
-Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones de Portable Hermes Agent](https://github.com/aivrar/portable-hermes-agent/releases/latest) y extráelo en una carpeta normal, por ejemplo `C:\Users\TuNombre\Portable-Hermes-Agent`. Evita carpetas protegidas como `C:\Program Files`.
+Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones de Portable Hermes Agent](https://github.com/aivrar/portable-hermes-agent/releases/latest) y extráelo en una carpeta normal, por ejemplo `C:\Users\TuNombre\Portable-Hermes-Agent`. Evita carpetas protegidas como `C:\Program Files`. La ruta puede tener espacios, pero no los caracteres `!`, `%` ni `^`: los lanzadores no se inician desde una carpeta así.
 
 **No uses el instalador de `NousResearch/hermes-agent` para instalar esta versión portátil:** es un proyecto distinto y no contiene los lanzadores ni las herramientas personalizadas de esta distribución.
 
@@ -96,7 +96,11 @@ Portable Hermes tiene **dos partes que se actualizan por separado**:
 
 Cierra Hermes y ejecuta `UPDATE.bat`. Primero actualiza la parte portátil (comprueba cada archivo, sustituye solo archivos portátiles y deshace todo si algo falla). Después indica cuántos cambios lleva de retraso el núcleo y pregunta si quieres actualizarlo. Sin preguntas: `UPDATE.bat --yes` (solo la parte portátil) o `UPDATE.bat --yes --core` (ambas). También puedes pedirle a Hermes en el chat que compruebe o instale la actualización del núcleo.
 
-El núcleo nuevo se prepara y se prueba en un proceso aparte antes de reemplazar ningún archivo; si algo falla, los archivos y los paquetes vuelven a su estado anterior. Nunca se modifican `.env`, `cli-config.yaml`, la carpeta `HERMES_HOME` (herramientas personalizadas, configuración de LM Studio e idioma), `python_embedded\`, `extensions\` ni `workflows\`. Reinicia Hermes después de actualizar el núcleo. Las copias de Git (desarrolladores) se actualizan con `git pull`.
+Si vienes de la versión v1.4.18 o anterior, la primera ejecución de `UPDATE.bat` instala los nuevos lanzadores y te pide ejecutar `UPDATE.bat` otra vez; la segunda termina la actualización.
+
+**Cuando el núcleo nuevo necesita un Python más reciente** (las instalaciones de v1.4.18 y anteriores tienen Python 3.13 y el núcleo actual necesita 3.14), el paso del núcleo explica lo que va a pasar y pregunta `Upgrade the portable Python to 3.14.9 now? [y/N]`. Si respondes `y`, cambia el nombre de `python_embedded` a `python_embedded.old-<versión>` (se conserva, no se borra), descarga el nuevo Python (unos 18 MB) y los paquetes (normalmente 150-300 MB) e instala el núcleo. Si falla, se deshace todo. Si respondes `N`, no cambia nada. `UPDATE.bat --yes --core` lo hace sin preguntar. Borra tú mismo la carpeta antigua cuando Hermes funcione.
+
+El núcleo nuevo se prepara y se prueba en un proceso aparte antes de reemplazar ningún archivo; si algo falla, los archivos vuelven a su estado anterior y los paquetes cambiados se restauran y se comprueban (si no se pueden restaurar todos, la actualización lo dice y basta con ejecutar `UPDATE.bat` de nuevo). Nunca se modifican `.env`, `cli-config.yaml`, la carpeta `HERMES_HOME` (herramientas personalizadas, configuración de LM Studio e idioma), `extensions\` ni `workflows\`; `python_embedded\` solo cambia al instalar los paquetes que necesita el núcleo y en la actualización de Python descrita arriba. Reinicia Hermes después de actualizar el núcleo. Las copias de Git (desarrolladores) se actualizan con `git pull`.
 
 ---
 

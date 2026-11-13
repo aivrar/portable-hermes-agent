@@ -1041,7 +1041,11 @@ Portable Hermes has two parts:
 
 First-time setup (`START.bat` or `install.bat`) puts everything inside the portable folder: embedded Python 3.14, the core, its packages and the LM Studio SDK. No admin rights are needed. For an unattended setup run `install.bat --yes`.
 
-If the newest upstream core cannot run in the portable runtime, a first-time setup falls back to the last upstream version this release has verified. To choose a specific upstream version, set `HERMES_PORTABLE_CORE_REF` (branch, tag or commit) or `HERMES_PORTABLE_CORE_ZIP` (a downloaded upstream source ZIP) before running `install.bat`.
+A first-time setup installs only exact, hash-checked dependency versions from the core's `uv.lock`. If the newest upstream core has no usable lock or cannot run in the portable runtime, setup falls back to the last upstream version this release has verified. To choose a specific upstream version, set `HERMES_PORTABLE_CORE_REF` (branch, tag or commit) or `HERMES_PORTABLE_CORE_ZIP` (a downloaded upstream source ZIP) before running `install.bat`. If setup is interrupted, the next launch runs it again before Hermes starts.
+
+The portable folder can live in a path with spaces and characters such as `&`, `(`, `)` or `'`. The launchers refuse to start from a folder whose path contains `!`, `%` or `^`, or with a `HERMES_HOME` that contains `!`, because Windows batch files cannot pass those characters on safely.
+
+`START.bat`, `UPDATE.bat`, `hermes.bat` and `hermes_gui.bat` are one-line files that call the real scripts in `portable_hermes\launch\`. Windows reads a running batch file from disk as it goes, so a one-line launcher is what lets an update replace the launch scripts while a launcher is running.
 
 ### How to update
 
@@ -1058,25 +1062,44 @@ Options (also accepted by `hermes.bat update`):
 | `UPDATE.bat --core` | Wrapper update, then core update without asking |
 | `UPDATE.bat --no-core` | Wrapper update only |
 | `UPDATE.bat --yes` | Never asks (wrapper only unless `--core` is given) |
+| `UPDATE.bat --yes --core` | Wrapper and core without asking, including the Python upgrade below when the core needs it |
+
+Coming from v1.4.18 or older: the first `UPDATE.bat` run installs the new launchers and asks you to run `UPDATE.bat` once more. The second run finishes the update.
+
+### When the newest core needs a newer Python
+
+Installs made with v1.4.18 and older have embedded Python 3.13; the current upstream core needs Python 3.14. When the core step finds this, it explains what will happen and asks **"Upgrade the portable Python to 3.14.9 now? [y/N]"**:
+
+1. `python_embedded` is renamed to `python_embedded.old-<version>`. It is kept, not deleted. If the rename fails because a program still uses the folder, nothing changes and you are asked to close Hermes and try again.
+2. Python 3.14 and Tcl/Tk are downloaded (about 18 MB) and the packages Hermes needs are installed (typically 150-300 MB to download). This usually takes 5 to 15 minutes.
+3. The newest core is installed and tested.
+
+If the new core cannot be installed, the upgrade is undone: the incomplete new runtime is renamed to `python_embedded.failed-<version>`, the old folder is renamed back, and your core stays as it was. Everything else in the folder (settings, keys, chats, extensions, workflows, custom tools) is untouched either way. After a successful upgrade, the list of packages the old Python had is saved in `.portable\python_embedded.old-<version>-packages.txt`; reinstall any you added yourself with `python_embedded\python.exe -m pip install <name>`, and delete the old folder once Hermes works for you. Answering N changes nothing; run `UPDATE.bat --core` when you are ready.
 
 You can also ask Hermes in the chat. "Check whether upstream Hermes Agent has updates" uses `check_hermes_updates`, which reports how many commits behind the core is and whether a new Portable Hermes release exists. "Update upstream Hermes Agent" uses `update_hermes`. **Restart Hermes after a core update** (close and reopen the GUI or CLI) so the new code is loaded.
 
 ### What an update never touches
 
-`.env`, `cli-config.yaml`, your Hermes home (normally `%USERPROFILE%\.hermes`: settings, sessions, memories, custom tools, LM Studio settings, language and other GUI preferences), `python_embedded\`, `extensions\` (TTS, Music, ComfyUI and their models), `node_modules\`, `workflows\`, `workspace\`, and desktop apps you built in `apps\desktop\release\`.
+`.env`, `cli-config.yaml`, your Hermes home (normally `%USERPROFILE%\.hermes`: settings, sessions, memories, custom tools, LM Studio settings, language and other GUI preferences), `extensions\` (TTS, Music, ComfyUI and their models), `node_modules\`, `workflows\`, `workspace\`, and desktop apps you built in `apps\desktop\release\`. `python_embedded\` changes only when a core update installs the packages that core needs, and in the Python upgrade above, which keeps the old folder.
 
 ### How a core update keeps your install safe
 
-- The new core is unpacked in `.portable\` inside the portable folder, its packages are installed, and it is tested in a separate process (core imports, the agent, the portable tools in both the CLI and the GUI, the GUI modules) **before** any file is replaced.
-- Files are replaced under a journal and tested again. If anything fails, every file and every changed package goes back to how it was. If the computer loses power mid-update, the next Hermes start rolls it back.
-- Only files the previous core installed, and that you have not edited, are removed. Unknown files are never deleted.
+- The new core is unpacked in `.portable\` inside the portable folder, its packages are installed, and it is tested in a separate process (core imports, the agent, the portable tools in both the CLI and the GUI, the GUI modules) **before** any file is replaced. Packages come from the core's `uv.lock` with hashes; if an updated core has no usable lock, the update uses the version ranges in `pyproject.toml` without hashes and says so.
+- Files are replaced under a journal and tested again. If anything fails, every file goes back to how it was. If the computer loses power or the window is closed mid-update, the next launch settles it before any Hermes code runs: rolled back, or finished if it had already been committed.
+- Changed packages are put back to their previous versions and checked. If that cannot be completed (a package file in use, or an update interrupted while changing packages), the update says so, a note appears when Hermes starts in a console window, and running `UPDATE.bat` again finishes it. pip can leave folders whose names start with `~` in `python_embedded\Lib\site-packages` when a running Hermes had the package loaded; delete them once Hermes is closed.
+- Only files the previous core installed, and that you have not edited, are removed. A file you edited that an update or launch-time repair would replace is first copied to a dated folder under `.portable\kept\`. Unknown files are never deleted.
 - Every launch also restores any portable file that something else replaced or removed (for example upstream's own `hermes update`), so the portable tools never silently disappear.
 
 ### Update troubleshooting
 
 | Message | What to do |
 |---------|-----------|
-| "This core needs a newer Python runtime" or "this core requires Python ..." (the existing core was kept) | Your portable folder was set up with an older embedded Python than the newest upstream core needs. Your current core keeps working. To get the newest core, extract the latest release into a **new** folder and run `START.bat`; your Hermes home (settings, sessions, keys) is shared, so nothing needs to be copied except `extensions\` if you use them. |
+| "The newest Hermes core needs Python 3.14; this folder's portable Python is 3.13..." | See "When the newest core needs a newer Python" above. Answer `y` to upgrade in place, or `N` to keep your current core for now. |
+| "...this Portable Hermes release can move it to ..., which is not enough" or "Update the portable wrapper first" | The newest core needs a Python version this wrapper release does not know yet. Your current core keeps working. Run `UPDATE.bat` again later; a newer Portable Hermes release moves to the Python that core needs. |
+| "python_embedded could not be renamed: a program is still using it" | Close every Hermes window (GUI, CLI, gateway) and anything else started from this folder, then run `UPDATE.bat --core` again. Nothing was changed. |
+| "Python packages could not all be put back" | Close Hermes and run `UPDATE.bat` again; it finishes the package change. |
+| "Portable Hermes cannot run from this folder ... Its path contains one of the characters ! % ^" | Move or rename the portable folder to a path without those characters, for example `C:\PortableHermes`. |
+| "Portable Hermes cannot use this Hermes home folder" | Set `HERMES_HOME` to a folder whose path has no `!`. |
 | "the install folder path is N characters long" | Windows long paths are turned off and the folder is too deep for upstream's longest files. Move the portable folder to a short path such as `C:\PortableHermes`. |
 | "this install is a git checkout" | Developer clones are updated with `git pull`, not by the portable updaters. |
 | "could not reach GitHub" | Check your internet connection or proxy; nothing was changed. |

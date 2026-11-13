@@ -23,7 +23,29 @@ the other:
   upstream source ZIP (latest `main`, `--ref`, or `--zip`), installs its
   `uv.lock` dependencies hash-pinned, verifies in a fresh process, swaps with a
   journal, verifies again, and rolls files and packages back on failure.
-  Records repo/ref/commit/files in `.portable/core-state.json`.
+  Records repo/ref/commit/files in `.portable/core-state.json`. A first install
+  refuses a core without a usable `uv.lock` (and falls back to last-known-good);
+  an update of an existing core may use the `pyproject.toml` ranges without
+  hashes and reports that in its dependency line. Package changes are tracked
+  in `.portable/deps-pending.json` until the new core commits or the previous
+  set is verified back; while it exists, launchers print a note and the
+  install shortcut that skips unchanged dependencies is disabled.
+- **Portable Python**: `portable_hermes/manifests/python-runtime.txt` pins the
+  embedded Python version for this release. When a core's `requires-python`
+  needs a newer Python than `python_embedded` but the pin satisfies it, `core
+  install/update` exits 4 and `portable_hermes/launch/runtime.cmd` upgrades in
+  place: rename `python_embedded` to `python_embedded.old-<ver>`, run
+  `install.bat --runtime-upgrade`, and on failure rename everything back. Old
+  and failed runtime folders are user data and never deleted automatically.
+
+Launch layout: the four root launchers are single-line trampolines into
+`portable_hermes/launch/*.cmd` (`env.cmd` sets the shared environment,
+`prepare.cmd` runs first-time or unfinished setup and settles an interrupted
+update with the standalone `.portable/recover.py` before any portable Python
+code is imported). `UPDATE.bat` is padded so that the v1.4.18 updater, which
+resumes reading at a byte offset after replacing it, lands on a tail that asks
+the user to run it again. Keep root launchers to one line plus that tail;
+`tests/portable/test_portable_launchers.py` replays the v1.4.18 swap.
 
 Upstream files are never edited. The portable tools register themselves with
 upstream's registry; `portable_hermes/bridge.py` adds them to upstream's
@@ -97,8 +119,13 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
    When it passes, add that commit to
    `portable_hermes/manifests/last-known-good.json` (with its Python range).
    A fresh install falls back to it if the newest upstream fails.
-5. If `install.bat` changes the embedded Python version, check that the embed ZIP
-   and `tcltk.msi` URLs exist for that version.
+5. If you change the embedded Python version (`portable_hermes/manifests/python-runtime.txt`;
+   `install.bat` reads it), check that the embed ZIP and `tcltk.msi` URLs exist
+   for that version, and run one real runtime upgrade from an install made with
+   the previous pin (`UPDATE.bat --yes --core` in a scratch copy).
+   Optional real-pip check of package rollback with a loaded `.pyd`:
+   `HERMES_PORTABLE_REAL_PIP=1 <dev python> -m pytest tests/portable/test_portable_real_pip.py -s -o addopts=""`
+   (downloads two MarkupSafe wheels from PyPI).
 6. New wrapper files: put them in a wrapper tree (`gui/`, `portable_hermes/`,
    the portable skill folders) or add them to `ownership.py`. Add bootable
    essentials to `REQUIRED_RELEASE_FILES`. Tests enforce that only wrapper
