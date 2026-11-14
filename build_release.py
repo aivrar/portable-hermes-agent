@@ -31,6 +31,11 @@ archive (the v1.4.18 updater downloads main.zip) would otherwise see other
 bytes, and the wrapper updater would keep unedited files as user edits. A
 checkout with ``core.autocrlf=true`` gives CRLF copies of files that have no
 line-ending rule in ``.gitattributes``; the check names them.
+
+``tools/`` and ``skills/`` are left out of the archive (``export-ignore`` in
+``.gitattributes``, see there). Their shipped files are compared with the
+committed file instead, and must be LF text (``text eol=lf``): for those the
+committed bytes are exactly what every checkout holds.
 """
 import argparse
 import hashlib
@@ -156,6 +161,50 @@ def _archived(rels):
     return found
 
 
+def _git_output(*args):
+    try:
+        return subprocess.run(["git", *args], cwd=PROJECT_ROOT, capture_output=True,
+                              check=True).stdout
+    except subprocess.CalledProcessError as exc:
+        raise SourceCheckError(
+            f"Release build stopped: `git {args[0]}` failed: "
+            + exc.stderr.decode("utf-8", "replace").strip()) from exc
+
+
+def _export_ignored(rels):
+    """For *rels*, which ``git archive HEAD`` left out: ({path: bytes}, problems).
+
+    A path left out by an ``export-ignore`` rule of HEAD's ``.gitattributes``
+    (on the file or on a folder above it, such as ``/tools export-ignore``)
+    gets its committed bytes, if it is LF text; anything else is a problem."""
+    rels = sorted(rels)
+
+    def folders(rel):
+        parts = rel.split("/")[:-1]
+        return ["/".join(parts[:end]) for end in range(1, len(parts) + 1)]
+
+    asked = sorted(set(rels).union(*(folders(rel) for rel in rels)))
+    attrs = {}
+    for start in range(0, len(asked), 100):
+        out = _git_output("check-attr", "--source=HEAD", "-z", "export-ignore", "text", "eol",
+                          "--", *asked[start:start + 100])
+        fields = out.decode("utf-8", "surrogateescape").split("\0")
+        for path, name, value in zip(fields[0::3], fields[1::3], fields[2::3]):
+            attrs.setdefault(path, {})[name] = value
+    found, problems = {}, []
+    for rel in rels:
+        attr = attrs.get(rel, {})
+        if not any(attrs.get(path, {}).get("export-ignore") == "set"
+                   for path in [rel, *folders(rel)]):
+            problems.append(f"{rel}: not in the archive")
+        elif attr.get("text") != "set" or attr.get("eol") != "lf":
+            problems.append(f"{rel}: left out of the archive (export-ignore) but not LF text; "
+                            "give it a `text eol=lf` rule in .gitattributes")
+        else:
+            found[rel] = _git_output("cat-file", "blob", f"HEAD:{rel}")
+    return found, problems
+
+
 def _committed_release_files():
     """The release files of HEAD itself: its tracked paths, filtered exactly like
     the candidates (a deletion, staged or not, would otherwise just shrink the
@@ -181,7 +230,9 @@ def _difference(have, want):
 
 def check_sources(rels):
     """Stop unless *rels* are exactly HEAD's release files, every one committed
-    and byte-identical to what ``git archive HEAD`` contains for it."""
+    and byte-identical to what ``git archive HEAD`` contains for it (for files
+    an export-ignore rule leaves out of the archive: to the committed file).
+    Returns how many files were compared with the committed file."""
     committed = _committed_release_files()
     present = {rel for rel in rels if os.path.isfile(os.path.join(PROJECT_ROOT, rel))}
     missing = sorted(committed - present)
@@ -204,25 +255,27 @@ def check_sources(rels):
             + "A release is built from a commit: commit them (or check out the committed "
               "version) and build again.")
     archived = _archived(rels)
-    problems = []
+    committed_bytes, problems = _export_ignored([rel for rel in rels if rel not in archived])
     for rel in sorted(rels):
-        want = archived.get(rel)
+        want = archived.get(rel, committed_bytes.get(rel))
+        if want is None:
+            continue                            # already a problem
         with open(os.path.join(PROJECT_ROOT, rel), "rb") as source:
             have = source.read()
-        if want is None:
-            problems.append(f"{rel}: not in the archive (an export-ignore rule?)")
-        elif have != want:
+        if have != want:
             problems.append(f"{rel}: {_difference(have, want)}")
     if problems:
         raise SourceCheckError(
             "Release build stopped: these files differ from what `git archive HEAD` contains "
-            "(the bytes GitHub's source ZIP, and through it the v1.4.18 updater, delivers):\n"
-            + "".join(f"  {problem}\n" for problem in problems)
+            "(the bytes GitHub's source ZIP, and through it the v1.4.18 updater, delivers; for "
+            "files an export-ignore rule leaves out of it: the committed file):\n"
+            + "".join(f"  {problem}\n" for problem in sorted(problems))
             + "A release must be byte-identical to the archive of its commit. For line "
               "endings: give the file a rule in .gitattributes and commit it (`git add "
               "--renormalize .` first if the committed copy itself has the wrong endings), "
               "then build from a clean checkout made after that commit, for example "
               "`git -c core.autocrlf=false worktree add <new folder> HEAD`.")
+    return len(committed_bytes)
 
 
 def should_exclude(rel_path):
@@ -315,10 +368,12 @@ def main():
             "a git checkout, or pass --no-git-check to build anyway (release.json then records "
             "no source commit).")
     else:
-        check_sources(candidates)
+        left_out = check_sources(candidates)
         git_check, source_commit = "passed", _source_commit()
         print(f"Source check passed: {len(candidates)} files are identical to "
-              f"`git archive {source_commit[:12]}`.")
+              f"`git archive {source_commit[:12]}`"
+              + (f" or, for the {left_out} it leaves out (export-ignore), to the committed "
+                 "files." if left_out else "."))
 
     # member name (inside the prefix) -> source path on disk
     members = {rel: os.path.join(PROJECT_ROOT, rel) for rel in candidates}

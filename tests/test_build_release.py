@@ -264,6 +264,56 @@ def test_a_crlf_copy_of_an_archived_lf_file_stops_the_build_and_is_named(
     assert _built_manifest(output)["git_archive_check"] == "passed"
 
 
+#: A shipped portable tool; tools/ is export-ignored in the real repository.
+EXPORT_IGNORED_FILE = "tools/gpu_tool.py"
+
+
+def _commit_export_ignored_tool(source, attributes: bytes):
+    (source / "tools").mkdir()
+    (source / EXPORT_IGNORED_FILE).write_bytes(b"# portable tool\nTOOL = 1\n")
+    (source / ".gitattributes").write_bytes(attributes)
+    _git(source, "add", "-A")
+    _git(source, "commit", "-q", "-m", "a portable tool, left out of git archive")
+    archived = _git(source, "-c", "core.autocrlf=false", "archive", "--format=tar", "HEAD")
+    assert EXPORT_IGNORED_FILE.encode() not in archived.stdout
+
+
+def test_an_export_ignored_shipped_file_is_compared_with_the_committed_file(
+        release_source, monkeypatch, capsys):
+    """tools/ and skills/ are not in `git archive` (export-ignore): their
+    shipped files must equal the committed file, which LF text guarantees on
+    every machine, also in a core.autocrlf=true clone."""
+    source, output = release_source
+    _commit_export_ignored_tool(source, b"/tools export-ignore\n*.py text eol=lf\n"
+                                        b"*.md text eol=lf\n/LICENSE text eol=lf\n"
+                                        b"/START_HERE.txt text eol=lf\n")
+    clone = source.parent / "windows-clone"
+    _git(source.parent, "clone", "-q", "-c", "core.autocrlf=true", str(source), str(clone))
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(clone))
+    assert build_release.cli() == 0, capsys.readouterr().err
+    assert "or, for the 1 it leaves out (export-ignore), to the committed files" in \
+        capsys.readouterr().out
+    with zipfile.ZipFile(output / "portable-hermes-agent-v9.9.9.zip") as zf:
+        assert zf.read("portable-hermes-agent/" + EXPORT_IGNORED_FILE) == \
+            b"# portable tool\nTOOL = 1\n"
+        assert f"portable-hermes-agent/{ownership.PAYLOAD_DIR}/{EXPORT_IGNORED_FILE}" in \
+            zf.namelist()
+    # A copy with other bytes than the committed file stops the build.
+    (clone / EXPORT_IGNORED_FILE).write_bytes(b"# portable tool\r\nTOOL = 1\r\n")
+    assert build_release.cli() == 1
+    assert EXPORT_IGNORED_FILE in capsys.readouterr().err
+
+
+def test_an_export_ignored_file_that_is_not_lf_text_stops_the_build(release_source, capsys):
+    source, output = release_source
+    _commit_export_ignored_tool(source, b"/tools export-ignore\n")
+    assert build_release.cli() == 1
+    message = capsys.readouterr().err
+    assert (f"  {EXPORT_IGNORED_FILE}: left out of the archive (export-ignore) but not LF "
+            "text; give it a `text eol=lf` rule in .gitattributes\n") in message
+    assert not output.exists() or list(output.iterdir()) == []
+
+
 def test_an_uncommitted_change_stops_the_build_and_is_named(release_source):
     source, output = release_source
     (source / "README.md").write_bytes(b"# Portable Hermes Agent\nnot committed\n")
