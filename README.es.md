@@ -60,13 +60,13 @@ Los flujos de trabajo conectan herramientas con condiciones, bucles, ejecución 
 
 ### 1. Descargar
 
-Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones de Portable Hermes Agent](https://github.com/aivrar/portable-hermes-agent/releases/latest) y extráelo en una carpeta normal, por ejemplo `C:\Users\TuNombre\Portable-Hermes-Agent`. Evita carpetas protegidas como `C:\Program Files`. La ruta puede tener espacios, pero no los caracteres `!`, `%` ni `^`: los lanzadores no se inician desde una carpeta así.
+Descarga el archivo llamado `portable-hermes-agent-v*.zip` desde las [versiones de Portable Hermes Agent](https://github.com/aivrar/portable-hermes-agent/releases/latest) y extráelo en una carpeta normal, por ejemplo `C:\Users\TuNombre\Portable-Hermes-Agent`. El ZIP contiene solo la parte portátil (lanzadores, interfaz gráfica, herramientas y habilidades portátiles) y no incluye el agente Hermes en sí. Evita carpetas protegidas como `C:\Program Files`. La ruta puede tener espacios, pero no los caracteres `!`, `%` ni `^`: los lanzadores no se inician desde una carpeta así.
 
 **No uses el instalador de `NousResearch/hermes-agent` para instalar esta versión portátil:** es un proyecto distinto y no contiene los lanzadores ni las herramientas personalizadas de esta distribución.
 
 ### 2. Iniciar
 
-Haz doble clic en `START.bat`. En el primer inicio descarga Python 3.14 integrado, el **núcleo más reciente de Hermes Agent desde `NousResearch/hermes-agent`**, sus dependencias exactas y el SDK de LM Studio **dentro de la carpeta portátil**. No requiere Python instalado en el sistema ni permisos de administrador. Antes de terminar, comprueba en un proceso aparte que el núcleo nuevo funciona con las herramientas portátiles y la interfaz gráfica.
+Haz doble clic en `START.bat`. En el primer inicio descarga Python 3.14 integrado, el **núcleo más reciente de Hermes Agent desde `NousResearch/hermes-agent`**, sus dependencias exactas y el SDK de LM Studio **dentro de la carpeta portátil**. Por eso, el primer inicio necesita conexión a Internet. No requiere Python instalado en el sistema ni permisos de administrador. Antes de terminar, comprueba en un proceso aparte que el núcleo nuevo funciona con las herramientas portátiles y la interfaz gráfica.
 
 También puedes ejecutar `install.bat` para la preparación manual, o `install.bat --yes` para una instalación sin preguntas.
 
@@ -94,23 +94,25 @@ Portable Hermes tiene **dos partes que se actualizan por separado**:
 | **Parte portátil** | [versiones de `aivrar/portable-hermes-agent`](https://github.com/aivrar/portable-hermes-agent/releases/latest) | Lanzadores de Windows, interfaz gráfica, herramientas y habilidades portátiles, instalador y actualizador |
 | **Núcleo de Hermes** | `NousResearch/hermes-agent` (rama `main` más reciente) | El agente en sí |
 
-Cierra Hermes y ejecuta `UPDATE.bat`. Primero actualiza la parte portátil (comprueba cada archivo, sustituye solo archivos portátiles y deshace todo si algo falla). Después indica cuántos cambios lleva de retraso el núcleo y pregunta si quieres actualizarlo. Sin preguntas: `UPDATE.bat --yes` (solo la parte portátil) o `UPDATE.bat --yes --core` (ambas). También puedes pedirle a Hermes en el chat que compruebe o instale la actualización del núcleo.
+Cierra Hermes y ejecuta `UPDATE.bat`. Primero actualiza la parte portátil (comprueba cada archivo, sustituye solo archivos portátiles y deshace todo si algo falla). Después indica cuántos cambios lleva de retraso el núcleo y pregunta si quieres actualizarlo. Sin preguntas: `UPDATE.bat --yes` (solo la parte portátil) o `UPDATE.bat --yes --core` (ambas). `UPDATE.bat --core` actualiza el núcleo sin preguntar y `UPDATE.bat --no-core` lo omite. Actualizar la parte portátil no hace retroceder el núcleo a una versión anterior. También puedes pedirle a Hermes en el chat que compruebe o instale la actualización del núcleo.
 
-Si vienes de la versión v1.4.18 o anterior, la primera ejecución de `UPDATE.bat` instala los nuevos lanzadores y te pide ejecutar `UPDATE.bat` otra vez; la segunda termina la actualización.
+Si vienes de la versión v1.4.18 o anterior, la primera ejecución de `UPDATE.bat` instala los nuevos lanzadores y te pide ejecutar `UPDATE.bat` otra vez; la segunda te ofrece pasar el Python portátil de 3.13 a 3.14 (la carpeta antigua se conserva como `python_embedded.old-<version>`) e instala el núcleo actual. **Antes de la primera ejecución**, copia a otro lugar los archivos que hayas puesto a mano en `tools\custom`, porque el actualizador antiguo los borra. Las herramientas creadas con el creador de herramientas se guardan en la carpeta de datos de Hermes (`HERMES_HOME`) y no se ven afectadas.
 
-**Cuando el núcleo nuevo necesita un Python más reciente** (las instalaciones de v1.4.18 y anteriores tienen Python 3.13 y el núcleo actual necesita 3.14), el paso del núcleo explica lo que va a pasar y pregunta `Upgrade the portable Python to 3.14.9 now? [y/N]`. Si respondes `y`, cambia el nombre de `python_embedded` a `python_embedded.old-<versión>` (se conserva, no se borra), descarga el nuevo Python (unos 18 MB) y los paquetes (normalmente 150-300 MB) e instala el núcleo. Si falla, se deshace todo. Si respondes `N`, no cambia nada. `UPDATE.bat --yes --core` lo hace sin preguntar. Borra tú mismo la carpeta antigua cuando Hermes funcione.
+**Cuando el núcleo nuevo necesita un Python más reciente** (las instalaciones de v1.4.18 y anteriores tienen Python 3.13 y el núcleo actual necesita 3.14), el paso del núcleo explica lo que va a pasar y pregunta `Upgrade the portable Python to 3.14.9 now? [y/N]`. Si respondes `y`, cambia el nombre de `python_embedded` a `python_embedded.old-<version>` (se conserva, no se borra), descarga el nuevo Python (unos 18 MB) y los paquetes (normalmente 150-300 MB) e instala el núcleo. Si falla, se deshace todo. Si respondes `N`, no cambia nada. `UPDATE.bat --yes --core` lo hace sin preguntar. Borra tú mismo la carpeta antigua cuando Hermes funcione.
 
-El núcleo nuevo se prepara y se prueba en un proceso aparte antes de reemplazar ningún archivo; si algo falla, los archivos vuelven a su estado anterior y los paquetes cambiados se restauran y se comprueban (si no se pueden restaurar todos, la actualización lo dice y basta con ejecutar `UPDATE.bat` de nuevo). Nunca se modifican `.env`, `cli-config.yaml`, la carpeta `HERMES_HOME` (herramientas personalizadas, configuración de LM Studio e idioma), `extensions\` ni `workflows\`; `python_embedded\` solo cambia al instalar los paquetes que necesita el núcleo y en la actualización de Python descrita arriba. Reinicia Hermes después de actualizar el núcleo. Las copias de Git (desarrolladores) se actualizan con `git pull`.
+El núcleo nuevo se prepara y se prueba en un proceso aparte antes de reemplazar ningún archivo; si algo falla, los archivos vuelven a su estado anterior y los paquetes cambiados se restauran y se comprueban (si no se pueden restaurar todos, la actualización lo dice y basta con ejecutar `UPDATE.bat` de nuevo). Si una actualización se interrumpe (por un corte de luz o por cerrar la ventana), el siguiente inicio de Hermes la termina o la deshace antes de ejecutar nada más.
+
+Ninguna de las dos actualizaciones modifica `.env`, `cli-config.yaml`, la carpeta `HERMES_HOME` (ajustes, chats, herramientas personalizadas, configuración de LM Studio e idioma), `extensions\`, `workflows\` ni `workspace\`; `python_embedded\` solo cambia al instalar los paquetes que necesita el núcleo y en la actualización de Python descrita arriba. Si has editado un archivo que una actualización va a reemplazar, antes se guarda una copia en `.portable\kept\`. Reinicia Hermes después de actualizar el núcleo. Las copias de Git (desarrolladores) se actualizan con `git pull`.
 
 ---
 
 ## Requisitos y documentación
 
 - Windows 10 u 11.
-- Conexión a Internet para IA en la nube, o una GPU adecuada para modelos locales.
+- Conexión a Internet para la instalación y las actualizaciones. Para chatear, una cuenta de IA en la nube o una GPU adecuada para modelos locales.
 - No requiere permisos de administrador, Python del sistema ni Docker.
 
-Hay una guía consultable dentro del agente (`search_guide`). El [manual en PDF](https://github.com/aivrar/portable-hermes-agent/releases/latest) se incluye en cada versión. Para los detalles técnicos y novedades que aún no estén traducidos, consulta el [README portátil en inglés](README.md).
+Hay una guía consultable dentro del agente (`search_guide`). El [manual en PDF](https://github.com/aivrar/portable-hermes-agent/releases/latest) se incluye en cada versión, pero sus capítulos de instalación y actualización describen versiones anteriores; el proceso actual está en este README y en `START_HERE.txt`. Para los detalles técnicos y novedades que aún no estén traducidos, consulta el [README portátil en inglés](README.md).
 
 ---
 
