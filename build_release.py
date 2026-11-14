@@ -22,13 +22,24 @@ Added for the evergreen wrapper:
   them. Generated here, never committed.
 * ``portable_hermes/release.json``: version, source commit, the hash of every
   member and the payload list. The wrapper updater checks it.
+
+Before the ZIP is written, the files it would ship must be exactly HEAD's
+release files (none deleted or added), each committed and byte-identical to
+``git archive HEAD`` (no line-ending conversion, as GitHub builds its source
+archives). Installs that took these files from GitHub's
+archive (the v1.4.18 updater downloads main.zip) would otherwise see other
+bytes, and the wrapper updater would keep unedited files as user edits. A
+checkout with ``core.autocrlf=true`` gives CRLF copies of files that have no
+line-ending rule in ``.gitattributes``; the check names them.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -73,7 +84,145 @@ def parse_args():
         default=os.path.dirname(PROJECT_ROOT),
         help="Directory where the release zip should be written.",
     )
+    parser.add_argument(
+        "--no-git-check",
+        action="store_true",
+        help="Build from a folder that is not a git checkout (an extracted archive). The "
+             "shipped files are not compared with `git archive HEAD`, and release.json "
+             "records no source commit.",
+    )
     return parser.parse_args()
+
+
+class SourceCheckError(RuntimeError):
+    """The files to ship are not exactly what the source commit's archive holds."""
+
+
+def _is_git_checkout():
+    """True when PROJECT_ROOT is the top folder of a git checkout."""
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=PROJECT_ROOT,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+    def same(path):
+        return os.path.normcase(os.path.realpath(path))
+
+    return bool(top) and same(top) == same(PROJECT_ROOT)
+
+
+def _uncommitted(rels):
+    """The paths among *rels* with changes that are not committed (staged or not)."""
+    proc = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=no"],
+                          cwd=PROJECT_ROOT, capture_output=True, check=True)
+    entries = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    wanted = set(rels)
+    found = set()
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        if "R" in status or "C" in status:
+            index += 1          # the original path of a rename or copy follows
+        if path in wanted:
+            found.add(path)
+    return sorted(found)
+
+
+def _archived(rels):
+    """{path: bytes} for *rels* as ``git archive HEAD`` holds them, built the way
+    GitHub builds its source archives (core.autocrlf=false)."""
+    found = {}
+    rels = sorted(rels)
+    for start in range(0, len(rels), 100):
+        chunk = rels[start:start + 100]
+        try:
+            proc = subprocess.run(
+                ["git", "--literal-pathspecs", "-c", "core.autocrlf=false", "archive",
+                 "--format=tar", "HEAD", "--", *chunk],
+                cwd=PROJECT_ROOT, capture_output=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            raise SourceCheckError(
+                "Release build stopped: `git archive HEAD` failed: "
+                + exc.stderr.decode("utf-8", "replace").strip()) from exc
+        with tarfile.open(fileobj=io.BytesIO(proc.stdout)) as tar:
+            for member in tar.getmembers():
+                if member.isfile():
+                    found[member.name] = tar.extractfile(member).read()
+    return found
+
+
+def _committed_release_files():
+    """The release files of HEAD itself: its tracked paths, filtered exactly like
+    the candidates (a deletion, staged or not, would otherwise just shrink the
+    candidate list)."""
+    try:
+        proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
+                              cwd=PROJECT_ROOT, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SourceCheckError(
+            "Release build stopped: `git ls-tree HEAD` failed: "
+            + exc.stderr.decode("utf-8", "replace").strip()) from exc
+    names = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return {ownership.normalize(p) for p in names if p and not should_exclude(p)}
+
+
+def _difference(have, want):
+    if have.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n"):
+        here = "CRLF" if b"\r\n" in have else "LF"
+        there = "CRLF" if b"\r\n" in want else "LF"
+        return f"line endings ({here} here, {there} in the archive)"
+    return "content differs"
+
+
+def check_sources(rels):
+    """Stop unless *rels* are exactly HEAD's release files, every one committed
+    and byte-identical to what ``git archive HEAD`` contains for it."""
+    committed = _committed_release_files()
+    present = {rel for rel in rels if os.path.isfile(os.path.join(PROJECT_ROOT, rel))}
+    missing = sorted(committed - present)
+    extra = sorted(set(rels) - committed)
+    if missing or extra:
+        raise SourceCheckError(
+            "Release build stopped: the files to be shipped are not the files of the commit.\n"
+            + ("  In the commit but missing here:\n" if missing else "")
+            + "".join(f"    {rel}\n" for rel in missing)
+            + ("  To be shipped here but not in the commit:\n" if extra else "")
+            + "".join(f"    {rel}\n" for rel in extra)
+            + "A release is built from a commit: restore missing files (`git checkout HEAD -- "
+              "<file>`) or commit their removal, commit new files (or unstage them with "
+              "`git restore --staged <file>`), then build again.")
+    changed = _uncommitted(rels)
+    if changed:
+        raise SourceCheckError(
+            "Release build stopped: these files to be shipped have changes that are not "
+            "committed:\n" + "".join(f"  {rel}\n" for rel in changed)
+            + "A release is built from a commit: commit them (or check out the committed "
+              "version) and build again.")
+    archived = _archived(rels)
+    problems = []
+    for rel in sorted(rels):
+        want = archived.get(rel)
+        with open(os.path.join(PROJECT_ROOT, rel), "rb") as source:
+            have = source.read()
+        if want is None:
+            problems.append(f"{rel}: not in the archive (an export-ignore rule?)")
+        elif have != want:
+            problems.append(f"{rel}: {_difference(have, want)}")
+    if problems:
+        raise SourceCheckError(
+            "Release build stopped: these files differ from what `git archive HEAD` contains "
+            "(the bytes GitHub's source ZIP, and through it the v1.4.18 updater, delivers):\n"
+            + "".join(f"  {problem}\n" for problem in problems)
+            + "A release must be byte-identical to the archive of its commit. For line "
+              "endings: give the file a rule in .gitattributes and commit it (`git add "
+              "--renormalize .` first if the committed copy itself has the wrong endings), "
+              "then build from a clean checkout made after that commit, for example "
+              "`git -c core.autocrlf=false worktree add <new folder> HEAD`.")
 
 
 def should_exclude(rel_path):
@@ -156,6 +305,21 @@ def main():
     if missing:
         raise RuntimeError(f"Incomplete portable inventory: {', '.join(sorted(missing))}")
 
+    if args.no_git_check:
+        print("Source check skipped (--no-git-check): no source commit is recorded.")
+        git_check, source_commit = "skipped (--no-git-check)", None
+    elif not _is_git_checkout():
+        raise SourceCheckError(
+            f"Release build stopped: {PROJECT_ROOT} is not a git checkout (or git is not "
+            "installed), so the files cannot be compared with `git archive HEAD`. Build from "
+            "a git checkout, or pass --no-git-check to build anyway (release.json then records "
+            "no source commit).")
+    else:
+        check_sources(candidates)
+        git_check, source_commit = "passed", _source_commit()
+        print(f"Source check passed: {len(candidates)} files are identical to "
+              f"`git archive {source_commit[:12]}`.")
+
     # member name (inside the prefix) -> source path on disk
     members = {rel: os.path.join(PROJECT_ROOT, rel) for rel in candidates}
     payload = {}
@@ -181,7 +345,8 @@ def main():
                 "schema": 1,
                 "version": f"v{version}",
                 "built_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                "source_commit": _source_commit(),
+                "source_commit": source_commit,
+                "git_archive_check": git_check,
                 "files": {name[len(PREFIX) + 1:]: digest for name, digest in expected.items()},
                 "payload": payload,
             }
@@ -206,5 +371,15 @@ def main():
     print(f"Output: {zip_path}")
 
 
+def cli():
+    """Run :func:`main`; a failed source check prints its reason and returns 1."""
+    try:
+        main()
+    except SourceCheckError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(cli())

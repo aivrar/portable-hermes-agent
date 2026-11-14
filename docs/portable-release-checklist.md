@@ -96,6 +96,10 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
 ## Before publishing
 
 1. Use a clean release checkout; never package an operator's local environment.
+   Every file in the release ZIP must be byte-identical to GitHub's archive of
+   the same commit (`git archive`, no line-ending conversion). Installs updated
+   from that archive (v1.4.18's updater downloads it) otherwise see different
+   bytes, and the wrapper updater keeps unedited files as "your edits".
 2. Run `scripts/run_tests.sh` for `tests/portable`, `tests/gui`,
    `tests/test_portable_gui.py`, `tests/test_build_release.py`,
    `tests/tools/test_update_hermes_tool.py`,
@@ -138,6 +142,10 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
 7. Build with `python build_release.py --version <tag> --output-dir <outside-checkout>`.
    It must fail on missing/unreadable sources or archive hash mismatches and must
    retain any prior good archive on failure. Never suppress those errors.
+   Before writing the ZIP it compares every shipped file with `git archive HEAD`
+   and stops on uncommitted changes or different bytes (usually line endings),
+   naming the files. `--no-git-check` is only for a source that is not a git
+   checkout; the release then records no source commit.
 8. Do one real install from the built ZIP in a scratch folder (see "Scratch
    install" below), then one wrapper update from a second built ZIP and one core
    update. Check the GUI starts and lists the portable tools.

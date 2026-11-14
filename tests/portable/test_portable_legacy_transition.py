@@ -146,7 +146,8 @@ def test_a_v1_4_18_install_moves_to_the_evergreen_wrapper(tmp_path, monkeypatch)
     # 3. The wrapper update from a release ZIP built from this branch.
     import build_release
     monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "v1.5.0",
-                                      "--output-dir", str(tmp_path / "dist")])
+                                      "--output-dir", str(tmp_path / "dist"),
+                                      "--no-git-check"])
     build_release.main()
     built = tmp_path / "dist" / "portable-hermes-agent-v1.5.0.zip"
     result = WrapperUpdater(root, quiet=True, run_verify=verify).update(zip_path=str(built))

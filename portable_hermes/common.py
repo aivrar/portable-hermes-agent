@@ -1,6 +1,7 @@
 """Shared machinery for the portable updaters (stdlib only).
 
-* HTTPS downloads and GitHub API reads (no credentials are ever sent)
+* HTTPS downloads and GitHub API reads (no credentials are ever sent),
+  tried again after a transient network failure
 * safe archive extraction (zip-slip, absolute paths, symlinks, Windows device
   names, names Windows cannot store and case-only duplicates rejected)
 * a journaled file transaction: old content is kept by hard link (or copy)
@@ -15,11 +16,15 @@ Nothing here imports Hermes core code.
 from __future__ import annotations
 
 import contextlib
+import email.utils
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -311,49 +316,222 @@ def _request(url: str, accept: str | None = None):
     return urllib.request.Request(url, headers=headers)
 
 
-def http_get(url: str, *, accept: str | None = None, timeout: float = 30) -> bytes:
+#: A dropped connection must not fail an install or an update. Transient
+#: failures (connection errors, timeouts, a cut-off body, HTTP 5xx and 429, a
+#: rate-limited 403) are tried again after these pauses, in seconds; anything
+#: else (404, an ordinary 403, a certificate error, ...) fails at once.
+#: Downloads: up to 4 attempts, all within the download's overall deadline.
+DOWNLOAD_PAUSES = (2, 5, 10)
+#: Small GitHub API reads: up to 3 attempts. A whole call ends within about
+#: ``timeout + sum(API_PAUSES)`` seconds, so an update check made while the
+#: PC is offline returns at most 3 seconds later than with a single attempt.
+API_PAUSES = (1, 2)
+#: Longest "Retry-After" a download waits for (an API read waits only as long
+#: as its own deadline allows).
+RETRY_AFTER_CAP = 60
+_sleep = time.sleep          # replaced by tests
+
+
+class _Truncated(OSError):
+    """The connection closed before the announced number of bytes arrived."""
+
+
+def _retry_after(headers) -> float | None:
+    """Seconds a ``Retry-After`` header asks for (delta or HTTP date)."""
+    value = (headers.get("Retry-After") if headers is not None else None) or ""
+    value = value.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return float(value)
     try:
-        with _opener().open(_request(url, accept), timeout=timeout) as resp:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _retry_wait(exc: BaseException) -> float | None:
+    """Least wait before another attempt, or None when retrying cannot help."""
+    if isinstance(exc, urllib.error.HTTPError):
+        headers = exc.headers
+        asked = _retry_after(headers)
+        if exc.code >= 500 or exc.code == 429:
+            return asked or 0.0
+        if exc.code == 403 and headers is not None:
+            if asked is not None:                       # GitHub secondary rate limit
+                return asked
+            if headers.get("X-RateLimit-Remaining") == "0":   # primary rate limit
+                try:
+                    return max(0.0, float(headers.get("X-RateLimit-Reset", "")) - time.time())
+                except ValueError:
+                    return None
+        return None
+    if isinstance(exc, urllib.error.URLError):
+        # No connection was made: name lookup, refused, unreachable, TLS. A
+        # reason that is text is our own refusal (a non-HTTPS redirect).
+        reason = exc.reason
+        if isinstance(reason, OSError) and not isinstance(reason, ssl.SSLCertVerificationError):
+            return 0.0
+        return None
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return None
+    # The connection broke while the answer was read. Any other OSError (a
+    # full disk while writing the file, for example) is final.
+    if isinstance(exc, (ConnectionError, TimeoutError, socket.gaierror, ssl.SSLError,
+                        http.client.HTTPException, _Truncated)):
+        return 0.0
+    return None
+
+
+def _describe(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        exc = exc.reason if isinstance(exc.reason, BaseException) else exc
+    return str(exc) or type(exc).__name__
+
+
+def _attempts_note(attempts: int, note: str = "") -> str:
+    text = f"{attempts} attempt" + ("s" if attempts != 1 else "")
+    return f" ({text}; {note})" if note else f" ({text})"
+
+
+def _final_error(exc: BaseException, what: str, url: str, attempts: int,
+                 note: str = "") -> UpdateError:
+    tried = _attempts_note(attempts, note)
+    if isinstance(exc, urllib.error.HTTPError):
+        where = "from" if what == "fetching" else what
+        return UpdateError(f"HTTP {exc.code} {where} {url}{tried}", code=f"http_{exc.code}",
+                           details={"attempts": attempts})
+    return UpdateError(f"network error {what} {url}: {_describe(exc)}{tried}", code="network",
+                       details={"attempts": attempts})
+
+
+#: What :func:`_with_retries` catches from one attempt (everything else, such
+#: as an ``UpdateError`` for the overall deadline, ends the call at once).
+_NETWORK_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
+
+
+def _with_retries(attempt, *, url: str, what: str, pauses, deadline: float,
+                  wait_cap: float, on_retry=None):
+    """Run ``attempt()`` until it succeeds or a failure is final.
+
+    A failure is retried when it is transient, a pause is left in *pauses*,
+    and the wait (the scheduled pause, or longer if the server asked for it
+    with Retry-After, at most *wait_cap*) leaves at least a second before
+    *deadline* for the next attempt."""
+    attempts = len(pauses) + 1
+    for number in range(1, attempts + 1):
+        try:
+            return attempt()
+        except _NETWORK_ERRORS as exc:
+            wanted = _retry_wait(exc)
+            if wanted is None:
+                raise _final_error(exc, what, url, number,
+                                   "not retried" if number == 1 else "") from exc
+            if number == attempts:
+                raise _final_error(exc, what, url, number) from exc
+            pause = float(pauses[number - 1])
+            wait = max(pause, wanted)
+            if wait > wait_cap or time.monotonic() + wait + 1 >= deadline:
+                note = (f"the server asked to wait {wanted:.0f} s" if wanted > pause
+                        else "no time left to try again")
+                raise _final_error(exc, what, url, number, note) from exc
+            if on_retry is not None:
+                on_retry(exc, number + 1, attempts)
+            _sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _attempt_timeout(timeout: float, deadline: float) -> float:
+    """Socket timeout for one attempt: never past the call's deadline."""
+    return max(1.0, min(timeout, deadline - time.monotonic()))
+
+
+def http_get(url: str, *, accept: str | None = None, timeout: float = 30,
+             pauses=API_PAUSES) -> bytes:
+    """GET a small resource (HTTPS only), retrying transient failures.
+
+    The whole call, retries included, ends within about ``timeout +
+    sum(pauses)`` seconds."""
+    request = _request(url, accept)
+    deadline = time.monotonic() + timeout + sum(pauses)
+
+    def attempt() -> bytes:
+        with _opener().open(request, timeout=_attempt_timeout(timeout, deadline)) as resp:
             return resp.read()
-    except urllib.error.HTTPError as exc:
-        raise UpdateError(f"HTTP {exc.code} from {url}", code=f"http_{exc.code}") from exc
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        raise UpdateError(f"network error fetching {url}: {exc}", code="network") from exc
+
+    return _with_retries(attempt, url=url, what="fetching", pauses=pauses,
+                         deadline=deadline, wait_cap=RETRY_AFTER_CAP)
 
 
-def download(url: str, dest: Path, *, timeout: float = 600, quiet: bool = False) -> Path:
-    """Stream *url* to *dest* (HTTPS only). Returns *dest*."""
+def download(url: str, dest: Path, *, timeout: float = 600, quiet: bool = False,
+             pauses=DOWNLOAD_PAUSES) -> Path:
+    """Stream *url* to *dest* (HTTPS only). Returns *dest*.
+
+    Each attempt writes ``<dest>.part``, which becomes *dest* only when the
+    whole body arrived (a body cut short of its announced length counts as a
+    failure). A transient failure discards the partial file and tries again
+    after *pauses*; every attempt and pause stays within *timeout* seconds.
+    """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
+    request = _request(url)
     deadline = time.monotonic() + timeout
-    try:
-        with _opener().open(_request(url), timeout=min(timeout, 60)) as resp, \
-                open(tmp, "wb") as out:
-            total = 0
-            last_report = 0
-            while True:
-                if time.monotonic() > deadline:
-                    raise UpdateError(f"download timed out after {timeout}s: {url}",
-                                      code="timeout")
-                chunk = resp.read(1 << 20)
-                if not chunk:
-                    break
-                out.write(chunk)
-                total += len(chunk)
-                if total - last_report >= 8 << 20:
-                    log(f"  downloaded {total >> 20} MB", quiet=quiet)
-                    last_report = total
-    except urllib.error.HTTPError as exc:
-        tmp.unlink(missing_ok=True)
-        raise UpdateError(f"HTTP {exc.code} downloading {url}", code=f"http_{exc.code}") from exc
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        tmp.unlink(missing_ok=True)
-        if isinstance(exc, UpdateError):
+
+    def attempt() -> None:
+        try:
+            _download_once(request, tmp, url=url, timeout=timeout, deadline=deadline,
+                           quiet=quiet)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
             raise
-        raise UpdateError(f"network error downloading {url}: {exc}", code="network") from exc
-    os.replace(tmp, dest)
+
+    def say_retry(exc: BaseException, number: int, attempts: int) -> None:
+        log(f"  download failed ({_describe(exc)}); trying again ({number} of {attempts}) ...",
+            quiet=quiet)
+
+    _with_retries(attempt, url=url, what="downloading", pauses=pauses, deadline=deadline,
+                  wait_cap=RETRY_AFTER_CAP, on_retry=say_retry)
+    # Not a network failure and not retried: the file arrived, but it cannot
+    # take its final name (on Windows, for example, when that file is open).
+    # An existing *dest* stays as it was.
+    try:
+        os.replace(tmp, dest)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise UpdateError(f"the download finished but could not be saved as {dest}: {exc}",
+                          code="save_failed", details={"path": str(dest)}) from exc
     return dest
+
+
+def _download_once(request, tmp: Path, *, url: str, timeout: float, deadline: float,
+                   quiet: bool) -> None:
+    with _opener().open(request, timeout=_attempt_timeout(min(timeout, 60), deadline)) \
+            as resp, open(tmp, "wb") as out:
+        expected = resp.headers.get("Content-Length")
+        expected = int(expected) if expected and expected.strip().isdigit() else None
+        total = 0
+        last_report = 0
+        while True:
+            if time.monotonic() > deadline:
+                raise UpdateError(f"download timed out after {timeout}s: {url}",
+                                  code="timeout")
+            chunk = resp.read(1 << 20)
+            if not chunk:
+                break
+            out.write(chunk)
+            total += len(chunk)
+            if total - last_report >= 8 << 20:
+                log(f"  downloaded {total >> 20} MB", quiet=quiet)
+                last_report = total
+        if expected is not None and total < expected:
+            raise _Truncated(f"the connection closed after {total} of {expected} bytes")
 
 
 def github_commit_sha(repo: str, ref: str, *, timeout: float = 20) -> str:
