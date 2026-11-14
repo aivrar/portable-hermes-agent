@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-import tools.update_hermes_tool as tool
+from tests import HAS_CORE, NO_CORE_REASON
+
+if not HAS_CORE:          # the tool imports the core's tools.registry
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
+
+import tools.update_hermes_tool as tool  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -429,6 +429,7 @@ def _reference_marker():
     return Marker
 
 
+@pytest.mark.needs_core
 def test_marker_evaluator_matches_pip_packaging_on_real_lock_markers():
     import tomllib
     Marker = _reference_marker()
@@ -456,8 +457,9 @@ def test_specifier_matching():
     assert not core.specifier_matches("~=3.13.1", "3.14.0")
 
 
+@pytest.mark.needs_core
 def test_lock_plan_is_hash_pinned_and_resolver_free():
-    plan = core.dependency_plan(REPO_ROOT)
+    plan = core.dependency_plan(REPO_ROOT)        # the installed core's uv.lock
     assert plan["strategy"] == "uv.lock"
     names = {line.split("==")[0] for line in plan["requirements"]}
     assert {"openai", "requests", "pydantic"} <= names

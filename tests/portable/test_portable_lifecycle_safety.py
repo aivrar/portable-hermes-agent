@@ -209,6 +209,7 @@ def test_failed_restore_is_visible_and_never_called_kept(root, tmp_path):
     assert not marker(root).exists()
 
 
+@pytest.mark.needs_core
 def test_failed_restore_wording_in_the_cli_and_the_agent_tool(monkeypatch, capsys):
     from portable_hermes import __main__ as cli
     failure = {"ok": False, "code": "verify_failed", "reason": "x", "exit": 1,
@@ -216,7 +217,7 @@ def test_failed_restore_wording_in_the_cli_and_the_agent_tool(monkeypatch, capsy
     cli._emit(failure, False)
     text = capsys.readouterr().out
     assert "could not all be put back" in text and "UPDATE.bat" in text
-    tool = pytest.importorskip("tools.update_hermes_tool")
+    import tools.update_hermes_tool as tool
     monkeypatch.setattr(tool, "_run_portable", lambda args, timeout: dict(failure))
     out = json.loads(tool.update_hermes_handler({}))
     assert "could not all be put back" in out["note"] and "kept unchanged" not in out["note"]
@@ -361,8 +362,9 @@ def test_runtime_too_old_is_said_once_with_the_python_the_pin_provides(root, mon
     assert ">=3.11" not in printed
 
 
+@pytest.mark.needs_core
 def test_agent_tool_never_swaps_the_runtime_and_says_what_to_run(monkeypatch):
-    tool = pytest.importorskip("tools.update_hermes_tool")
+    import tools.update_hermes_tool as tool
     monkeypatch.setattr(tool, "_run_portable", lambda args, timeout: {
         "ok": False, "code": "runtime_too_old", "reason": "x", "exit": 4,
         "current_python": "3.13.12", "requires_python": ">=3.14", "target_python": "3.14.9"})

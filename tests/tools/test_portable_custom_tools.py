@@ -1,10 +1,15 @@
 import json
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# The portable tools import the Hermes core (tools.registry, hermes_cli,
+# hermes_constants); only the skill check below runs without it.
 
+
+@pytest.mark.needs_core
 def test_lm_studio_tools_default_to_standard_server_port(monkeypatch):
     from tools import lm_studio_tools
 
@@ -14,6 +19,7 @@ def test_lm_studio_tools_default_to_standard_server_port(monkeypatch):
     assert lm_studio_tools._resolve_lms_base() == "http://localhost:1234"
 
 
+@pytest.mark.needs_core
 def test_model_switcher_persists_current_config_schema(monkeypatch):
     from tools import model_switcher_tool
 
@@ -41,6 +47,7 @@ def test_model_switcher_persists_current_config_schema(monkeypatch):
     assert ("model", "default") in saved["kwargs"]["preserve_keys"]
 
 
+@pytest.mark.needs_core
 def test_workflows_use_profile_home_and_migrate_legacy_files(monkeypatch, tmp_path):
     from tools import workflow_tool
 
@@ -65,6 +72,7 @@ def test_workflows_use_profile_home_and_migrate_legacy_files(monkeypatch, tmp_pa
     assert not (legacy_dir / "new.json").exists()
 
 
+@pytest.mark.needs_core
 def test_extension_audio_cache_uses_profile_home(monkeypatch, tmp_path):
     from tools import extension_tools
 

@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from portable_hermes import common, ownership, runtime
+from tests import IN_CI
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows launchers")
 
@@ -257,13 +258,10 @@ def test_update_reads_yes_after_a_path_with_parentheses(tmp_path):
     assert "syntax of the command is incorrect" not in out(proc)
 
 
-@pytest.mark.live_system_guard_bypass
 def test_hermes_update_reads_yes_after_a_path_with_parentheses(tmp_path):
-    """The conftest guard blocks any "hermes ... update" command line because
-    upstream's updater would rewrite the real checkout. Here hermes.bat runs in
-    a throwaway install under tmp_path whose hermes_cli is a stub that only
-    prints its arguments, and the portable updater stops at the missing ZIP
-    before any download."""
+    """hermes.bat runs in a throwaway install under tmp_path whose hermes_cli is
+    a stub that only prints its arguments, and the portable updater stops at
+    the missing ZIP before any download."""
     root = make_install(tmp_path)
     env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
     proc = run(root, "hermes.bat", r"update --no-core --zip C:\x\file(1).zip -y", env=env,
@@ -1094,7 +1092,10 @@ def legacy_bytes(rel: str) -> bytes:
         raw = subprocess.run(["git", "-C", str(REPO_ROOT), "show", f"v1.4.18:{rel}"],
                              capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
-        pytest.skip("the v1.4.18 tag is not available in this checkout")
+        # In CI the tag is fetched on purpose: never skip these tests there.
+        (pytest.fail if IN_CI else pytest.skip)(
+            "the v1.4.18 tag is not available in this checkout "
+            "(git fetch origin tag v1.4.18 --no-tags)")
     return raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 
 

@@ -26,6 +26,7 @@ import pytest
 
 from portable_hermes import bridge, ownership, wrapper
 from portable_hermes.wrapper import WrapperUpdater
+from tests import IN_CI
 
 from test_portable_lifecycle import FakeVerify, write_files  # noqa: E402
 
@@ -62,7 +63,9 @@ def git(*args: str) -> subprocess.CompletedProcess:
 def archive(ref: str, dest: Path, prefix: str) -> Path:
     proc = git("archive", "--format=zip", f"--prefix={prefix}/", "-o", str(dest), ref)
     if proc.returncode != 0:
-        pytest.skip(f"git archive {ref} unavailable: {proc.stderr.decode(errors='replace')}")
+        # In CI the v1.4.18 tag is fetched on purpose: never skip this test there.
+        (pytest.fail if IN_CI else pytest.skip)(
+            f"git archive {ref} unavailable: {proc.stderr.decode(errors='replace')}")
     return dest
 
 

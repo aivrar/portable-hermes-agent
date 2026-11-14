@@ -3,6 +3,12 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
+from tests import HAS_CORE, NO_CORE_REASON
+
+if not HAS_CORE:  # tools.tool_maker imports the Hermes core
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

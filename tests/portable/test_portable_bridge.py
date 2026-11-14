@@ -95,6 +95,7 @@ print("RESULT " + json.dumps({
 """
 
 
+@pytest.mark.needs_core
 def test_repo_core_does_not_offer_portable_tools_without_the_bridge():
     """Documents why the bridge exists: upstream files stay unpatched."""
     result = _run(SELECTION_PROBE.replace("{setup}", ""))
@@ -102,6 +103,7 @@ def test_repo_core_does_not_offer_portable_tools_without_the_bridge():
     assert result["selected"] == [] and result["core"] == []
 
 
+@pytest.mark.needs_core
 def test_hook_augments_this_installs_toolsets_on_import():
     result = _run(SELECTION_PROBE.replace("{setup}", "bridge.install_hook()"))
     assert Path(result["origin"]).resolve().parent == REPO_ROOT
@@ -110,6 +112,7 @@ def test_hook_augments_this_installs_toolsets_on_import():
     assert result["core"] == sorted(bridge.PORTABLE_TOOLS)
 
 
+@pytest.mark.needs_core
 def test_pth_line_installs_the_hook_and_honours_the_opt_out(tmp_path):
     site_dir = tmp_path / "site"
     site_dir.mkdir()
@@ -159,6 +162,7 @@ def test_project_pth_follows_a_moved_folder(tmp_path):
     assert bridge.ensure_project_pth(site_dir) == "ok"
 
 
+@pytest.mark.needs_core
 def test_repo_core_real_tool_definitions_offer_portable_tools_to_cli_and_gui():
     """Fresh-process verification of this repo's core: tool discovery, the
     default CLI selection and definitions, and a real AIAgent(platform='gui')."""

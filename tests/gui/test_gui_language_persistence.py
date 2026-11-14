@@ -15,7 +15,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gui import i18n
+import pytest  # noqa: E402
+
+from tests import HAS_CORE, NO_CORE_REASON  # noqa: E402
+
+if not HAS_CORE:          # gui.app imports the core (hermes_constants, hermes_cli)
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
+
+from gui import i18n  # noqa: E402
 from gui.i18n import (
     t,
     get_language,

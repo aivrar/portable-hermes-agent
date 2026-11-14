@@ -658,6 +658,7 @@ def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
     assert "/XC /XN /XO" in installer
 
 
+@pytest.mark.needs_core  # the upstream comfyui skill comes with the core
 def test_portable_comfyui_skill_does_not_collide_with_upstream_skill():
     root = Path(build_release.PROJECT_ROOT)
     portable = (root / "skills/extensions/portable-comfyui/SKILL.md").read_text(
