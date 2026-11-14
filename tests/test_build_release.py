@@ -279,6 +279,57 @@ def test_an_uncommitted_change_stops_the_build_and_is_named(release_source):
         build_release.main()
 
 
+#: Shipped, but not in REQUIRED_RELEASE_FILES, so only the source check can
+#: notice when it is gone.
+OPTIONAL_FILE = "docs/hermes-guide.md"
+
+
+@pytest.mark.parametrize("how", ["deleted", "git rm"])
+def test_a_deleted_shipped_file_stops_the_build_and_is_named(release_source, capsys, how):
+    source, output = release_source
+    (source / "docs").mkdir()
+    (source / OPTIONAL_FILE).write_bytes(b"# Guide\n")
+    _git(source, "add", OPTIONAL_FILE)
+    _git(source, "commit", "-q", "-m", "a guide")
+    assert not build_release.should_exclude(OPTIONAL_FILE)
+    assert OPTIONAL_FILE not in build_release.REQUIRED_RELEASE_FILES
+    if how == "git rm":
+        _git(source, "rm", "-q", OPTIONAL_FILE)          # staged: git ls-files drops it
+    else:
+        (source / OPTIONAL_FILE).unlink()                # unstaged: still in the index
+    assert build_release.cli() == 1
+    message = capsys.readouterr().err
+    assert f"In the commit but missing here:\n    {OPTIONAL_FILE}\n" in message
+    assert "README.md" not in message and "not in the commit:" not in message
+    assert not output.exists() or list(output.iterdir()) == []
+
+
+def test_a_shipped_file_that_is_only_staged_stops_the_build_and_is_named(release_source,
+                                                                         capsys):
+    source, output = release_source
+    (source / "docs").mkdir()
+    (source / OPTIONAL_FILE).write_bytes(b"# Guide\n")
+    _git(source, "add", OPTIONAL_FILE)
+    assert build_release.cli() == 1
+    message = capsys.readouterr().err
+    assert f"To be shipped here but not in the commit:\n    {OPTIONAL_FILE}\n" in message
+    assert not output.exists() or list(output.iterdir()) == []
+
+
+def test_a_git_worktree_of_a_clean_commit_passes(release_source, monkeypatch):
+    """Also: the files the builder adds itself (payload copies, release.json)
+    are not compared with the commit's file list."""
+    source, output = release_source
+    worktree = source.parent / "worktree"
+    _git(source, "worktree", "add", "-q", "--detach", str(worktree), "HEAD")
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(worktree))
+    assert build_release.cli() == 0
+    manifest = _built_manifest(output)
+    assert manifest["git_archive_check"] == "passed"
+    assert "README.md" in manifest["payload"]
+    assert f"{ownership.PAYLOAD_DIR}/README.md" in manifest["files"]
+
+
 def test_a_source_that_is_not_a_git_checkout_needs_no_git_check(tmp_path, monkeypatch):
     source = tmp_path / "extracted"
     source.mkdir()

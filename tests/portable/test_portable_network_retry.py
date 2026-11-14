@@ -131,6 +131,29 @@ def test_download_never_waits_past_its_deadline(tmp_path, scripted_server, local
     assert info.value.reason.endswith("(2 attempts; no time left to try again)")
 
 
+def test_a_download_that_cannot_take_its_name_is_reported_and_cleaned_up(
+        tmp_path, scripted_server, local_http, waits, monkeypatch):
+    server = scripted_server(BODY, [])
+    dest = tmp_path / "out" / "core.zip"
+    dest.parent.mkdir()
+    dest.write_bytes(b"the earlier download")
+    real_replace = common.os.replace
+
+    def locked_replace(src, dst):
+        if str(dst) == str(dest):             # e.g. the file is open in another program
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(common.os, "replace", locked_replace)
+    with pytest.raises(UpdateError) as info:
+        common.download(server.url, dest, quiet=True)
+    assert info.value.code == "save_failed"   # not "network": nothing to try again
+    assert str(dest) in info.value.reason and "cannot access the file" in info.value.reason
+    assert server.hits == 1 and waits == []
+    assert files_in(dest.parent) == ["core.zip"]          # no core.zip.part left
+    assert dest.read_bytes() == b"the earlier download"   # the existing file is untouched
+
+
 def test_https_only_is_unchanged(tmp_path, waits):
     with pytest.raises(UpdateError) as info:
         common.download("http://example.invalid/x.zip", tmp_path / "x.zip")

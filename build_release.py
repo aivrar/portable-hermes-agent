@@ -23,9 +23,10 @@ Added for the evergreen wrapper:
 * ``portable_hermes/release.json``: version, source commit, the hash of every
   member and the payload list. The wrapper updater checks it.
 
-Before the ZIP is written, every file it would ship must be committed and
-byte-identical to ``git archive HEAD`` (no line-ending conversion, as GitHub
-builds its source archives). Installs that took these files from GitHub's
+Before the ZIP is written, the files it would ship must be exactly HEAD's
+release files (none deleted or added), each committed and byte-identical to
+``git archive HEAD`` (no line-ending conversion, as GitHub builds its source
+archives). Installs that took these files from GitHub's
 archive (the v1.4.18 updater downloads main.zip) would otherwise see other
 bytes, and the wrapper updater would keep unedited files as user edits. A
 checkout with ``core.autocrlf=true`` gives CRLF copies of files that have no
@@ -155,6 +156,21 @@ def _archived(rels):
     return found
 
 
+def _committed_release_files():
+    """The release files of HEAD itself: its tracked paths, filtered exactly like
+    the candidates (a deletion, staged or not, would otherwise just shrink the
+    candidate list)."""
+    try:
+        proc = subprocess.run(["git", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
+                              cwd=PROJECT_ROOT, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SourceCheckError(
+            "Release build stopped: `git ls-tree HEAD` failed: "
+            + exc.stderr.decode("utf-8", "replace").strip()) from exc
+    names = proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+    return {ownership.normalize(p) for p in names if p and not should_exclude(p)}
+
+
 def _difference(have, want):
     if have.replace(b"\r\n", b"\n") == want.replace(b"\r\n", b"\n"):
         here = "CRLF" if b"\r\n" in have else "LF"
@@ -164,8 +180,22 @@ def _difference(have, want):
 
 
 def check_sources(rels):
-    """Stop unless every file in *rels* is committed and byte-identical to what
-    ``git archive HEAD`` contains for it."""
+    """Stop unless *rels* are exactly HEAD's release files, every one committed
+    and byte-identical to what ``git archive HEAD`` contains for it."""
+    committed = _committed_release_files()
+    present = {rel for rel in rels if os.path.isfile(os.path.join(PROJECT_ROOT, rel))}
+    missing = sorted(committed - present)
+    extra = sorted(set(rels) - committed)
+    if missing or extra:
+        raise SourceCheckError(
+            "Release build stopped: the files to be shipped are not the files of the commit.\n"
+            + ("  In the commit but missing here:\n" if missing else "")
+            + "".join(f"    {rel}\n" for rel in missing)
+            + ("  To be shipped here but not in the commit:\n" if extra else "")
+            + "".join(f"    {rel}\n" for rel in extra)
+            + "A release is built from a commit: restore missing files (`git checkout HEAD -- "
+              "<file>`) or commit their removal, commit new files (or unstage them with "
+              "`git restore --staged <file>`), then build again.")
     changed = _uncommitted(rels)
     if changed:
         raise SourceCheckError(
@@ -341,9 +371,15 @@ def main():
     print(f"Output: {zip_path}")
 
 
-if __name__ == "__main__":
+def cli():
+    """Run :func:`main`; a failed source check prints its reason and returns 1."""
     try:
         main()
     except SourceCheckError as exc:
         print(f"\n{exc}", file=sys.stderr)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

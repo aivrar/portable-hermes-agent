@@ -497,7 +497,16 @@ def download(url: str, dest: Path, *, timeout: float = 600, quiet: bool = False,
 
     _with_retries(attempt, url=url, what="downloading", pauses=pauses, deadline=deadline,
                   wait_cap=RETRY_AFTER_CAP, on_retry=say_retry)
-    os.replace(tmp, dest)
+    # Not a network failure and not retried: the file arrived, but it cannot
+    # take its final name (on Windows, for example, when that file is open).
+    # An existing *dest* stays as it was.
+    try:
+        os.replace(tmp, dest)
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise UpdateError(f"the download finished but could not be saved as {dest}: {exc}",
+                          code="save_failed", details={"path": str(dest)}) from exc
     return dest
 
 
