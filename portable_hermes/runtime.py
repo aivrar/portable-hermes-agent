@@ -105,9 +105,10 @@ def write_plan_file(root: Path, info: dict) -> Path:
         if not _SAFE_RE.match(value):
             raise common.UpdateError(f"unsafe value for {key}: {value!r}", code="internal")
     path = common.state_dir(root) / PLAN_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
     body = "".join(f'set "{k}={v}"\r\n' for k, v in values.items())
-    path.write_bytes(("@rem written by portable_hermes runtime plan\r\n" + body).encode("ascii"))
+    # The note is the marker of an upgrade in progress: never half-written.
+    common.write_bytes_atomic(
+        path, ("@rem written by portable_hermes runtime plan\r\n" + body).encode("ascii"))
     return path
 
 
@@ -227,12 +228,11 @@ def write_resume_file(root: Path, info: dict) -> Path:
             _SAFE_RE.match(n) and n.startswith(RUNTIME_DIR + ".") for n in names):
         raise common.UpdateError(f"unsafe resume decision: {info!r}", code="internal")
     path = common.state_dir(root) / RESUME_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
     body = (f'set "PH_RESUME={info["decision"]}"\r\n'
             f'set "PH_FAILED_NAME={info["failed_name"]}"\r\n'
             f'set "PH_ASIDE_NAME={info["aside_name"]}"\r\n')
-    path.write_bytes(("@rem written by portable_hermes runtime resume\r\n" + body)
-                     .encode("ascii"))
+    common.write_bytes_atomic(
+        path, ("@rem written by portable_hermes runtime resume\r\n" + body).encode("ascii"))
     return path
 
 

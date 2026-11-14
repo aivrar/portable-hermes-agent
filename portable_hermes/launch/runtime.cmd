@@ -14,9 +14,12 @@
 :: is renamed.
 ::
 :: .portable\runtime-plan.cmd is the marker of an upgrade in progress: written
-:: before python_embedded is renamed, removed on every exit path that settles
-:: the upgrade. It is kept only when a folder could not be renamed back (exit
-:: code 4), so the next start tries again. The batch state the undo needs
+:: whole (never half) before python_embedded is renamed, removed on every exit
+:: path that settles the upgrade. It is kept only when a folder could not be
+:: renamed back (exit code 4), so the next start tries again. A note that
+:: cannot be read while nothing was renamed yet (python_embedded in place, no
+:: python_embedded.old-*) is renamed to runtime-plan.unreadable.cmd and the
+:: launch goes on (exit code 1). The batch state the undo needs
 :: (which markers existed before, whether the undo had started) is appended
 :: to it, so a resume knows it too.
 ::
@@ -49,6 +52,19 @@ set "PH_RESUME_FILE=.portable\runtime-resume.cmd"
         rem ---- an interrupted upgrade: decide with the previous Python ----
         if exist "%PH_PLAN%" call "%PH_PLAN%"
         if not defined PH_OLD_NAME (
+            rem Unreadable note, python_embedded in place, no python_embedded.old-*
+            rem folder: the upgrade never renamed anything. Set the note aside.
+            set "PH_HAS_OLD="
+            for /d %%D in ("python_embedded.old-*") do set "PH_HAS_OLD=1"
+            if exist "%PH_PLAN%" if exist "%PYTHON_EXE%" if not defined PH_HAS_OLD (
+                set "PH_NOTE_ASIDE=runtime-plan.unreadable.cmd"
+                for /l %%N in (2,1,99) do if exist ".portable\!PH_NOTE_ASIDE!" set "PH_NOTE_ASIDE=runtime-plan.unreadable-%%N.cmd"
+                ren "%PH_PLAN%" "!PH_NOTE_ASIDE!" 2>nul
+                if not exist "%PH_PLAN%" (
+                    echo   An unreadable note of a Python upgrade that had not started was set aside ^(.portable\!PH_NOTE_ASIDE!^). Nothing was changed.
+                    exit /b 1
+                )
+            )
             echo   The note .portable\runtime-plan.cmd of an interrupted Python upgrade
             echo   cannot be read. Hermes was not started. If a folder python_embedded.old-...
             echo   exists, rename it to python_embedded ^(after moving an incomplete
@@ -141,9 +157,17 @@ set "PH_RESUME_FILE=.portable\runtime-resume.cmd"
             >>"%PH_PLAN%" echo set "PH_HAD_INSTALLING=1"
         )
         if exist ".portable\deps-pending.json" (
+            rem Backed up first; the note records it only once the copy exists.
+            copy /y ".portable\deps-pending.json" ".portable\deps-pending.before-runtime-upgrade.json" >nul
+            if errorlevel 1 (
+                echo.
+                echo   The Python upgrade could not be prepared: .portable\deps-pending.json
+                echo   could not be backed up. Nothing was changed.
+                if exist "%PH_PLAN%" del "%PH_PLAN%"
+                exit /b 1
+            )
             set "PH_HAD_DEPS=1"
             >>"%PH_PLAN%" echo set "PH_HAD_DEPS=1"
-            copy /y ".portable\deps-pending.json" ".portable\deps-pending.before-runtime-upgrade.json" >nul
         )
         echo.
         echo   Moving python_embedded to !PH_OLD_NAME! ...

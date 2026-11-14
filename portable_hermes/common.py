@@ -162,6 +162,25 @@ def write_json_atomic(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write *data* so that *path* is never seen half-written (a power cut
+    leaves the previous file, or none): a temporary file in the same folder,
+    flushed to disk, then renamed over *path*."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
 def log(message: str, *, quiet: bool = False) -> None:
     """Print console-safe (ASCII) progress text."""
     if quiet:

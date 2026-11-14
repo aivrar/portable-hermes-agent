@@ -390,6 +390,35 @@ def test_runtime_plan_names_are_unique_and_safe(tmp_path):
         runtime.plan(tmp_path, "3.13", "3.14.9")
 
 
+def test_the_upgrade_note_is_written_whole_or_not_at_all(tmp_path, monkeypatch):
+    """The note marks an upgrade in progress: a half-written one would stop
+    every launch until the user renamed it by hand."""
+    path = runtime.write_plan_file(tmp_path, runtime.plan(tmp_path, "3.13.12", "3.14.9"))
+    whole = path.read_bytes()
+    assert whole == ("@rem written by portable_hermes runtime plan\r\n"
+                     'set "PH_OLD_NAME=python_embedded.old-3.13.12"\r\n'
+                     'set "PH_FAILED_NAME=python_embedded.failed-3.14.9"\r\n'
+                     'set "PH_OLD_VERSION=3.13.12"\r\n'
+                     'set "PH_TARGET=3.14.9"\r\n').encode("ascii")
+    assert [p.name for p in path.parent.iterdir()] == ["runtime-plan.cmd"]   # no temp file
+    # Cut off before the rename (power loss, disk error): the note that was
+    # there stays as it was, and no temporary file is left behind.
+    def cut(*args):
+        raise OSError("cut off")
+    monkeypatch.setattr(os, "replace", cut)
+    with pytest.raises(OSError):
+        runtime.write_plan_file(tmp_path, runtime.plan(tmp_path, "3.13.12", "3.14.10"))
+    assert path.read_bytes() == whole
+    assert [p.name for p in path.parent.iterdir()] == ["runtime-plan.cmd"]
+    monkeypatch.undo()
+    resume = runtime.write_resume_file(tmp_path, {
+        "decision": "discard", "failed_name": "python_embedded.failed-3.14.9",
+        "aside_name": "python_embedded.failed-3.14.9-2"})
+    assert sorted(p.name for p in path.parent.iterdir()) == ["runtime-plan.cmd",
+                                                             "runtime-resume.cmd"]
+    assert resume.name == "runtime-resume.cmd"
+
+
 def test_runtime_messages(tmp_path):
     (tmp_path / "python_embedded.old-3.13.12").mkdir()
     (tmp_path / "python_embedded.old-3.13.12" / "x.bin").write_bytes(b"x" * (3 << 20))

@@ -18,15 +18,17 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import venv
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from portable_hermes import common, runtime
+from portable_hermes import common, ownership, runtime
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows launchers")
 
@@ -400,6 +402,7 @@ UPGRADE_INSTALL = (
     "if exist \"%~dp0python_embedded\" echo STALE-RUNTIME-PRESENT\r\n"
     "xcopy /e /i /q \"%~dp0..\\spare-runtime\" \"%~dp0python_embedded\" >nul\r\n"
     "echo new> \"%~dp0python_embedded\\which.txt\"\r\n"
+    "if defined STANDIN_DEPS echo changed by the new core> \"%~dp0.portable\\deps-pending.json\"\r\n"
     "exit /b %STANDIN_EXIT%\r\n"
 )
 
@@ -483,6 +486,51 @@ def test_runtime_upgrade_asks_and_no_changes_nothing(tmp_path):
     assert "Nothing was changed" in proc.stdout and "STAND-IN" not in proc.stdout
     assert not list(root.glob("python_embedded.*"))
     assert not (root / ".portable" / "runtime-plan.cmd").exists()
+
+
+@pytest.mark.parametrize("had_note", [True, False])
+def test_failed_upgrade_puts_the_pending_package_note_back_byte_for_byte(tmp_path, had_note):
+    """The stand-in changes .portable\\deps-pending.json the way the new core's
+    package step would, then fails before the core commits."""
+    root = upgrade_setup(tmp_path)
+    note = root / ".portable" / "deps-pending.json"
+    before = b'{"packages": ["requests==2.31.0"]}\r\n'
+    if had_note:
+        note.parent.mkdir()
+        note.write_bytes(before)
+    env = base_env(tmp_path, STANDIN_EXIT="1", STANDIN_DEPS="1")
+    proc = run(root, "upgrade.cmd", "--yes", env=env)
+    assert proc.returncode == 1, out(proc)
+    assert "upgrade did not complete, so it was undone" in proc.stdout
+    if had_note:
+        assert note.read_bytes() == before
+    else:
+        assert not note.exists()
+    assert not (root / ".portable" / "deps-pending.before-runtime-upgrade.json").exists()
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+
+
+def test_upgrade_changes_nothing_when_the_pending_package_note_cannot_be_backed_up(tmp_path):
+    root = upgrade_setup(tmp_path)
+    state = root / ".portable"
+    state.mkdir()
+    note = state / "deps-pending.json"
+    note.write_bytes(b'{"packages": []}\r\n')
+    stale = state / "deps-pending.before-runtime-upgrade.json"
+    stale.write_bytes(b"stale\r\n")
+    os.chmod(stale, stat.S_IREAD)           # copy /y onto it fails: Access is denied
+    try:
+        proc = run(root, "upgrade.cmd", "--yes", env=base_env(tmp_path, STANDIN_EXIT="0"))
+    finally:
+        os.chmod(stale, stat.S_IREAD | stat.S_IWRITE)
+    assert proc.returncode == 1, out(proc)
+    assert "could not be backed up. Nothing was changed." in proc.stdout
+    assert "STAND-IN" not in proc.stdout
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+    assert not list(root.glob("python_embedded.*"))
+    assert not (state / "runtime-plan.cmd").exists()
+    assert note.read_bytes() == b'{"packages": []}\r\n'
+    assert stale.read_bytes() == b"stale\r\n"
 
 
 # --------------------------------------------------------------------------
@@ -607,6 +655,45 @@ def test_upgrade_interrupted_before_anything_moved_changes_nothing(tmp_path):
     assert not list(root.glob("python_embedded.*")) and not (root / PLAN).exists()
 
 
+def test_unreadable_note_of_an_upgrade_that_never_started_is_set_aside(tmp_path):
+    """An empty or cut-off note while python_embedded is in place and no
+    python_embedded.old-* exists: nothing was renamed, so Hermes starts."""
+    root = upgrade_setup(tmp_path)
+    (root / ".portable").mkdir()
+    notes = [(b"", "runtime-plan.unreadable.cmd"),
+             (b'@rem written by portable_hermes runtime plan\r\nset "PH_OLD',
+              "runtime-plan.unreadable-2.cmd")]
+    for content, aside in notes:
+        (root / PLAN).write_bytes(content)
+        proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="0"))
+        assert proc.returncode == 0, out(proc)
+        assert ("An unreadable note of a Python upgrade that had not started was set aside "
+                f"(.portable\\{aside}). Nothing was changed.") in proc.stdout
+        assert "STAND-IN" not in proc.stdout and "STUB_ARGS" in proc.stdout
+        assert not (root / PLAN).exists()
+        assert (root / ".portable" / aside).read_bytes() == content     # renamed, not deleted
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+    assert not list(root.glob("python_embedded.*"))
+
+
+@pytest.mark.parametrize("situation", ["previous python aside", "no python"])
+def test_unreadable_note_still_stops_the_launch_when_something_may_have_moved(
+        tmp_path, situation):
+    if situation == "no python":
+        root = make_install(tmp_path, runtime=False)
+    else:
+        root = upgrade_setup(tmp_path)
+        (root / "python_embedded.old-3.13.12").mkdir()
+    (root / ".portable").mkdir()
+    (root / PLAN).write_bytes(b"")
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="0"))
+    assert proc.returncode == 1, out(proc)
+    assert "cannot be read. Hermes was not started." in " ".join(proc.stdout.split())
+    assert "STUB_ARGS" not in proc.stdout and "set aside" not in proc.stdout
+    assert (root / PLAN).read_bytes() == b""                       # kept for the next start
+    assert not list((root / ".portable").glob("runtime-plan.unreadable*"))
+
+
 def test_hidden_gui_start_opens_a_window_to_finish_an_interrupted_upgrade(tmp_path):
     """hermes_gui.vbs starts the GUI without a window: the resume must not run
     there. prepare.cmd opens START.bat in a new console window instead, where
@@ -662,6 +749,73 @@ def test_install_step_6b_writes_run_py_sh_with_unix_line_endings(tmp_path):
                       + "exit /b 0\n", base_env(tmp_path))
     assert "[WARN] run_py.sh could not be written" in proc.stdout, out(proc)
     assert "[OK]" not in proc.stdout
+
+
+def step1_driver(root: Path, archive: Path) -> str:
+    """The real step-1 and step-2 lines of install.bat (move leftovers aside,
+    download, extract, configure, rename), downloading from a local file://
+    URL so no network is used."""
+    block = installer_block(":: A python_embedded folder without python.exe",
+                            ":: Step 3: Bootstrap pip")
+    head = ("@echo off\nsetlocal enabledelayedexpansion\n"
+            f'set "PH_ROOT={root}"\n'
+            f'set "PYTHON_DIR={root / "python_embedded"}"\n'
+            f'set "PYTHON_EXE={root / "python_embedded" / "python.exe"}"\n'
+            f'set "PYTHON_STAGE={root / "python_embedded.extracting"}"\n'
+            f'set "PYTHON_ZIP={root / "python_embedded.zip"}"\n'
+            f'set "PYTHON_URL={archive.as_uri()}"\n'
+            'set "PYTHON_VERSION=3.14.9"\nset "PYTHON_MINOR=314"\n')
+    return head + block + "echo REACHED-END\nexit /b 0\n:fail\necho REACHED-FAIL\nexit /b 1\n"
+
+
+def test_installer_never_extracts_into_a_leftover_staging_folder(tmp_path):
+    """A python_embedded.extracting left by an earlier attempt at another
+    Python version is moved aside, never mixed into the new runtime."""
+    archive = tmp_path / "src" / "python-3.14.9-embed-amd64.zip"
+    archive.parent.mkdir()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("python.exe", b"stand-in for the embeddable python.exe")
+        zf.writestr("python314._pth", "python314.zip\n.\n")
+        zf.writestr("python314.zip", b"stand-in standard library")
+    root = tmp_path / "inst"
+    (root / "python_embedded").mkdir(parents=True)          # incomplete: no python.exe
+    (root / "python_embedded" / "half.txt").write_text("half\n", encoding="ascii")
+    stage = root / "python_embedded.extracting"
+    stage.mkdir()
+    (stage / "python313._pth").write_text("stale\n", encoding="ascii")
+    (stage / "python313.zip").write_bytes(b"stale")
+    proc = run_driver(tmp_path, "step1.cmd", step1_driver(root, archive), base_env(tmp_path))
+    assert proc.returncode == 0 and "REACHED-END" in proc.stdout, out(proc)
+    assert ("[INFO] An incomplete python_embedded folder was moved to "
+            "python_embedded.incomplete.") in proc.stdout
+    assert ("[INFO] An unfinished python_embedded.extracting folder was moved to "
+            "python_embedded.incomplete-2.") in proc.stdout
+    assert "[OK] Embedded Python 3.14.9 ready." in proc.stdout
+    assert (root / "python_embedded.incomplete" / "half.txt").is_file()
+    assert (root / "python_embedded.incomplete-2" / "python313._pth").read_text() == "stale\n"
+    runtime_dir = root / "python_embedded"
+    assert sorted(p.name for p in runtime_dir.iterdir()) == [
+        "DLLs", "Lib", "python.exe", "python314._pth", "python314.zip"]
+    assert (runtime_dir / "python314._pth").read_text(encoding="ascii").splitlines() == [
+        "python314.zip", ".", "Lib", "Lib\\site-packages", "DLLs", "", "import site"]
+    assert not stage.exists()
+    # Moved-aside runtimes are user data for every updater (never removed).
+    assert ownership.is_user("python_embedded.incomplete-2/python313._pth")
+    assert ownership.is_user("python_embedded.extracting/python313._pth")
+    # A staging folder that cannot be moved (a program holds a file in it)
+    # stops setup before anything is downloaded or extracted.
+    root2 = tmp_path / "inst2"
+    (root2 / "python_embedded.extracting").mkdir(parents=True)
+    held = root2 / "python_embedded.extracting" / "python313._pth"
+    held.write_text("stale\n", encoding="ascii")
+    with open(held, "rb"):
+        proc = run_driver(tmp_path, "step1-held.cmd", step1_driver(root2, archive),
+                          base_env(tmp_path))
+    assert proc.returncode == 1 and "REACHED-FAIL" in proc.stdout, out(proc)
+    assert ("python_embedded.extracting could not be moved aside."
+            in " ".join(proc.stdout.split()))
+    assert "[STEP 1/10]" not in proc.stdout
+    assert sorted(p.name for p in root2.iterdir()) == ["python_embedded.extracting"]
 
 
 def test_installer_settles_an_interrupted_upgrade_before_installing(tmp_path):

@@ -137,6 +137,24 @@ if exist "%PYTHON_DIR%\" (
     )
     echo [INFO] An incomplete python_embedded folder was moved to !PH_ASIDE!.
 )
+:: A python_embedded.extracting left by an earlier attempt (perhaps of another
+:: Python version) is moved aside the same way: extracting over it would mix
+:: two runtimes.
+if exist "%PYTHON_STAGE%\" (
+    set "PH_ASIDE=python_embedded.incomplete"
+    for /l %%N in (2,1,99) do if exist "%PH_ROOT%\!PH_ASIDE!" set "PH_ASIDE=python_embedded.incomplete-%%N"
+    for /l %%T in (1,1,10) do if exist "%PYTHON_STAGE%\" (
+        ren "%PYTHON_STAGE%" "!PH_ASIDE!" 2>nul
+        if exist "%PYTHON_STAGE%\" ping -n 2 127.0.0.1 >nul
+    )
+    if exist "%PYTHON_STAGE%\" (
+        echo ERROR: The unfinished folder python_embedded.extracting could not be moved
+        echo        aside. Close every program started from this folder and run
+        echo        install.bat again.
+        goto :fail
+    )
+    echo [INFO] An unfinished python_embedded.extracting folder was moved to !PH_ASIDE!.
+)
 
 echo [STEP 1/10] Downloading Python %PYTHON_VERSION% embedded...
 set "PH_URL=%PYTHON_URL%"
