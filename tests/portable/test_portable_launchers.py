@@ -751,32 +751,112 @@ def test_install_step_6b_writes_run_py_sh_with_unix_line_endings(tmp_path):
     assert "[OK]" not in proc.stdout
 
 
-def step1_driver(root: Path, archive: Path) -> str:
+def step1_driver(root: Path, archive: Path | str) -> str:
     """The real step-1 and step-2 lines of install.bat (move leftovers aside,
-    download, extract, configure, rename), downloading from a local file://
-    URL so no network is used."""
+    download, extract, configure, rename) and its download subroutine,
+    downloading from a local file:// URL (or a local test server's URL) so no
+    network is used."""
     block = installer_block(":: A python_embedded folder without python.exe",
                             ":: Step 3: Bootstrap pip")
+    url = archive if isinstance(archive, str) else archive.as_uri()
     head = ("@echo off\nsetlocal enabledelayedexpansion\n"
             f'set "PH_ROOT={root}"\n'
             f'set "PYTHON_DIR={root / "python_embedded"}"\n'
             f'set "PYTHON_EXE={root / "python_embedded" / "python.exe"}"\n'
             f'set "PYTHON_STAGE={root / "python_embedded.extracting"}"\n'
             f'set "PYTHON_ZIP={root / "python_embedded.zip"}"\n'
-            f'set "PYTHON_URL={archive.as_uri()}"\n'
+            f'set "PYTHON_URL={url}"\n'
             'set "PYTHON_VERSION=3.14.9"\nset "PYTHON_MINOR=314"\n')
-    return head + block + "echo REACHED-END\nexit /b 0\n:fail\necho REACHED-FAIL\nexit /b 1\n"
+    return (head + block + "echo REACHED-END\nexit /b 0\n" + DOWNLOAD_SUBROUTINE
+            + ":fail\necho REACHED-FAIL\nexit /b 1\n")
+
+
+#: install.bat's download subroutine, from its header comment up to ":fail".
+DOWNLOAD_SUBROUTINE = installer_block(":: call :download - fetch", "\n:fail") + "\n"
+
+
+def embed_zip(path: Path) -> Path:
+    """A stand-in for the embeddable Python ZIP (what steps 1 and 2 need)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("python.exe", b"stand-in for the embeddable python.exe")
+        zf.writestr("python314._pth", "python314.zip\n.\n")
+        zf.writestr("python314.zip", b"stand-in standard library")
+    return path
+
+
+def test_every_installer_download_goes_through_the_retrying_subroutine():
+    text = (REPO_ROOT / "install.bat").read_text(encoding="ascii")
+    assert text.count("DownloadFile(") == 1 and ".DownloadFile($env:PH_URL, $part)" in text
+    assert text.count("call :download\n") == 3
+    for url_var in ("%PYTHON_URL%", "https://bootstrap.pypa.io/get-pip.py", "%TCLTK_URL%"):
+        step = text[text.index(f'set "PH_URL={url_var}"'):]
+        assert step.index("call :download") < step.index("goto :fail"), url_var
+    # The subroutine sits between the end of the install and :fail, so the
+    # installer still ends with its single failure exit.
+    assert text.index("exit /b 0\n\n:: ===") < text.index("\n:download\n") < text.index("\n:fail\n")
+
+
+def test_installer_retries_a_dropped_download(tmp_path, scripted_server):
+    """A reset connection, a cut-off body and a 503, then the real file: the
+    download is retried with growing pauses and only the complete file is used.
+
+    .NET itself sends a GET once more after a connection reset before any
+    answer, so the reset may not reach the retry loop; the cut-off body does:
+    WebClient reports it as a success, and the size check catches it."""
+    data = embed_zip(tmp_path / "src" / "python-3.14.9-embed-amd64.zip").read_bytes()
+    server = scripted_server(data, ["reset", "truncate", 503])
+    root = tmp_path / "inst"
+    root.mkdir()
+    started = time.monotonic()
+    proc = run_driver(tmp_path, "step1-retry.cmd", step1_driver(root, server.url),
+                      base_env(tmp_path))
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0 and "REACHED-END" in proc.stdout, out(proc)
+    lines = [line.strip() for line in proc.stdout.splitlines()]
+    retries = [line for line in lines if line.startswith("download failed (")]
+    assert len(retries) in (2, 3), out(proc)
+    assert [line.rsplit("; ", 1)[1] for line in retries] == [
+        f"trying again ({n} of 4) ..." for n in range(2, 2 + len(retries))]
+    assert any(f"the connection closed after {len(data) // 2} of {len(data)} bytes" in line
+               for line in retries)
+    assert "(503) Server Unavailable" in retries[-1]
+    assert "[OK] Embedded Python 3.14.9 ready." in proc.stdout
+    assert server.hits == 4 and elapsed >= sum((2, 5, 10)[:len(retries)])
+    assert sorted(p.name for p in root.iterdir()) == ["python_embedded"]
+
+
+def test_installer_gives_up_after_four_failed_downloads(tmp_path, scripted_server):
+    server = scripted_server(b"never sent", [503] * 4)
+    root = tmp_path / "inst"
+    root.mkdir()
+    proc = run_driver(tmp_path, "step1-down.cmd", step1_driver(root, server.url),
+                      base_env(tmp_path))
+    assert proc.returncode == 1 and "REACHED-FAIL" in proc.stdout, out(proc)
+    assert proc.stdout.count("trying again (") == 3
+    assert "gave up after 4 attempts." in proc.stdout
+    assert "ERROR: Failed to download Python. Check your internet connection." in proc.stdout
+    assert "Extracting" not in proc.stdout
+    assert server.hits == 4
+    assert list(root.iterdir()) == []                       # no partial download left
+
+
+def test_installer_does_not_retry_a_missing_file(tmp_path, scripted_server):
+    server = scripted_server(b"never sent", [404])
+    root = tmp_path / "inst"
+    root.mkdir()
+    proc = run_driver(tmp_path, "step1-404.cmd", step1_driver(root, server.url),
+                      base_env(tmp_path))
+    assert proc.returncode == 1 and "REACHED-FAIL" in proc.stdout, out(proc)
+    assert "trying again" not in proc.stdout and "not retried." in proc.stdout
+    assert "ERROR: Failed to download Python. Check your internet connection." in proc.stdout
+    assert server.hits == 1 and list(root.iterdir()) == []
 
 
 def test_installer_never_extracts_into_a_leftover_staging_folder(tmp_path):
     """A python_embedded.extracting left by an earlier attempt at another
     Python version is moved aside, never mixed into the new runtime."""
-    archive = tmp_path / "src" / "python-3.14.9-embed-amd64.zip"
-    archive.parent.mkdir()
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("python.exe", b"stand-in for the embeddable python.exe")
-        zf.writestr("python314._pth", "python314.zip\n.\n")
-        zf.writestr("python314.zip", b"stand-in standard library")
+    archive = embed_zip(tmp_path / "src" / "python-3.14.9-embed-amd64.zip")
     root = tmp_path / "inst"
     (root / "python_embedded").mkdir(parents=True)          # incomplete: no python.exe
     (root / "python_embedded" / "half.txt").write_text("half\n", encoding="ascii")

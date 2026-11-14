@@ -159,9 +159,11 @@ if exist "%PYTHON_STAGE%\" (
 echo [STEP 1/10] Downloading Python %PYTHON_VERSION% embedded...
 set "PH_URL=%PYTHON_URL%"
 set "PH_OUT=%PYTHON_ZIP%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-    "try { (New-Object Net.WebClient).DownloadFile($env:PH_URL, $env:PH_OUT) } catch { Write-Host $_.Exception.Message; exit 1 }"
+call :download
+if errorlevel 1 (
+    echo ERROR: Failed to download Python. Check your internet connection.
+    goto :fail
+)
 if not exist "%PYTHON_ZIP%" (
     echo ERROR: Failed to download Python. Check your internet connection.
     goto :fail
@@ -226,9 +228,11 @@ if %errorlevel% neq 0 (
     echo [STEP 3/10] Installing pip...
     set "PH_URL=https://bootstrap.pypa.io/get-pip.py"
     set "PH_OUT=%PYTHON_DIR%\get-pip.py"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-        "try { (New-Object Net.WebClient).DownloadFile($env:PH_URL, $env:PH_OUT) } catch { Write-Host $_.Exception.Message; exit 1 }"
+    call :download
+    if errorlevel 1 (
+        echo ERROR: Failed to install pip.
+        goto :fail
+    )
     "%PYTHON_EXE%" "%PYTHON_DIR%\get-pip.py" --quiet
     if errorlevel 1 (
         echo ERROR: Failed to install pip.
@@ -260,9 +264,11 @@ if exist "%PYTHON_DIR%\Lib\tkinter" (
 echo [STEP 5/10] Installing Tkinter GUI support...
 set "PH_URL=%TCLTK_URL%"
 set "PH_OUT=%TCLTK_MSI%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-    "try { (New-Object Net.WebClient).DownloadFile($env:PH_URL, $env:PH_OUT) } catch { Write-Host $_.Exception.Message; exit 1 }"
+call :download
+if errorlevel 1 (
+    echo ERROR: Could not download Tkinter.
+    goto :fail
+)
 if not exist "%TCLTK_MSI%" (
     echo ERROR: Could not download Tkinter.
     goto :fail
@@ -549,6 +555,41 @@ echo.
 :install_finished
 if defined PH_PAUSE pause
 endlocal
+exit /b 0
+
+:: ============================================
+:: call :download - fetch %PH_URL% to %PH_OUT%
+:: ============================================
+:: One dropped connection must not end setup: up to 4 attempts, 2, 5 and 10
+:: seconds apart, with one line per retry. Each attempt writes "<file>.part"
+:: and only a complete download is renamed to the final name, so a partial
+:: file is never taken for a finished one (WebClient accepts a body cut off by
+:: a closed connection, so the size is checked against Content-Length). An
+:: HTTP 4xx answer other than 408 and 429 (a missing file) is not retried.
+:: Exit code 0: the file is in place.
+:download
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
+    "$part = $env:PH_OUT + '.part'; $pauses = @(2, 5, 10); $tries = $pauses.Count + 1;" ^
+    "for ($n = 1; $n -le $tries; $n++) {" ^
+    "  try {" ^
+    "    $wc = New-Object Net.WebClient; $wc.DownloadFile($env:PH_URL, $part);" ^
+    "    $want = $null; if ($wc.ResponseHeaders) { $want = $wc.ResponseHeaders['Content-Length'] };" ^
+    "    $got = (Get-Item -LiteralPath $part).Length;" ^
+    "    if ($want -and [int64]$want -ne $got) { throw ('the connection closed after ' + $got + ' of ' + $want + ' bytes') };" ^
+    "    Move-Item -LiteralPath $part -Destination $env:PH_OUT -Force -ErrorAction Stop; exit 0" ^
+    "  } catch {" ^
+    "    $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException };" ^
+    "    Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue;" ^
+    "    $code = 0; if ($e -is [Net.WebException] -and $e.Response -is [Net.HttpWebResponse]) { $code = [int]$e.Response.StatusCode };" ^
+    "    if ($code -ge 400 -and $code -lt 500 -and $code -ne 408 -and $code -ne 429) { Write-Host ('       download failed (' + $e.Message + '); not retried.'); exit 1 };" ^
+    "    if ($n -eq $tries) { Write-Host ('       download failed (' + $e.Message + '); gave up after ' + $tries + ' attempts.'); exit 1 };" ^
+    "    Write-Host ('       download failed (' + $e.Message + '); trying again (' + ($n + 1) + ' of ' + $tries + ') ...');" ^
+    "    Start-Sleep -Seconds $pauses[$n - 1]" ^
+    "  }" ^
+    "};" ^
+    "exit 1"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :fail
