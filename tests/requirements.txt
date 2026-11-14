@@ -1,0 +1,5 @@
+# What the wrapper tests need besides the Hermes core (installed into the
+# checkout by START.bat or `python -m portable_hermes core install`, which
+# also installs the core's own dependencies):
+#   python -m pip install -r tests/requirements.txt
+pytest==9.1.1

@@ -2,7 +2,7 @@
 
 The update logic itself is covered offline in tests/portable/. These tests pin
 the model-visible contract: names, toolset, schema compatibility, how results
-are reported (restart notice, kept core, git checkouts) and that no upstream
+are reported (restart notice, kept core, git clones) and that no upstream
 file is patched any more.
 """
 
@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-import tools.update_hermes_tool as tool
+from tests import HAS_CORE, NO_CORE_REASON
+
+if not HAS_CORE:          # the tool imports the core's tools.registry
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
+
+import tools.update_hermes_tool as tool  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -87,12 +92,21 @@ def test_update_failure_says_the_core_was_kept(calls):
     assert "kept unchanged" in out["note"]
 
 
-def test_update_in_a_git_checkout_is_reported_not_performed(calls):
+def test_check_in_a_git_clone_points_the_wrapper_at_git_pull(calls):
+    # A clone gets its core from the portable updater like a ZIP install;
+    # only the wrapper channel belongs to git.
     _, replies = calls
-    replies[("core", "update")] = _completed({
-        "ok": False, "code": "git_checkout", "reason": "this install is a git checkout"}, 3)
-    out = json.loads(tool.update_hermes_handler({}))
-    assert not out["success"] and out["install_type"] == "git"
+    replies[("core", "check")] = _completed({"ok": True, "install_type": "zip",
+                                             "commit": "a" * 40, "update_available": False})
+    replies[("wrapper", "check")] = _completed({"ok": True, "install_type": "git",
+                                                "installed_version": "unknown",
+                                                "latest_version": "v2.1.0",
+                                                "update_available": True})
+    out = json.loads(tool.check_updates_handler({}))
+    assert "Core: up to date." in out["summary"]
+    assert "Portable wrapper: git checkout, update it with git pull." in out["summary"]
+    assert "UPDATE.bat" not in out["summary"]
+    assert "git checkout" not in tool.UPDATE_SCHEMA["description"]
 
 
 def test_timeout_is_reported_with_the_recovery_path(monkeypatch):

@@ -11,6 +11,9 @@
 ::                                     install the core. Exit code 11 means the
 ::                                     core was installed but a later step failed.
 ::
+:: Exit code 12: this folder is GitHub's source download (it lacks the
+:: portable tools); a message said so and nothing was changed.
+::
 :: No command line that runs after "setlocal enabledelayedexpansion" below may
 :: contain a literal exclamation mark: cmd.exe would read it as the start of a
 :: variable. Python one-liners write it as chr(33).
@@ -33,6 +36,27 @@ set "PH_REARGS="
 if defined PH_UPGRADE set "PH_REARGS=--runtime-upgrade"
 call .\portable_hermes\launch\env.cmd
 if errorlevel 1 exit /b 1
+
+:: GitHub's source download ("Download ZIP", or "Source code" on a release
+:: page) leaves out tools\ and skills\ (export-ignore in .gitattributes),
+:: so it cannot be installed. Say so before anything is downloaded or
+:: written. A release has release.json, a clone has .git, and both have
+:: the portable tools. start.cmd hands START.bat over to this check.
+if not exist "%PH_ROOT%\tools\update_hermes_tool.py" if not exist "%PH_ROOT%\portable_hermes\release.json" if not exist "%PH_ROOT%\.git" (
+    echo.
+    echo   This folder is GitHub's source download of Portable Hermes. It lacks
+    echo   the portable tools, so it cannot be installed.
+    echo.
+    echo   Download portable-hermes-agent-vX.Y.Z.zip from the Assets list on
+    echo     https://github.com/aivrar/portable-hermes-agent/releases/latest
+    echo   ^(not "Source code"^), then extract it into a new folder and run
+    echo   START.bat there.
+    echo.
+    echo   Nothing was installed or changed.
+    echo.
+    if defined PH_PAUSE pause
+    exit /b 12
+)
 
 :: An interrupted update is settled first. The recovery may put back an older
 :: copy of this very file, so it runs inside one parenthesised block (read

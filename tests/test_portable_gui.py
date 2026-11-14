@@ -4,6 +4,11 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+# Most GUI modules import the Hermes core (dotenv, hermes_constants, run_agent);
+# the branding check runs without it.
+
 
 def _bridge_shell(agent_bridge, tmp_path):
     bridge = object.__new__(agent_bridge.AgentBridge)
@@ -20,6 +25,7 @@ def _bridge_shell(agent_bridge, tmp_path):
     return bridge
 
 
+@pytest.mark.needs_core
 def test_portable_gui_modules_import():
     modules = (
         "gui.agent_bridge",
@@ -35,6 +41,7 @@ def test_portable_gui_modules_import():
     assert all(importlib.import_module(module) for module in modules)
 
 
+@pytest.mark.needs_core
 def test_gui_startup_never_probes_lm_studio_on_tk_thread(monkeypatch):
     """Network discovery starts later in Sidebar.refresh_models' worker thread."""
     from gui import app
@@ -113,6 +120,7 @@ def test_gui_keeps_portable_branding_and_has_no_stale_version_label():
     assert "Hermes Agent v0.2.0" not in source
 
 
+@pytest.mark.needs_core
 def test_gui_bridge_uses_current_runtime_provider(monkeypatch, tmp_path):
     from gui import agent_bridge
     import run_agent
@@ -153,6 +161,7 @@ def test_gui_bridge_uses_current_runtime_provider(monkeypatch, tmp_path):
     assert captured["platform"] == "gui"
 
 
+@pytest.mark.needs_core
 def test_gui_approval_bridge_returns_current_approval_choices():
     from gui.agent_bridge import AgentBridge
 
@@ -178,6 +187,7 @@ def test_gui_approval_bridge_returns_current_approval_choices():
     assert bridge._approval_callback("dangerous command", "changes files") == "deny"
 
 
+@pytest.mark.needs_core
 def test_local_chat_receives_saved_lmstudio_key(monkeypatch, tmp_path):
     from gui import agent_bridge, lm_studio
     import run_agent
@@ -200,6 +210,7 @@ def test_local_chat_receives_saved_lmstudio_key(monkeypatch, tmp_path):
     assert captured["skip_context_files"] is False
 
 
+@pytest.mark.needs_core
 def test_real_local_gui_agent_constructs_without_install_tree_instructions(monkeypatch, tmp_path):
     from gui import agent_bridge
     from agent.system_prompt import build_system_prompt
@@ -218,6 +229,7 @@ def test_real_local_gui_agent_constructs_without_install_tree_instructions(monke
         bridge.agent = None
 
 
+@pytest.mark.needs_core
 def test_gui_bridge_close_releases_owned_session_database():
     from gui.agent_bridge import AgentBridge
 
@@ -237,6 +249,7 @@ def test_gui_bridge_close_releases_owned_session_database():
     assert bridge._session_db is None
 
 
+@pytest.mark.needs_core
 def test_gui_skill_browser_discovers_current_nested_skill_layout(tmp_path):
     from gui.app import _discover_installed_skills
 
@@ -258,6 +271,7 @@ def test_gui_skill_browser_discovers_current_nested_skill_layout(tmp_path):
     }
 
 
+@pytest.mark.needs_core
 def test_gui_api_key_wizard_persists_to_active_hermes_home(monkeypatch, tmp_path):
     from gui import api_setup_wizard
 

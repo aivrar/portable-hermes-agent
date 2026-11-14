@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from portable_hermes import common, ownership, runtime
+from tests import IN_CI
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows launchers")
 
@@ -65,16 +66,24 @@ def make_runtime(folder: Path) -> None:
 
 
 def make_install(base: Path, name: str = AWKWARD, *, runtime: bool = True,
-                 gui: bool = False) -> Path:
+                 gui: bool = False, core: bool = True, release: bool = True) -> Path:
+    """A stand-in install: the real launchers and portable_hermes, a stub core
+    (``run_agent.py`` and a ``hermes_cli`` that prints its arguments) and, like
+    every release, ``portable_hermes/release.json``."""
     root = base / name
     root.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "portable_hermes", root / "portable_hermes",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+                    ignore=shutil.ignore_patterns("__pycache__", "release.json", "payload"))
     for bat in TRAMPOLINES:
         shutil.copy2(REPO_ROOT / bat, root / bat)
+    if release:
+        (root / "portable_hermes" / "release.json").write_text(json.dumps(
+            {"schema": 1, "version": "v0.0.0", "files": {}, "payload": {}}))
     (root / "hermes_cli").mkdir()
     (root / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_cli" / "main.py").write_text(STUB_CLI)
+    if core:
+        (root / "run_agent.py").write_text("# stub core\n")
     if gui:
         (root / "gui").mkdir()
         (root / "gui" / "__init__.py").write_text("")
@@ -249,13 +258,10 @@ def test_update_reads_yes_after_a_path_with_parentheses(tmp_path):
     assert "syntax of the command is incorrect" not in out(proc)
 
 
-@pytest.mark.live_system_guard_bypass
 def test_hermes_update_reads_yes_after_a_path_with_parentheses(tmp_path):
-    """The conftest guard blocks any "hermes ... update" command line because
-    upstream's updater would rewrite the real checkout. Here hermes.bat runs in
-    a throwaway install under tmp_path whose hermes_cli is a stub that only
-    prints its arguments, and the portable updater stops at the missing ZIP
-    before any download."""
+    """hermes.bat runs in a throwaway install under tmp_path whose hermes_cli is
+    a stub that only prints its arguments, and the portable updater stops at
+    the missing ZIP before any download."""
     root = make_install(tmp_path)
     env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
     proc = run(root, "hermes.bat", r"update --no-core --zip C:\x\file(1).zip -y", env=env,
@@ -345,15 +351,26 @@ def test_pending_package_change_is_announced(tmp_path):
     assert "UPDATE.bat" in proc.stdout and "STUB_ARGS" in proc.stdout
 
 
+#: Like the real install.bat, it leaves the core installer's record behind
+#: (.portable\core-state.json); it writes no run_agent.py, so the launchers
+#: are shown to rely on the record, not on an upstream file name.
 STAND_IN_INSTALL = (
     "@echo off\r\n"
     "echo STAND-IN install.bat %*\r\n"
     "if defined STANDIN_FAIL exit /b 1\r\n"
     "if not exist \"%~dp0python_embedded\\python.exe\" xcopy /e /i /q "
     "\"%~dp0..\\spare-runtime\" \"%~dp0python_embedded\" >nul\r\n"
+    "if not exist \"%~dp0.portable\" mkdir \"%~dp0.portable\"\r\n"
+    "if not exist \"%~dp0.portable\\core-state.json\" echo {}> \"%~dp0.portable\\core-state.json\"\r\n"
     "if exist \"%~dp0.portable\\installing\" del \"%~dp0.portable\\installing\"\r\n"
     "exit /b 0\r\n"
 )
+
+
+def write_core_record(root: Path) -> None:
+    """The record the core installer writes (portable_hermes.core.STATE_FILE)."""
+    (root / ".portable").mkdir(exist_ok=True)
+    (root / ".portable" / "core-state.json").write_text("{}", encoding="ascii")
 
 
 def test_first_start_runs_setup_then_hermes(tmp_path):
@@ -380,6 +397,172 @@ def test_unfinished_setup_runs_again_and_failure_stops_the_launch(tmp_path):
     # A legacy install (no marker) just starts.
     proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
     assert "STAND-IN" not in proc.stdout and "STUB_ARGS" in proc.stdout
+
+
+def test_a_folder_with_python_but_no_core_runs_setup_first(tmp_path):
+    """A git clone has no core (the repository holds only the wrapper): with a
+    Python already in place, the next start installs the core first. After
+    that, the core installer's record alone means "installed"."""
+    root = make_install(tmp_path, core=False)
+    (root / "install.bat").write_bytes(STAND_IN_INSTALL.encode("ascii"))
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
+    assert proc.returncode == 0, out(proc)
+    text = proc.stdout
+    assert "This folder has no Hermes core yet. Running setup to install it now." in text
+    assert "did not finish" not in text
+    assert text.index("no Hermes core yet") < text.index("STAND-IN install.bat")
+    assert text.index("STAND-IN install.bat") < text.index("STUB_ARGS")
+    assert (root / ".portable" / "core-state.json").is_file()
+    assert not (root / "run_agent.py").exists()
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
+    assert "STAND-IN" not in proc.stdout and "STUB_ARGS" in proc.stdout
+
+
+@pytest.mark.parametrize("record, run_agent, setup", [
+    (False, False, True),   # no core at all (a fresh clone): setup
+    (True, False, False),   # a core our installer recorded, whatever upstream calls its files
+    (True, True, False),
+    (False, True, False),   # a core from v1.4.18 or older, which has no record
+])
+def test_setup_runs_only_when_neither_the_core_record_nor_an_old_core_exists(
+        tmp_path, record, run_agent, setup):
+    root = make_install(tmp_path, core=run_agent)
+    (root / "install.bat").write_bytes(STAND_IN_INSTALL.encode("ascii"))
+    if record:
+        write_core_record(root)
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
+    assert proc.returncode == 0, out(proc)
+    assert ("STAND-IN install.bat" in proc.stdout) is setup, out(proc)
+    assert "STUB_ARGS" in proc.stdout
+
+
+HANDOVER_NOTE = "NOTE: the update is not finished. Run UPDATE.bat once more."
+
+
+def test_v1_4_18_hand_over_state_says_to_run_update_once_more(tmp_path):
+    """After the first UPDATE.bat of a v1.4.18 install: the new launchers came
+    from the repository's main ZIP (no release.json) and the old core, with its
+    complete tools folder, is still there. Hermes starts, with a note."""
+    root = make_install(tmp_path, release=False)
+    (root / "tools").mkdir()
+    (root / "tools" / "registry.py").write_text("registry = None\n")
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
+    assert proc.returncode == 0, out(proc)
+    assert HANDOVER_NOTE in proc.stdout
+    assert proc.stdout.index(HANDOVER_NOTE) < proc.stdout.index("STUB_ARGS")
+    assert "Hermes was not started" not in proc.stdout
+    # UPDATE.bat itself is the way out: no note there.
+    proc = run(root, "UPDATE.bat", "--yes --no-core --zip missing.zip", env=base_env(tmp_path))
+    assert "wrapper archive not found" in proc.stdout, out(proc)
+    assert HANDOVER_NOTE not in proc.stdout
+    # A release (release.json), a git clone (.git) or a core our installer put
+    # there (its record) is never in that state, even without tools\registry.py.
+    for marker in ("release", "git", "record"):
+        other = make_install(tmp_path / marker, release=marker == "release")
+        if marker == "git":
+            (other / ".git").mkdir()
+        if marker == "record":
+            write_core_record(other)
+        proc = run(other, "hermes.bat", "chat", env=base_env(tmp_path))
+        assert proc.returncode == 0 and "STUB_ARGS" in proc.stdout, out(proc)
+        assert HANDOVER_NOTE not in proc.stdout, marker
+
+
+def test_hand_over_state_with_an_incomplete_core_does_not_start_hermes(tmp_path):
+    """If the old updater replaced the whole tools folder (GitHub ignoring
+    export-ignore), the old core cannot start: say so instead of a traceback."""
+    root = make_install(tmp_path, release=False)
+    env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
+    proc = run(root, "hermes.bat", "chat", env=env, stdin="\n")
+    assert proc.returncode == 1, out(proc)
+    text = " ".join(proc.stdout.split())
+    assert HANDOVER_NOTE in text
+    assert ("Hermes was not started: its core is incomplete until UPDATE.bat has run once "
+            "more. Your settings and data are kept.") in text
+    assert "Press any key" in text
+    assert "STUB_ARGS" not in proc.stdout
+
+
+# --------------------------------------------------------------------------
+# GitHub's source download (no portable tools): a plain message, nothing done
+# --------------------------------------------------------------------------
+
+SOURCE_DOWNLOAD_LINES = (
+    "This folder is GitHub's source download of Portable Hermes. It lacks the portable "
+    "tools, so it cannot be installed.",
+    "Download portable-hermes-agent-vX.Y.Z.zip from the Assets list on "
+    "https://github.com/aivrar/portable-hermes-agent/releases/latest (not \"Source code\"), "
+    "then extract it into a new folder and run START.bat there.",
+    "Nothing was installed or changed.",
+)
+
+
+def source_download(base: Path) -> Path:
+    """The launchers and the real install.bat as GitHub's source ZIP has them:
+    no tools/, no release.json, no .git, no Python. python-runtime.txt is left
+    out as a tripwire: if the check let setup go on, install.bat would stop at
+    its missing-pin error, before any download."""
+    root = base / AWKWARD
+    root.mkdir(parents=True)
+    shutil.copytree(REPO_ROOT / "portable_hermes", root / "portable_hermes",
+                    ignore=shutil.ignore_patterns("__pycache__", "release.json", "payload",
+                                                  "python-runtime.txt"))
+    for bat in TRAMPOLINES + ("install.bat",):
+        shutil.copy2(REPO_ROOT / bat, root / bat)
+    return root
+
+
+def tree(root: Path) -> list:
+    return sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+
+
+@pytest.mark.parametrize("bat, expected_rc", [
+    ("START.bat", 12), ("install.bat", 12), ("hermes.bat", 1), ("hermes_gui.bat", 1)])
+def test_source_download_explains_itself_and_changes_nothing(tmp_path, bat, expected_rc):
+    root = source_download(tmp_path)
+    before = tree(root)
+    env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)      # a double-click
+    proc = run(root, bat, env=env, stdin="\n")
+    text = " ".join(proc.stdout.split())
+    assert proc.returncode == expected_rc, out(proc)
+    for line in SOURCE_DOWNLOAD_LINES:
+        assert line in text, out(proc)
+    assert "Press any key" in text                       # the window stays open
+    assert text.count("Press any key") == 1
+    assert "python-runtime.txt is missing" not in text   # stopped before setup
+    for later in ("First Time Setup", "Starting Hermes", "Setup did not finish",
+                  "GUI exited with an error", "Installer"):
+        assert later not in text, (later, out(proc))
+    assert NOT_RECOGNIZED not in out(proc)
+    assert tree(root) == before
+    assert not (tmp_path / "home").exists()
+
+
+def test_source_download_check_never_pauses_unattended(tmp_path):
+    root = source_download(tmp_path)
+    env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
+    proc = run(root, "install.bat", "--yes", env=env, stdin="")
+    assert proc.returncode == 12, out(proc)
+    assert "Nothing was installed or changed." in proc.stdout
+    assert "Press any key" not in out(proc)
+
+
+def test_source_download_check_is_the_same_in_install_bat_and_start_cmd():
+    """START.bat hands over to install.bat on exactly the test install.bat
+    makes, so the message comes before the welcome text. The file it looks for
+    is part of every release; release.json is written into every release."""
+    condition = ('if not exist "%PH_ROOT%\\tools\\update_hermes_tool.py" if not exist '
+                 '"%PH_ROOT%\\portable_hermes\\release.json" if not exist "%PH_ROOT%\\.git" ')
+    install = (REPO_ROOT / "install.bat").read_text(encoding="ascii")
+    start = (REPO_ROOT / "portable_hermes" / "launch" / "start.cmd").read_text(encoding="ascii")
+    assert install.count(condition + "(") == 1
+    assert start.count(condition + ".\\install.bat\n") == 1
+    assert start.index(condition) < start.index("First Time Setup")
+    # Before anything that writes or downloads.
+    assert install.index(condition) < install.index("journal.json")
+    assert install.index(condition) < install.index(":: Step 1:")
+    assert "tools/update_hermes_tool.py" in ownership.REQUIRED_RELEASE_FILES
+    assert ownership.RELEASE_MANIFEST == "portable_hermes/release.json"
 
 
 # --------------------------------------------------------------------------
@@ -943,7 +1126,10 @@ def legacy_bytes(rel: str) -> bytes:
         raw = subprocess.run(["git", "-C", str(REPO_ROOT), "show", f"v1.4.18:{rel}"],
                              capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
-        pytest.skip("the v1.4.18 tag is not available in this checkout")
+        # In CI the tag is fetched on purpose: never skip these tests there.
+        (pytest.fail if IN_CI else pytest.skip)(
+            "the v1.4.18 tag is not available in this checkout "
+            "(git fetch origin tag v1.4.18 --no-tags)")
     return raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 
 

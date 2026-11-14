@@ -223,16 +223,18 @@ def folder_size_mb(path: Path) -> int:
 def kept_sentence(result: dict) -> str | None:
     """One sentence about the copies an update kept (None when it kept none).
 
-    Adopting a legacy install keeps the previous core's files, which have no
-    record of what was installed: they are not the user's edits, so they get
-    their own sentence."""
+    Adopting a legacy install keeps the previous files, which have no record
+    of what was installed: they are not the user's edits, so they get their
+    own sentence. ``adopted_what`` names them (the core's result leaves it
+    out; the wrapper's says "the previous Portable Hermes version")."""
     count, where = result.get("kept_edits_count"), result.get("kept_edits")
     if not count:
         return None
     if result.get("adopted"):
+        what = result.get("adopted_what") or "the previous Hermes core"
         size = result.get("kept_edits_mb")
         size_text = f" ({size} MB)" if isinstance(size, int) else ""
-        return (f"{count} file(s) of the previous Hermes core were kept in {where}{size_text}, "
+        return (f"{count} file(s) of {what} were kept in {where}{size_text}, "
                 "as they were before this update (with any change you made to them). "
                 "Once Hermes works, you may delete that folder.")
     return (f"{count} file(s) that differed from what was installed (your edits or files we "

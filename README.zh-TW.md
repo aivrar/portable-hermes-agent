@@ -88,7 +88,7 @@ Portable Hermes 由**兩個分開更新的部分**組成：
 
 新核心會先在暫存資料夾中安裝相依套件並在另一個程序中測試，通過後才替換檔案；失敗時檔案會還原，變更過的套件會恢復並經過檢查（若無法全部恢復，更新會明確告知，再執行一次 `UPDATE.bat` 即可完成）。如果更新中途被中斷（停電或關閉了視窗），下次啟動 Hermes 時會先將其完成或復原，然後才執行其他內容。
 
-兩種更新都永遠不會更動 `.env`、`cli-config.yaml`、`HERMES_HOME`（設定、對話紀錄、自訂工具、LM Studio 設定、語言偏好）、`extensions\`、`workflows\` 與 `workspace\`；`python_embedded\` 只會在安裝核心所需的套件及上述 Python 升級時變更。如果你修改過的檔案將被更新替換，會先把它複製到 `.portable\kept\`。核心更新後請重新啟動 Hermes。Git 複本（開發者）請使用 `git pull` 更新。
+兩種更新都永遠不會更動 `.env`、`cli-config.yaml`、`HERMES_HOME`（設定、對話紀錄、自訂工具、LM Studio 設定、語言偏好）、`extensions\`、`workflows\` 與 `workspace\`；`python_embedded\` 只會在安裝核心所需的套件及上述 Python 升級時變更。如果你修改過的檔案將被更新替換，會先把它複製到 `.portable\kept\`。核心更新後請重新啟動 Hermes。在 Git 複本中（開發者），`git pull` 更新便攜外殼；`START.bat` 會把核心安裝到複本中，`UPDATE.bat` 負責更新核心。
 
 更多操作與最新細節請參閱[英文版便攜 README](README.md)。[發行頁 PDF 手冊](https://github.com/aivrar/portable-hermes-agent/releases/latest)中的安裝與更新章節描述的是舊版本，目前的流程請以本 README 與 `START_HERE.txt` 為準。
 

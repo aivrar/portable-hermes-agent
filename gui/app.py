@@ -1115,7 +1115,10 @@ class SettingsDialog(tk.Toplevel):
 
 def _discover_installed_skills(skills_dir: Path) -> Dict[str, list]:
     """Return current nested SKILL.md entries grouped for the GUI browser."""
-    import yaml
+    try:
+        import hermes_yaml as yaml      # the core's YAML module; upstream dropped PyYAML
+    except ImportError:
+        import yaml                     # older cores
 
     categories: Dict[str, list] = {}
     for skill_md in sorted(skills_dir.rglob("SKILL.md")):

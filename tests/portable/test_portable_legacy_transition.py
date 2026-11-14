@@ -8,6 +8,10 @@ the repository's main-branch source ZIP and swaps every top-level entry in it
 then runs what the user runs next: a launch (repair), the wrapper check, and a
 wrapper update from a release ZIP built by ``build_release.py``.
 
+``git archive`` leaves out ``tools/`` and ``skills/`` (export-ignore in
+``.gitattributes``), as GitHub's ZIP does, so the swap keeps the old core's
+tools and skills whole, including hand-placed ``tools/custom`` files.
+
 Offline. Slow (about a minute): it extracts two full repository archives.
 """
 
@@ -24,8 +28,9 @@ from pathlib import Path
 
 import pytest
 
-from portable_hermes import bridge, ownership, wrapper
+from portable_hermes import bridge, common, ownership, wrapper
 from portable_hermes.wrapper import WrapperUpdater
+from tests import IN_CI
 
 from test_portable_lifecycle import FakeVerify, write_files  # noqa: E402
 
@@ -46,6 +51,8 @@ USER_DATA = {
     "workspace/notes.txt": b"notes\n",
     "apps/desktop/release/win-unpacked/Hermes.exe": b"MZ desktop\n",
     "node_modules/pkg/index.js": b"1\n",
+    # Placed by hand where v1.4.18's tool_maker kept tools.
+    "tools/custom/hand_placed.py": b"# a tool placed by hand\n",
     # A Python 3.13 portable runtime, as v1.4.18's install.bat built it.
     "python_embedded/python.exe": b"MZ python\n",
     "python_embedded/python313.dll": b"MZ dll\n",
@@ -62,7 +69,9 @@ def git(*args: str) -> subprocess.CompletedProcess:
 def archive(ref: str, dest: Path, prefix: str) -> Path:
     proc = git("archive", "--format=zip", f"--prefix={prefix}/", "-o", str(dest), ref)
     if proc.returncode != 0:
-        pytest.skip(f"git archive {ref} unavailable: {proc.stderr.decode(errors='replace')}")
+        # In CI the v1.4.18 tag is fetched on purpose: never skip this test there.
+        (pytest.fail if IN_CI else pytest.skip)(
+            f"git archive {ref} unavailable: {proc.stderr.decode(errors='replace')}")
     return dest
 
 
@@ -104,6 +113,11 @@ def user_tier(root: Path) -> dict:
     return out
 
 
+def snapshot(root: Path, *tops: str) -> dict:
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for top in tops for path in (root / top).rglob("*") if path.is_file()}
+
+
 def test_a_v1_4_18_install_moves_to_the_evergreen_wrapper(tmp_path, monkeypatch):
     if shutil.which("git") is None:
         pytest.skip("git is not installed")
@@ -115,11 +129,16 @@ def test_a_v1_4_18_install_moves_to_the_evergreen_wrapper(tmp_path, monkeypatch)
     write_files(root, {"python_embedded/Lib/site-packages/hermes_project.pth":
                        (str(root) + "\n").encode()})
     assert not (root / "portable_hermes").exists()           # v1.4.18 had no wrapper package
+    old_tools_and_skills = snapshot(root, "tools", "skills")
+    assert "tools/registry.py" in old_tools_and_skills
 
     # What the v1.4.18 UPDATE.bat did: swap in the repository's main ZIP.
     new_top = extract(archive("HEAD", tmp_path / "main.zip", "portable-hermes-agent-main"),
                       tmp_path / "new")
+    assert not (new_top / "tools").exists() and not (new_top / "skills").exists()
     v1418_zip_swap(root, new_top)
+    # The old core's tools and skills are untouched, so it still starts.
+    assert snapshot(root, "tools", "skills") == old_tools_and_skills
     assert (root / "portable_hermes" / "ownership.py").is_file()
     assert not (root / ownership.RELEASE_MANIFEST).exists()  # no manifest ...
     assert not (root / ownership.PAYLOAD_DIR).exists()       # ... and no payload
@@ -153,6 +172,14 @@ def test_a_v1_4_18_install_moves_to_the_evergreen_wrapper(tmp_path, monkeypatch)
     result = WrapperUpdater(root, quiet=True, run_verify=verify).update(zip_path=str(built))
     assert result["ok"], result
     assert result["version"] in ("v1.5.0", "1.5.0")
+    # The old copies of portable files that changed since v1.4.18 are kept,
+    # and named for what they are: nothing records what was installed.
+    assert result["adopted"] is True and result["kept_edits_count"] >= 1
+    assert (f"{result['kept_edits_count']} file(s) of the previous Portable Hermes version "
+            "were kept in") in common.kept_sentence(result)
+    assert (root / result["kept_edits"] / "tools" / "update_hermes_tool.py").is_file()
+    assert (root / "tools" / "update_hermes_tool.py").read_bytes() == \
+        (REPO_ROOT / "tools" / "update_hermes_tool.py").read_bytes()
     assert (root / ownership.RELEASE_MANIFEST).is_file()
     assert json.loads((root / ".portable/wrapper-state.json").read_text())["version"] == \
         result["version"]

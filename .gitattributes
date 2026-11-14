@@ -1,46 +1,34 @@
-# Auto-generated files — collapse diffs and exclude from language stats
-web/package-lock.json linguist-generated=true
-
-# Enforce LF for scripts that run inside Linux containers.
-# Without this, Windows checkout converts to CRLF and breaks `exec` in the
-# container entrypoint with "no such file or directory".
-*.sh        text eol=lf
-Dockerfile  text eol=lf
-*.dockerfile text eol=lf
-docker/entrypoint.sh text eol=lf
-
-# Enforce LF for all source/text files. Windows editors and tools default to
-# CRLF; without normalization a Windows contributor's edit turns into a
-# whole-file phantom diff (every line "changed" by its ending), breaks
-# string-match patch tooling, and pollutes review. `text` normalizes to LF
-# at check-in; `eol=lf` also checks out as LF so the working tree matches
-# the index on every platform. PowerShell files are the deliberate
-# exception (PS 5.1 tooling expects CRLF).
+# Line endings. `text` normalizes to LF at check-in; `eol` fixes what a
+# checkout holds on every machine, also where core.autocrlf=true, so the
+# working tree matches the index and a release built from it holds the same
+# bytes as GitHub's archive of its commit (which v1.4.18's updater downloads;
+# build_release.py checks this). Batch files are the deliberate exception:
+# cmd.exe needs CRLF.
 *.py    text eol=lf
-*.ts    text eol=lf
-*.tsx   text eol=lf
-*.js    text eol=lf
-*.mjs   text eol=lf
-*.cjs   text eol=lf
-*.jsx   text eol=lf
 *.json  text eol=lf
 *.yaml  text eol=lf
 *.yml   text eol=lf
-*.toml  text eol=lf
 *.md    text eol=lf
-*.css   text eol=lf
-*.html  text eol=lf
-*.svg   text eol=lf
-*.ps1   text eol=crlf
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
 
-# Portable release files that no extension rule above covers. A release ZIP
-# must hold the same bytes as GitHub's archive of its commit (which v1.4.18's
-# updater downloads), so these check out as LF on every machine, also where
-# core.autocrlf=true. Committed as LF: the archive does not change.
+# Release files that no extension rule above covers. Committed as LF.
 /LICENSE                                        text eol=lf
 /START_HERE.txt                                 text eol=lf
 /hermes_gui.vbs                                 text eol=lf
 portable_hermes/manifests/legacy-core-files.txt text eol=lf
 portable_hermes/manifests/python-runtime.txt    text eol=lf
+
+# tools/ and skills/ are left out of `git archive`, and so of GitHub's source
+# ZIPs. A v1.4.18 install updates by downloading the repository's main-branch
+# ZIP and replacing every top-level entry that ZIP contains. Without these
+# two folders in it, the old core's tools/ (with tools\registry.py and any
+# hand-placed tools\custom files) and skills/ stay whole, and Hermes keeps
+# working until the next UPDATE.bat installs a release. Releases are built by
+# build_release.py, which still ships the portable tools and skills.
+# Because of this, a "Source code" download lacks the portable tools, and
+# install.bat and START.bat say so instead of installing (exit code 12).
+# These two lines can be removed once v1.4.18 installs no longer matter:
+# source ZIPs are then complete again, and that message becomes unreachable.
+/tools  export-ignore
+/skills export-ignore

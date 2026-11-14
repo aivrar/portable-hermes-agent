@@ -308,11 +308,16 @@ class WrapperUpdater:
         return info
 
     def update(self, *, zip_path: str | None = None, tag: str | None = None,
-               force: bool = False, allow_git: bool = False) -> dict:
-        """Update the wrapper. Returns a result dict (never raises)."""
-        if (self.root / ".git").exists() and not allow_git:
-            return {"ok": False, "code": "git_checkout",
-                    "reason": "this install is a git checkout; update it with git pull"}
+               force: bool = False) -> dict:
+        """Update the wrapper. Returns a result dict (never raises).
+
+        In a git clone git owns the wrapper files: nothing is changed and the
+        result says to use ``git pull`` (a success, so UPDATE.bat goes on to
+        the core step)."""
+        if (self.root / ".git").exists():
+            return {"ok": True, "changed": False, "code": "git_checkout",
+                    "install_type": "git",
+                    "message": "git checkout: update the wrapper with git pull."}
         try:
             with common.InstallLock(self.root):
                 recovered = common.recover(self.root)
@@ -485,7 +490,7 @@ class WrapperUpdater:
             common.prune_empty_dirs(self.root, removed)
         except OSError:
             pass
-        return {
+        result = {
             "ok": True, "changed": changed, "version": version, "source": source,
             "files_written": written, "files_removed": len(removed),
             "kept_modified": kept, "skipped": skipped[:50], "skipped_count": len(skipped),
@@ -494,3 +499,9 @@ class WrapperUpdater:
             "message": (f"wrapper updated to {version}" if changed else
                         f"wrapper files already match {version}"),
         }
+        if not recorded:
+            # Nothing records what was installed (a v1.4.18-or-older install
+            # updated from the repository's main ZIP): every differing file
+            # is the previous version's copy, not necessarily the user's edit.
+            result.update(adopted=True, adopted_what="the previous Portable Hermes version")
+        return result

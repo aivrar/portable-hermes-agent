@@ -1,0 +1,22 @@
+name: Upstream canary
+
+# Once a week, the same tests as the required CI check, but against upstream
+# main (NousResearch/hermes-agent) instead of the pinned last-known-good
+# commit, so a breaking upstream change shows up here before a user meets it.
+# Not part of the required checks. A failure means: look at upstream before
+# adding a newer commit to portable_hermes/manifests/last-known-good.json.
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays, 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream-main:
+    name: Portable integrity on upstream main
+    uses: ./.github/workflows/portable-integrity.yml
+    with:
+      core_ref: main

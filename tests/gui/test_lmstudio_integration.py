@@ -7,7 +7,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from gui import lm_studio as lm
+from tests import HAS_CORE, NO_CORE_REASON
+
+if not HAS_CORE:          # gui.lm_studio imports the core (agent.model_metadata)
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
+
+from gui import lm_studio as lm  # noqa: E402
 
 
 def test_context_selection_obeys_core_floor():

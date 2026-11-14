@@ -46,7 +46,9 @@ def test_pip_runs_on_the_product_interpreter_without_redirection(tmp_path, monke
     assert calls[0][1:3] == ["-m", "pip"]
 
 
+@pytest.mark.needs_core
 def test_lockfile_dependencies_install_hash_checked_without_resolver(tmp_path):
+    # Reads the installed core's uv.lock.
     calls = []
 
     def pip(args, timeout=3600):

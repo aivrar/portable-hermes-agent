@@ -574,9 +574,6 @@ class CoreLifecycle:
         return {"ok": False, "reason": f"verification process exited {proc.returncode} "
                                        f"without a result: {tail.strip()}"}
 
-    def is_git_checkout(self) -> bool:
-        return (self.root / ".git").exists()
-
     def existing_core(self) -> str:
         if self.read_state():
             return "recorded"
@@ -976,12 +973,14 @@ class CoreLifecycle:
     # ----- public -----------------------------------------------------------
     def install(self, *, ref: str | None = None, zip_path: str | None = None,
                 commit: str | None = None, skip_deps: bool = False, force: bool = False,
-                allow_fallback: bool = True, allow_git: bool = False) -> dict:
-        """Install or update the core. Returns a result dict (never raises)."""
-        if self.is_git_checkout() and not allow_git:
-            return {"ok": False, "code": "git_checkout", "exit": EXIT_KEPT,
-                    "reason": "this install is a git checkout; update it with git "
-                              "(the portable core updater only manages ZIP installs)"}
+                allow_fallback: bool = True) -> dict:
+        """Install or update the core. Returns a result dict (never raises).
+
+        A git clone of the wrapper repository is handled like a ZIP install:
+        the repository holds only the wrapper, so the core always comes from
+        here. The clone's allowlist ``.gitignore`` keeps the installed core out
+        of git, and the files git tracks are wrapper paths, which the core
+        installer never writes."""
         existing = "unknown"
         try:
             with common.InstallLock(self.root):
@@ -1044,12 +1043,6 @@ class CoreLifecycle:
     def check(self, *, ref: str = "main", timeout: float = 20) -> dict:
         """Report what is installed and how far behind upstream it is."""
         info: dict = {"ok": True, "root": str(self.root)}
-        if self.is_git_checkout():
-            head = _git_head(self.root)
-            info.update(install_type="git", commit=head,
-                        message="git checkout: update it with git; the portable core "
-                                "updater does not rewrite developer clones")
-            return info
         state = self.read_state()
         if state:
             info.update(install_type="zip", repository=state.get("repository"),
@@ -1103,21 +1096,3 @@ def _last_error_line(output: str) -> str:
         if line.startswith("ERROR"):
             return line[:400]
     return (lines[-1] if lines else "no output")[:400]
-
-
-def _git_head(root: Path) -> str | None:
-    head = Path(root) / ".git"
-    try:
-        if head.is_file():  # worktree: "gitdir: <path>"
-            target = head.read_text(encoding="utf-8").split(":", 1)[1].strip()
-            head = Path(target)
-        text = (head / "HEAD").read_text(encoding="utf-8").strip()
-        if text.startswith("ref:"):
-            ref = text.split(":", 1)[1].strip()
-            ref_file = head / ref
-            if ref_file.is_file():
-                return ref_file.read_text(encoding="utf-8").strip()
-            return ref
-        return text
-    except (OSError, IndexError):
-        return None

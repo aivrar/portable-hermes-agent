@@ -7,6 +7,12 @@ except ImportError:
     import unittest
     raise unittest.SkipTest("pytest is not installed in current python environment")
 
+from tests import HAS_CORE, NO_CORE_REASON
+
+if not HAS_CORE:  # the GUI modules under test import the Hermes core
+    pytest.skip(NO_CORE_REASON, allow_module_level=True)
+
+
 def _has_display():
     try:
         import tkinter as tk

@@ -228,10 +228,13 @@ def test_recovery_script_works_without_and_despite_the_portable_package(tmp_path
     del current["portable_hermes/__init__.py"], current["portable_hermes/common.py"]
     assert current == before
     # Not isolated, with the exploding package first on the path: still fine.
+    # The bridge's .pth hook stays off, as prepare.cmd runs the script: in an
+    # interpreter that has the hook (python_embedded after a core install, as
+    # in CI) it would import portable_hermes at startup, before the script.
     root2 = tmp_path / "r2"
     plan(root2).apply()
     write(root2, {"portable_hermes/__init__.py": explode})
-    env = dict(os.environ, PYTHONPATH=str(root2))
+    env = dict(os.environ, PYTHONPATH=str(root2), PORTABLE_HERMES_NO_HOOK="1")
     proc = subprocess.run([sys.executable, str(root2 / ".portable/recover.py"), str(root2)],
                           capture_output=True, text=True, env=env, cwd=str(root2))
     assert proc.returncode == 0 and "rolled back" in proc.stdout, proc.stdout + proc.stderr

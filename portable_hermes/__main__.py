@@ -155,9 +155,6 @@ def cmd_update(args) -> int:
     if want_core is None:
         info = life.check()
         behind = info.get("behind_by")
-        if info.get("install_type") == "git":
-            print("  git checkout: update the core with git.")
-            return status
         if info.get("update_available") is False:
             print(f"  core is current ({(info.get('commit') or '')[:12]}).")
             return status

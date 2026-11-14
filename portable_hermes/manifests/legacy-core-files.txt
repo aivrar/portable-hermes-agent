@@ -7,7 +7,6 @@
 .dockerignore
 .env.example
 .envrc
-.gitattributes
 .github/FUNDING.yml
 .github/ISSUE_TEMPLATE/bug_report.yml
 .github/ISSUE_TEMPLATE/config.yml
@@ -42,7 +41,6 @@
 .github/workflows/typecheck.yml
 .github/workflows/upload_to_pypi.yml
 .github/workflows/uv-lockfile-check.yml
-.gitignore
 .gitmodules
 .hadolint.yaml
 .mailmap
