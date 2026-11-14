@@ -341,6 +341,26 @@ def test_update_command_passes_exit_4_on_to_update_bat(root, monkeypatch):
     assert cli.main(["--root", str(root), "update", "--core", "--yes"]) == 4
 
 
+def test_runtime_too_old_is_said_once_with_the_python_the_pin_provides(root, monkeypatch,
+                                                                     capsys):
+    """Seen in a real legacy upgrade: the core step printed "needs Python
+    >=3.11,<3.15" (which 3.13 satisfies) and the plan then said 3.14."""
+    from portable_hermes import __main__ as cli
+    monkeypatch.setattr(WrapperUpdater, "update",
+                        lambda self, **kw: {"ok": True, "changed": False, "message": "current"})
+    monkeypatch.setattr(CoreLifecycle, "install", lambda self, **kw: {
+        "ok": False, "code": "runtime_too_old", "exit": 4, "reason": "x",
+        "current_python": "3.13.12", "requires_python": ">=3.11,<3.15",
+        "target_python": "3.14.9"})
+    assert cli.main(["--root", str(root), "update", "--core", "--yes"]) == 4
+    # What the user reads: the core step's output, then runtime.cmd's plan.
+    printed = capsys.readouterr().out + runtime.plan(root, "3.13.12", "3.14.9")["text"]
+    said = [line for line in printed.splitlines() if "needs Python" in line]
+    assert said == ["  The newest Hermes core needs Python 3.14; this folder's portable "
+                    "Python is 3.13.12."]
+    assert ">=3.11" not in printed
+
+
 def test_agent_tool_never_swaps_the_runtime_and_says_what_to_run(monkeypatch):
     tool = pytest.importorskip("tools.update_hermes_tool")
     monkeypatch.setattr(tool, "_run_portable", lambda args, timeout: {
@@ -349,6 +369,8 @@ def test_agent_tool_never_swaps_the_runtime_and_says_what_to_run(monkeypatch):
     out = json.loads(tool.update_hermes_handler({}))
     assert not out["success"] and out["code"] == "runtime_too_old"
     assert "UPDATE.bat" in out["next_step"] and "close hermes" in out["next_step"].lower()
+    assert out["next_step"].startswith(
+        "The newest Hermes core needs Python 3.14; this folder's portable Python is 3.13.12. ")
     assert out["note"] == "Nothing was changed."
 
 
@@ -376,6 +398,82 @@ def test_runtime_messages(tmp_path):
     text = runtime.undone_text(tmp_path, "python_embedded.failed-3.14.9")
     assert "Nothing changed" in text and "UPDATE.bat --core" in text
     assert "install.bat again" in runtime.partial_text("python_embedded.old-3.13.12")
+
+
+def _resume_root(tmp_path, *, old=True, new=None, state_python=None):
+    old_name, failed = "python_embedded.old-3.13.12", "python_embedded.failed-3.14.9"
+    if old:
+        (tmp_path / old_name).mkdir()
+        (tmp_path / old_name / "python.exe").write_bytes(b"MZ")
+    if new is not None:
+        (tmp_path / "python_embedded").mkdir()
+        if new == "complete":
+            (tmp_path / "python_embedded" / "python.exe").write_bytes(b"MZ")
+    if state_python:
+        (tmp_path / ".portable").mkdir(exist_ok=True)
+        (tmp_path / ".portable" / core.STATE_FILE).write_text(
+            json.dumps({"commit": "x", "python": state_python}), encoding="utf-8")
+    return old_name, failed
+
+
+@pytest.mark.parametrize("case, expected", [
+    # The window closed before python_embedded was renamed: nothing to settle.
+    (dict(old=False, new="complete"), "discard"),
+    # Renamed, the new runtime not started or half built: build again.
+    (dict(), "rebuild"),
+    (dict(new="partial"), "rebuild"),
+    (dict(new="complete"), "rebuild"),
+    (dict(new="complete", state_python="3.13.12"), "rebuild"),
+    # The new core committed with the new runtime: forward only.
+    (dict(new="complete", state_python="3.14.9"), "forward"),
+    # The record says 3.14.9 but the new runtime is gone: never forward.
+    (dict(state_python="3.14.9"), "rebuild"),
+])
+def test_runtime_resume_decision(tmp_path, case, expected):
+    old_name, failed = _resume_root(tmp_path, **case)
+    info = runtime.resume_decision(tmp_path, old_name, failed, "3.14.9")
+    assert info["decision"] == expected, info
+    if expected == "rebuild" and (tmp_path / "python_embedded").exists():
+        # The incomplete runtime and a failed rebuild get two different names.
+        assert (info["aside_name"], info["failed_name"]) == (failed, failed + "-2")
+        assert f"moved to {failed} first" in info["text"]
+    else:
+        assert (info["failed_name"], info["aside_name"]) == (failed, failed + "-2")
+    path = runtime.write_resume_file(tmp_path, info)
+    assert path.read_bytes().decode("ascii").split("\r\n")[1:4] == [
+        f'set "PH_RESUME={expected}"', f'set "PH_FAILED_NAME={info["failed_name"]}"',
+        f'set "PH_ASIDE_NAME={info["aside_name"]}"']
+
+
+def test_runtime_resume_undo_wins_and_failed_name_is_unique(tmp_path):
+    old_name, failed = _resume_root(tmp_path, new="complete", state_python="3.14.9")
+    (tmp_path / failed).mkdir()
+    info = runtime.resume_decision(tmp_path, old_name, failed, "3.14.9", undoing=True)
+    assert info["decision"] == "undo"
+    assert info["failed_name"] == failed + "-2"
+
+
+def test_runtime_resume_settles_a_journal_first_and_refuses_unsafe_names(tmp_path):
+    old_name, failed = _resume_root(tmp_path)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "a.py").write_bytes(b"old")
+    staged = common.staging_dir(tmp_path)
+    staged.mkdir(parents=True)
+    (staged / "a.py").write_bytes(b"new")
+    txn = common.Transaction(tmp_path, "core")
+    txn.put("tools/a.py", staged / "a.py")
+    txn.apply()                                   # never committed
+    info = runtime.resume_decision(tmp_path, old_name, failed, "3.14.9")
+    assert info["decision"] == "rebuild"
+    assert (tmp_path / "tools" / "a.py").read_bytes() == b"old"
+    assert not (tmp_path / ".portable" / "journal.json").exists()
+    for bad in ("x & del /q *", "", "a b", "..\\x", "..", "tools"):
+        with pytest.raises(common.UpdateError):
+            runtime.resume_decision(tmp_path, bad, failed, "3.14.9")
+    with pytest.raises(common.UpdateError):
+        runtime.write_resume_file(tmp_path, dict(info, decision="start"))
+    with pytest.raises(common.UpdateError):
+        runtime.write_resume_file(tmp_path, dict(info, aside_name="x & del /q *"))
 
 
 def test_set_aside_runtimes_are_never_touched_by_either_updater(root, tmp_path):

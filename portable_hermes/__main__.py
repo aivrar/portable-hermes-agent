@@ -7,7 +7,7 @@
     python -m portable_hermes update [--core | --no-core] [--yes]   (UPDATE.bat)
     python -m portable_hermes repair [--quiet]                      (launchers)
     python -m portable_hermes verify [--no-gui]
-    python -m portable_hermes runtime plan|done|undone|partial      (runtime.cmd)
+    python -m portable_hermes runtime plan|done|undone|partial|resume   (runtime.cmd)
 
 ``--json`` prints one machine-readable result line. Set
 ``HERMES_PORTABLE_NONINTERACTIVE=1`` (or pass ``--yes``) to never prompt.
@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+import textwrap
 from pathlib import Path
 
 from portable_hermes import ROOT
@@ -40,16 +41,21 @@ def _emit(result: dict, as_json: bool) -> None:
     if result.get("ok"):
         print(result.get("message") or "done")
     elif result.get("code") == "runtime_too_old":
-        print(f"  The newest Hermes core needs Python {result.get('requires_python')}; this "
-              f"folder's portable Python is {result.get('current_python')}.")
+        # The only line about it here: runtime.cmd's explanation follows.
+        from portable_hermes.core import runtime_too_old_sentence
+        print("  " + runtime_too_old_sentence(result.get("current_python"),
+                                              result.get("target_python"),
+                                              result.get("requires_python")))
     else:
         print("FAILED: " + str(result.get("reason")))
     for key in ("fallback", "recovered", "kept_modified_count", "skipped_count"):
         if result.get(key):
             print(f"  {key}: {result[key]}")
-    if result.get("kept_edits_count"):
-        print(f"  {result['kept_edits_count']} file(s) that differed from what was installed "
-              f"(your edits or files we did not install) were kept in {result['kept_edits']}")
+    from portable_hermes.common import kept_sentence
+    kept = kept_sentence(result)
+    if kept:
+        print(textwrap.fill(kept, width=88, initial_indent="  ", subsequent_indent="  ",
+                            break_long_words=False, break_on_hyphens=False))
     for warning in result.get("warnings") or []:
         print(f"  WARNING: {warning}")
     if result.get("dependencies_restored") is False:
@@ -136,6 +142,7 @@ def cmd_update(args) -> int:
             extra = {True: ["--core"], False: ["--no-core"], None: []}[args.core]
             extra += ["--yes"] if args.yes else []
             cmd = common.module_command(sys.executable, root, "update", "--core-only", *extra)
+            common.flush_output()       # our lines first, then the child's
             return status or subprocess.call(cmd)
     print()
     print("[2/2] Hermes core - the agent itself (NousResearch/hermes-agent)")
@@ -266,9 +273,11 @@ def build_parser() -> argparse.ArgumentParser:
     ver.set_defaults(func=cmd_verify)
 
     run = sub.add_parser("runtime", help=argparse.SUPPRESS)   # used by launch/runtime.cmd
-    run.add_argument("action", choices=["plan", "done", "undone", "partial"])
+    run.add_argument("action", choices=["plan", "done", "undone", "partial", "resume"])
     run.add_argument("--old", default="")
     run.add_argument("--failed", default="")
+    run.add_argument("--target", default="")
+    run.add_argument("--undoing", action="store_true")
     run.set_defaults(func=cmd_runtime)
     return parser
 

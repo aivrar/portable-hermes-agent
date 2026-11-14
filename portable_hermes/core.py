@@ -396,6 +396,19 @@ def _python_fit(project: dict, env: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def runtime_too_old_sentence(current: str | None, target: str | None,
+                             requires: str | None = None) -> str:
+    """The one sentence for ``runtime_too_old``: the Python the pin provides
+    (``requires-python`` alone can be satisfied by the current Python when
+    the core's dependencies are gated on a newer one)."""
+    if target and re.fullmatch(r"\d+\.\d+(\.\d+)?", str(target)):
+        needed = ".".join(str(target).split(".")[:2])
+    else:
+        needed = f"a newer version ({requires})" if requires else "a newer version"
+    return (f"The newest Hermes core needs Python {needed}; this folder's portable Python "
+            f"is {current or 'older'}.")
+
+
 def check_python(project: dict, env: dict) -> None:
     """Raise ``runtime_too_old`` or ``python_incompatible`` when the core
     cannot run on this interpreter."""
@@ -519,6 +532,7 @@ class CoreLifecycle:
 
     def _default_pip(self, args: list[str], timeout: float = 3600) -> tuple[int, str]:
         cmd = [self.python, "-m", "pip", *args]
+        common.flush_output()
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                                   errors="replace", timeout=timeout, cwd=str(self.root),
@@ -542,6 +556,7 @@ class CoreLifecycle:
         env = self._verify_env()
         cmd = [self.python, "-X", "utf8", "-c", common.VERIFY_BOOT, str(tree),
                "--root", str(tree), "--json"] + ([] if gui else ["--no-gui"])
+        common.flush_output()
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                                   errors="replace", timeout=900, cwd=str(tree), env=env)
@@ -858,6 +873,16 @@ class CoreLifecycle:
             previous = self.legacy_files()
             adopted = True
         recorded_by_key = {ownership.key(r): h for r, h in previous.items()}
+        # Release-only files (the LICENSE a release ZIP carries) count as
+        # installed by us when they still match the release manifest, so the
+        # first core install replaces them without keeping a copy.
+        release_files = (common.read_json(self.root / ownership.RELEASE_MANIFEST) or {}).get(
+            "files")
+        if isinstance(release_files, dict):
+            for rel, digest in release_files.items():
+                if ownership.is_release_only(rel) and \
+                        recorded_by_key.get(ownership.key(rel)) is None:
+                    recorded_by_key[ownership.key(rel)] = digest
         txn = common.Transaction(self.root, "core")
         ctx["txn"] = txn
         for rel in candidate:
@@ -919,7 +944,10 @@ class CoreLifecycle:
         kept = txn.commit()
         # Committed: nothing below may fail the update.
         warnings = []
+        kept_mb = None
         try:
+            if kept["kept"] and kept["keep"]:
+                kept_mb = common.folder_size_mb(self.root / kept["keep"])
             common.prune_empty_dirs(self.root, removed)
             if installed_deps or deps_report.get("reason") == "dependency set unchanged":
                 self._write_stamp(new_state["dependencies_fingerprint"], sha)
@@ -936,6 +964,7 @@ class CoreLifecycle:
             "files_written": written, "files_removed": len(removed),
             "kept_modified": kept_modified[:50], "kept_modified_count": len(kept_modified),
             "kept_edits": kept["keep"], "kept_edits_count": kept["kept"],
+            "kept_edits_mb": kept_mb,
             "adopted": adopted, "dependencies": deps_report, "hook": hook,
             "verification": [c["name"] for c in live_result.get("checks", []) if c.get("ok")],
             "warnings": warnings + [c["detail"] for c in live_result.get("checks", [])

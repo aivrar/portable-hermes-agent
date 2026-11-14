@@ -92,6 +92,9 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
         }
         if result.get("fallback"):
             payload["fallback"] = result["fallback"]
+        if result.get("kept_edits_count"):
+            from portable_hermes.common import kept_sentence
+            payload["kept_note"] = kept_sentence(result)
         if changed:
             payload["restart_required"] = True
             payload["next_step"] = _RESTART
@@ -99,9 +102,12 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
     payload = {"success": False, "error": result.get("reason"), "code": result.get("code")}
     if result.get("code") == "runtime_too_old":
         # The portable Python cannot be swapped by a process running from it.
+        from portable_hermes.core import runtime_too_old_sentence
+        needed = runtime_too_old_sentence(result.get("current_python"),
+                                          result.get("target_python"),
+                                          result.get("requires_python"))
         payload["next_step"] = (
-            f"This Hermes core needs Python {result.get('requires_python')}, and this "
-            f"folder's portable Python is {result.get('current_python')}. Close Hermes and "
+            f"{needed} Close Hermes and "
             "run UPDATE.bat --core: it upgrades the portable Python in place (keeping "
             "everything in this folder) and then installs the core. This cannot be done "
             "from inside a running Hermes.")

@@ -129,7 +129,12 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
 6. New wrapper files: put them in a wrapper tree (`gui/`, `portable_hermes/`,
    the portable skill folders) or add them to `ownership.py`. Add bootable
    essentials to `REQUIRED_RELEASE_FILES`. Tests enforce that only wrapper
-   files ship and that the required files exist.
+   files ship (plus `ownership.RELEASE_ONLY_FILES`: the root `LICENSE`, which
+   no updater installs) and that the required files exist.
+   The launch scripts `env.cmd`, `update-finish.cmd`, `runtime.cmd` and
+   `install.bat` are an interface between wrapper versions (an older running
+   `update.cmd` calls the newer copies): keep their variable names, file names
+   and exit codes.
 7. Build with `python build_release.py --version <tag> --output-dir <outside-checkout>`.
    It must fail on missing/unreadable sources or archive hash mismatches and must
    retain any prior good archive on failure. Never suppress those errors.

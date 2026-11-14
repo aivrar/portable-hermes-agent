@@ -1,25 +1,33 @@
 @echo off
 :: Shared launcher settings for Portable Hermes.
 ::
-:: CALLed (with delayed expansion OFF and PH_ROOT set to the install folder,
-:: no trailing backslash) by the other scripts in this folder and by
-:: install.bat. It sets variables in the caller's scope and changes nothing on
-:: disk. Exit code 1: this folder (or HERMES_HOME) cannot be used.
+:: CALLed, without arguments, (with delayed expansion OFF and PH_ROOT set to
+:: the install folder, no trailing backslash) by the other scripts in this
+:: folder and by install.bat. It sets variables in the caller's scope and
+:: changes nothing on disk. Exit code 1: this folder (or HERMES_HOME) cannot
+:: be used.
+::
+:: INTERFACE BETWEEN WRAPPER VERSIONS. The variables set here (PH_ROOT is the
+:: caller's) are read by scripts of a different wrapper version: a wrapper
+:: update replaces this folder while UPDATE.bat runs, and the update.cmd line
+:: that is already running then calls the NEW update-finish.cmd, which calls
+:: the new runtime.cmd and install.bat, with the variables the OLD env.cmd
+:: set. Keep every variable below, with its meaning, and give new ones a
+:: default in the scripts that read them. The same goes for the names and
+:: exit codes of update-finish.cmd, runtime.cmd and install.bat.
 ::
 :: Install folders may contain spaces, apostrophes, parentheses, ampersands,
 :: brackets, commas, semicolons, equals signs and non-ASCII letters. The
 :: characters ! % ^ are refused up front: cmd.exe treats them as syntax in
 :: places a batch file cannot fully protect.
 
-:: Unattended (never prompt or pause): --yes / -y, or
-:: HERMES_PORTABLE_NONINTERACTIVE set to anything but 0/false/no.
+:: Unattended (never prompt or pause): HERMES_PORTABLE_NONINTERACTIVE set to
+:: anything but 0/false/no. install.bat and update.cmd set it for --yes / -y
+:: before calling this; the Hermes launchers never read their arguments for
+:: it, because those arguments belong to Hermes.
 set "PH_PAUSE=1"
 if defined HERMES_PORTABLE_NONINTERACTIVE (
     if /i not "%HERMES_PORTABLE_NONINTERACTIVE%"=="0" if /i not "%HERMES_PORTABLE_NONINTERACTIVE%"=="false" if /i not "%HERMES_PORTABLE_NONINTERACTIVE%"=="no" set "PH_PAUSE="
-)
-for %%A in (%*) do (
-    if /i "%%~A"=="--yes" set "PH_PAUSE="
-    if /i "%%~A"=="-y" set "PH_PAUSE="
 )
 if not defined PH_PAUSE set "HERMES_PORTABLE_NONINTERACTIVE=1"
 :: The GUI's hidden-window start (hermes_gui.vbs) can neither show text nor

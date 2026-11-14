@@ -170,6 +170,51 @@ def log(message: str, *, quiet: bool = False) -> None:
     print(text, flush=True)
 
 
+def flush_output() -> None:
+    """Flush our own output before a child process starts.
+
+    When the output is piped or logged, Python buffers it while the child
+    writes straight to the same handle, so without this a child's lines can
+    appear before lines printed earlier."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None:
+                stream.flush()
+        except (OSError, ValueError):
+            pass
+
+
+def folder_size_mb(path: Path) -> int:
+    """Size of the files under *path* in MB (unreadable entries are skipped)."""
+    total = 0
+    for item in Path(path).rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return round(total / (1 << 20))
+
+
+def kept_sentence(result: dict) -> str | None:
+    """One sentence about the copies an update kept (None when it kept none).
+
+    Adopting a legacy install keeps the previous core's files, which have no
+    record of what was installed: they are not the user's edits, so they get
+    their own sentence."""
+    count, where = result.get("kept_edits_count"), result.get("kept_edits")
+    if not count:
+        return None
+    if result.get("adopted"):
+        size = result.get("kept_edits_mb")
+        size_text = f" ({size} MB)" if isinstance(size, int) else ""
+        return (f"{count} file(s) of the previous Hermes core were kept in {where}{size_text}, "
+                "as they were before this update (with any change you made to them). "
+                "Once Hermes works, you may delete that folder.")
+    return (f"{count} file(s) that differed from what was installed (your edits or files we "
+            f"did not install) were kept in {where}")
+
+
 # --------------------------------------------------------------------------
 # lock
 # --------------------------------------------------------------------------

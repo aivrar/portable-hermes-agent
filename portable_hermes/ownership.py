@@ -125,6 +125,12 @@ WRAPPER_CORE_TREE_DIRS = frozenset({
 #: part of a release (the release builder itself and repo-level metadata).
 WRAPPER_DEV_ONLY = frozenset({"build_release.py"})
 
+#: Files at the root of a release archive that no updater manages. The licence
+#: ships with every release so a downloaded ZIP carries it; upstream ships its
+#: own root LICENSE (the same MIT licence), so the path stays a core path: the
+#: core installer owns the live copy and the wrapper updater leaves it alone.
+RELEASE_ONLY_FILES = frozenset({"LICENSE"})
+
 #: Files a release must contain; the builder fails if any is missing.
 REQUIRED_RELEASE_FILES = frozenset({
     "README.md",
@@ -160,10 +166,13 @@ REQUIRED_RELEASE_FILES = frozenset({
     "portable_hermes/launch/cli.cmd",
     "portable_hermes/launch/env.cmd",
     "portable_hermes/launch/gui.cmd",
+    "portable_hermes/launch/gui-exit.cmd",
     "portable_hermes/launch/prepare.cmd",
     "portable_hermes/launch/runtime.cmd",
+    "portable_hermes/launch/session.cmd",
     "portable_hermes/launch/start.cmd",
     "portable_hermes/launch/update.cmd",
+    "portable_hermes/launch/update-finish.cmd",
     "portable_hermes/manifests/last-known-good.json",
     "portable_hermes/manifests/legacy-core-files.txt",
     "portable_hermes/manifests/python-runtime.txt",
@@ -216,6 +225,7 @@ _WRAPPER_ROOT_PATTERNS = tuple(p.lower() for p in WRAPPER_ROOT_PATTERNS)
 _WRAPPER_CORE_TREE_FILES = _lower(WRAPPER_CORE_TREE_FILES)
 _WRAPPER_CORE_TREE_DIRS = _lower(WRAPPER_CORE_TREE_DIRS)
 _CORE_EXCLUDED_TOP = _lower(CORE_EXCLUDED_TOP_LEVEL)
+_RELEASE_ONLY = _lower(RELEASE_ONLY_FILES)
 
 
 def normalize(rel: str) -> str:
@@ -297,6 +307,19 @@ def is_release_member(rel: str) -> bool:
     if not is_wrapper(rel) or rel in _WRAPPER_DEV_ONLY:
         return False
     return not _within(rel, PAYLOAD_DIR) and rel != RELEASE_MANIFEST
+
+
+def is_release_generated(rel: str) -> bool:
+    """Files the release builder writes about the release itself (its manifest).
+
+    They cannot carry their own hash, so they are never compared with a
+    recorded hash and never kept as somebody's edit."""
+    return key(rel) == RELEASE_MANIFEST.lower()
+
+
+def is_release_only(rel: str) -> bool:
+    """Files shipped in a release archive that no updater installs (LICENSE)."""
+    return key(rel) in _RELEASE_ONLY
 
 
 def is_core_installable(rel: str) -> bool:

@@ -2,8 +2,10 @@
 
 The archive holds only wrapper-owned files (``portable_hermes.ownership``):
 launchers, the GUI, the portable tools and skills, docs and the
-``portable_hermes`` package. The upstream Hermes core is not shipped; the
-installer fetches it from NousResearch/hermes-agent at install time.
+``portable_hermes`` package, plus the release-only ``LICENSE`` at the root
+(``ownership.RELEASE_ONLY_FILES``; no updater installs it). The upstream
+Hermes core is not shipped; the installer fetches it from
+NousResearch/hermes-agent at install time.
 
 Guarantees kept from the full-fork builder:
 
@@ -38,8 +40,9 @@ from portable_hermes import ownership  # noqa: E402
 
 PREFIX = "portable-hermes-agent"
 
-# Minimum bootable portable surface (from the ownership model).
-REQUIRED_RELEASE_FILES = set(ownership.REQUIRED_RELEASE_FILES)
+# Minimum bootable portable surface (from the ownership model), plus the
+# release-only files such as the licence.
+REQUIRED_RELEASE_FILES = set(ownership.REQUIRED_RELEASE_FILES) | set(ownership.RELEASE_ONLY_FILES)
 
 # Paths that never ship even when tracked inside a wrapper tree.
 EXCLUDE_DIRS = {"__pycache__", "tests"}
@@ -83,6 +86,8 @@ def should_exclude(rel_path):
         return True
     if os.path.splitext(norm_path)[1] in EXCLUDE_EXTS:
         return True
+    if ownership.is_release_only(norm_path):
+        return False
     return not ownership.is_release_member(norm_path)
 
 
@@ -112,6 +117,9 @@ def iter_release_files():
 def iter_worktree_files():
     """Fallback walk of the wrapper locations for trees without git metadata."""
     yield from ownership.iter_wrapper_files(PROJECT_ROOT)
+    for rel in sorted(ownership.RELEASE_ONLY_FILES):
+        if os.path.isfile(os.path.join(PROJECT_ROOT, rel)):
+            yield rel
 
 
 def _source_commit():

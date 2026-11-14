@@ -81,7 +81,9 @@ deleted), downloads the new Python (about 18 MB) and packages (typically
 150-300 MB), and installs the newest core. If that fails, the upgrade is
 undone and everything stays as it was. Answering N changes nothing. Delete
 the python_embedded.old-<version> folder yourself once Hermes works.
-UPDATE.bat --yes --core upgrades without asking.
+UPDATE.bat --yes --core upgrades without asking. If the window is closed or
+the PC loses power during the upgrade, the next start of Hermes finishes or
+undoes it first, without asking again.
 
 A core update installs and tests the new core in a staging folder (.portable)
 before any file is replaced. If anything fails, every file goes back to how
@@ -117,7 +119,8 @@ Notes:
 - Every launch quietly restores any portable file that something else (for
   example upstream's own "hermes update") replaced or removed.
 - START.bat, UPDATE.bat, hermes.bat and hermes_gui.bat are one-line files
-  that call the real scripts in portable_hermes\launch.
+  that start the real scripts in portable_hermes\launch. Arguments reach
+  Hermes exactly as typed.
 - API keys belong in the setup wizard or the Hermes-home .env file, not in Git.
 - Extension servers for TTS, Music, and ComfyUI install on first use.
 - Developers working from a git clone: the updaters do not rewrite git

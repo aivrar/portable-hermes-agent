@@ -600,6 +600,38 @@ def test_adoption_of_legacy_install_removes_only_accounted_files(root, tmp_path,
     assert json.loads((root / ".portable/core-state.json").read_text())["adopted_from"]
 
 
+def test_adoption_says_the_kept_files_are_the_previous_core(root, tmp_path, monkeypatch,
+                                                            capsys):
+    """Seen in a real legacy update: thousands of the previous core's files were
+    reported as "your edits or files we did not install"."""
+    from portable_hermes import __main__ as cli
+    write_files(root, {"run_agent.py": b"old", "old_module.py": b"legacy core file"})
+    monkeypatch.setattr(CoreLifecycle, "legacy_files", lambda self: {
+        "run_agent.py": None, "old_module.py": None})
+    life, _, _ = lifecycle(root)
+    result = life.install(zip_path=str(core_zip(tmp_path, CORE_V1, SHA1, "v1.zip")))
+    assert result["ok"] and result["adopted"] and result["kept_edits_count"] == 2, result
+    assert isinstance(result["kept_edits_mb"], int)
+    kept = root / result["kept_edits"]
+    assert {p.relative_to(kept).as_posix(): p.read_bytes() for p in kept.rglob("*")
+            if p.is_file()} == {"run_agent.py": b"old", "old_module.py": b"legacy core file"}
+    cli._emit(result, False)
+    printed = " ".join(capsys.readouterr().out.split())
+    assert (f"2 file(s) of the previous Hermes core were kept in {result['kept_edits']} "
+            f"({result['kept_edits_mb']} MB)") in printed
+    assert "Once Hermes works, you may delete that folder." in printed
+    assert "your edits" not in printed
+    # A real edit in a later update keeps the sentence about edits.
+    (root / "run_agent.py").write_bytes(b"# my edit\n")
+    result = life.install(zip_path=str(core_zip(tmp_path, CORE_V2, SHA2, "v2.zip")))
+    assert result["ok"] and not result["adopted"] and result["kept_edits_count"] == 1, result
+    cli._emit(result, False)
+    printed = " ".join(capsys.readouterr().out.split())
+    assert (f"1 file(s) that differed from what was installed (your edits or files we did "
+            f"not install) were kept in {result['kept_edits']}") in printed
+    assert "previous Hermes core" not in printed
+
+
 def test_fresh_install_falls_back_to_last_known_good(root, tmp_path, monkeypatch):
     broken = dict(CORE_V2, **{"BROKEN": b"x"})
     archives = {
@@ -740,6 +772,70 @@ def test_wrapper_update_replaces_only_wrapper_paths(root, tmp_path):
     again = WrapperUpdater(root, quiet=True, run_verify=verify).update(
         zip_path=str(archive), force=True)
     assert again["ok"] and again["changed"] is False and again["files_written"] == 0
+
+
+def test_clean_install_of_one_release_updated_to_the_next_keeps_nothing(tmp_path):
+    """A folder extracted from release A, updated to release B: nothing was
+    edited, so nothing may be counted or kept as an edit. release.json cannot
+    list its own hash, so it is never compared with one."""
+    release_a = release_zip(tmp_path, WRAPPER_FILES, "v9.0.0")
+    with zipfile.ZipFile(release_a) as zf:
+        zf.extractall(tmp_path / "a")
+    root = tmp_path / "a" / "portable-hermes-agent"
+    write_files(root, USER_FILES)
+    assert ownership.RELEASE_MANIFEST not in json.loads(
+        (root / ownership.RELEASE_MANIFEST).read_text())["files"]
+    release_b = release_zip(tmp_path, NEW_WRAPPER, "v9.0.1")
+    result = WrapperUpdater(root, quiet=True, run_verify=FakeVerify(root)).update(
+        zip_path=str(release_b))
+    assert result["ok"] and result["changed"], result
+    assert result["version"] == "v9.0.1"
+    assert result["kept_edits_count"] == 0 and result["kept_edits"] is None, result
+    assert result["kept_modified"] == []
+    assert not (root / ".portable" / common.KEPT_DIR).exists()
+    assert json.loads((root / ownership.RELEASE_MANIFEST).read_text())["version"] == "v9.0.1"
+    # A real edit is still kept.
+    (root / "gui/app.py").write_bytes(b"# my own change\n")
+    release_c = release_zip(tmp_path, dict(NEW_WRAPPER, **{"gui/app.py": b"# v3\n"}), "v9.0.2")
+    result = WrapperUpdater(root, quiet=True, run_verify=FakeVerify(root)).update(
+        zip_path=str(release_c))
+    assert result["ok"] and result["kept_edits_count"] == 1, result
+    kept = root / result["kept_edits"]
+    assert [p.relative_to(kept).as_posix() for p in kept.rglob("*") if p.is_file()] == [
+        "gui/app.py"]
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_release_licence_is_owned_by_the_core_and_never_installed_by_the_wrapper(
+        root, tmp_path, edited):
+    """A release ZIP carries LICENSE at its root (release-only). The first core
+    install replaces it with upstream's copy, keeping a copy only when the file
+    no longer matches the release; the wrapper updater never writes it."""
+    release_licence = b"MIT License\r\n\r\nrelease copy\r\n"
+    upstream_licence = b"MIT License\n\nupstream copy\n"
+    assert ownership.is_release_only("LICENSE") and ownership.classify("LICENSE") == "core"
+    assert ownership.is_core_installable("LICENSE")
+    (root / "LICENSE").write_bytes(release_licence + (b"local note\r\n" if edited else b""))
+    (root / ownership.RELEASE_MANIFEST).parent.mkdir(parents=True, exist_ok=True)
+    (root / ownership.RELEASE_MANIFEST).write_text(json.dumps(
+        {"schema": 1, "version": "v1.0.0", "payload": {},
+         "files": {"LICENSE": hashlib.sha256(release_licence).hexdigest()}}))
+    life, _, verify = lifecycle(root)
+    archive = core_zip(tmp_path, dict(CORE_V1, LICENSE=upstream_licence), SHA1, "v1.zip")
+    result = life.install(zip_path=str(archive))
+    assert result["ok"], result
+    assert (root / "LICENSE").read_bytes() == upstream_licence
+    assert bool(result["kept_edits_count"]) is edited
+    state = json.loads((root / ".portable/core-state.json").read_text())
+    assert "LICENSE" in state["files"]
+
+    archive = release_zip(tmp_path, dict(NEW_WRAPPER, LICENSE=release_licence), "v9.0.0")
+    result = WrapperUpdater(root, quiet=True, run_verify=verify).update(zip_path=str(archive))
+    assert result["ok"], result
+    assert (root / "LICENSE").read_bytes() == upstream_licence
+    assert not any("LICENSE" in s for s in result["skipped"])
+    assert "LICENSE" not in json.loads(
+        (root / ".portable/wrapper-state.json").read_text())["files"]
 
 
 def test_wrapper_update_refuses_pre_evergreen_releases(root, tmp_path):
@@ -914,6 +1010,31 @@ def test_update_command_hands_the_core_step_to_the_newly_installed_wrapper(root,
     monkeypatch.setattr(subprocess, "call", lambda cmd: calls.append(cmd) or 0)
     assert cli.main(["--root", str(root), "update", "--core", "--yes"]) == 0
     assert calls[0][-5:] == [str(root), "update", "--core-only", "--core", "--yes"]
+
+
+def test_update_output_keeps_its_order_when_piped(root, tmp_path):
+    """Piped or logged, Python buffers its output while a child process writes
+    straight to the same pipe: without a flush first, the core step's lines
+    appeared before the wrapper result printed earlier."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "drive.py"
+    script.write_text(
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from portable_hermes import __main__ as cli, common, wrapper\n"
+        "wrapper.WrapperUpdater.update = lambda self, **kw: {\n"
+        "    'ok': True, 'changed': True, 'message': 'wrapper updated to v9'}\n"
+        "common.module_command = lambda *a: [sys.executable, '-c', 'print(\"CORE STEP CHILD\")']\n"
+        "sys.exit(cli.main(['--root', sys.argv[2], 'update', '--yes']))\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if k.upper() not in ("PYTHONUNBUFFERED", "PYTHONPATH", "PYTHONHOME")}
+    proc = subprocess.run([sys.executable, str(script), str(REPO_ROOT), str(root)],
+                          capture_output=True, text=True, timeout=120, env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines.index("wrapper updated to v9") < lines.index("CORE STEP CHILD"), lines
 
 
 def test_update_command_never_prompts_when_unattended(root, monkeypatch, capsys):

@@ -15,16 +15,18 @@ new file.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 import venv
 from pathlib import Path
 
 import pytest
 
-from portable_hermes import common
+from portable_hermes import common, runtime
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows launchers")
 
@@ -37,7 +39,15 @@ STUB_CLI = (
     "print('STUB_ARGS=' + json.dumps(sys.argv[1:]))\n"
     "print('STUB_HOME=' + os.environ.get('HERMES_HOME', ''))\n"
     "print('STUB_OPENAI=' + os.environ.get('OPENAI_API_KEY', '<unset>'))\n"
+    "print('STUB_UNATTENDED=' + os.environ.get('HERMES_PORTABLE_NONINTERACTIVE', '<unset>'))\n"
     "sys.exit(int(os.environ.get('STUB_EXIT', '0')))\n"
+)
+
+STUB_GUI = (
+    "import json, os, sys\n"
+    "def main():\n"
+    "    print('GUI_ARGS=' + json.dumps(sys.argv[1:]))\n"
+    "    sys.exit(int(os.environ.get('STUB_EXIT', '0')))\n"
 )
 
 
@@ -52,7 +62,8 @@ def make_runtime(folder: Path) -> None:
     os.rename(build, folder)
 
 
-def make_install(base: Path, name: str = AWKWARD, *, runtime: bool = True) -> Path:
+def make_install(base: Path, name: str = AWKWARD, *, runtime: bool = True,
+                 gui: bool = False) -> Path:
     root = base / name
     root.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "portable_hermes", root / "portable_hermes",
@@ -62,6 +73,10 @@ def make_install(base: Path, name: str = AWKWARD, *, runtime: bool = True) -> Pa
     (root / "hermes_cli").mkdir()
     (root / "hermes_cli" / "__init__.py").write_text("")
     (root / "hermes_cli" / "main.py").write_text(STUB_CLI)
+    if gui:
+        (root / "gui").mkdir()
+        (root / "gui" / "__init__.py").write_text("")
+        (root / "gui" / "app.py").write_text(STUB_GUI)
     if runtime:
         make_runtime(root / "python_embedded")
     return root
@@ -100,7 +115,8 @@ def test_launcher_files_are_one_line_trampolines_in_crlf_ascii():
         data.decode("ascii")
         first = data.split(b"\r\n", 1)[0]
         assert first.startswith(b"@setlocal & set \"PORTABLE_HERMES_ROOT=%~dp0.\"")
-        assert first.endswith(b"& call exit /b %%errorlevel%%")
+        # Chained without CALL, so the arguments are parsed exactly once.
+        assert first.endswith(b".cmd %*") and b"call" not in first.lower()
         assert b"\n" not in data.replace(b"\r\n", b"")          # CRLF only
         if bat != "UPDATE.bat":
             assert data.count(b"\r\n") == 1
@@ -151,6 +167,101 @@ def test_update_failure_is_reported_with_its_exit_code(tmp_path):
     assert "wrapper archive not found" in proc.stdout
     assert "Update finished with problems (exit code 1)" in proc.stdout
     assert NOT_RECOGNIZED not in out(proc)
+
+
+# --------------------------------------------------------------------------
+# the user's arguments, compared with what the v1.4.18 hermes.bat delivered
+# --------------------------------------------------------------------------
+
+ARGUMENT_CASES = [
+    ('"100% sure"', ["100% sure"]),
+    ('"2^10"', ["2^10"]),
+    ('"wow!"', ["wow!"]),
+    ("photo(1).png", ["photo(1).png"]),
+    ('"a & b"', ["a & b"]),
+    ('"what is *.py?"', ["what is *.py?"]),
+    ("--yes", ["--yes"]),
+]
+ALL_ARGUMENTS = " ".join(typed for typed, _ in ARGUMENT_CASES)
+ALL_EXPECTED = [value for _, expected in ARGUMENT_CASES for value in expected]
+
+
+@pytest.fixture(scope="module")
+def args_install(tmp_path_factory):
+    root = make_install(tmp_path_factory.mktemp("args"), gui=True)
+    (root / "legacy-hermes.bat").write_bytes(legacy_bytes("hermes.bat"))
+    return root
+
+
+def printed_args(proc, prefix: str = "STUB_ARGS=") -> list:
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith(prefix)]
+    assert len(lines) == 1, out(proc)
+    return json.loads(lines[0][len(prefix):])
+
+
+@pytest.mark.parametrize("typed, expected", ARGUMENT_CASES)
+def test_arguments_reach_hermes_like_the_v1_4_18_launcher(args_install, typed, expected):
+    root = args_install
+    env = base_env(root.parent, HERMES_PORTABLE_NONINTERACTIVE=None)
+    ours = run(root, "hermes.bat", typed, env=env)
+    legacy = run(root, "legacy-hermes.bat", typed, env=env)
+    assert ours.returncode == 0, out(ours)
+    assert printed_args(ours) == expected
+    if "(" in typed and '"' not in typed:
+        # v1.4.18 had %* inside a parenthesised block: an unquoted ")" ended
+        # the block and the launcher stopped before Hermes started.
+        assert legacy.returncode != 0 and "STUB_ARGS" not in legacy.stdout
+        assert "was unexpected at this time" in out(legacy)
+        return
+    assert legacy.returncode == 0, out(legacy)
+    if "!" in typed:
+        # v1.4.18 ran with delayed expansion on and dropped every "!".
+        assert printed_args(legacy) == [v.replace("!", "") for v in expected]
+    else:
+        assert printed_args(legacy) == expected
+    # --yes belongs to Hermes here: it does not make the launcher unattended.
+    assert "STUB_UNATTENDED=<unset>" in ours.stdout
+
+
+def test_gui_and_start_pass_the_same_arguments(args_install):
+    root = args_install
+    env = base_env(root.parent)
+    for bat in ("hermes_gui.bat", "START.bat"):
+        proc = run(root, bat, ALL_ARGUMENTS, env=env)
+        assert proc.returncode == 0, out(proc)
+        assert printed_args(proc, "GUI_ARGS=") == ALL_EXPECTED, bat
+    proc = run(root, "hermes.bat", ALL_ARGUMENTS, env=env)
+    assert printed_args(proc) == ALL_EXPECTED
+    proc = run(root, "hermes_gui.bat", ALL_ARGUMENTS, env=dict(env, STUB_EXIT="6"))
+    assert proc.returncode == 6 and "GUI exited with an error" in proc.stdout, out(proc)
+
+
+def test_update_reads_yes_after_a_path_with_parentheses(tmp_path):
+    root = make_install(tmp_path)
+    env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
+    proc = run(root, "UPDATE.bat", r"--no-core --zip C:\x\file(1).zip --yes", env=env, stdin="")
+    assert proc.returncode == 1, out(proc)
+    assert "wrapper archive not found: C:\\x\\file(1).zip" in proc.stdout
+    assert "Update finished with problems (exit code 1)" in proc.stdout
+    assert "Press any key" not in out(proc)                 # --yes: unattended
+    assert "syntax of the command is incorrect" not in out(proc)
+
+
+@pytest.mark.live_system_guard_bypass
+def test_hermes_update_reads_yes_after_a_path_with_parentheses(tmp_path):
+    """The conftest guard blocks any "hermes ... update" command line because
+    upstream's updater would rewrite the real checkout. Here hermes.bat runs in
+    a throwaway install under tmp_path whose hermes_cli is a stub that only
+    prints its arguments, and the portable updater stops at the missing ZIP
+    before any download."""
+    root = make_install(tmp_path)
+    env = base_env(tmp_path, HERMES_PORTABLE_NONINTERACTIVE=None)
+    proc = run(root, "hermes.bat", r"update --no-core --zip C:\x\file(1).zip -y", env=env,
+               stdin="")
+    assert proc.returncode == 1, out(proc)
+    assert "wrapper archive not found: C:\\x\\file(1).zip" in proc.stdout
+    assert "STUB_ARGS" not in proc.stdout                   # never upstream's updater
+    assert "Press any key" not in out(proc)
 
 
 @pytest.mark.parametrize("name, char", [("bang!folder", "!"), ("pct%folder", "%"),
@@ -278,7 +389,7 @@ DRIVER = (
     "setlocal disabledelayedexpansion\r\n"
     "for %%I in (\"%~dp0.\") do set \"PH_ROOT=%%~fI\"\r\n"
     "pushd \"%~dp0\"\r\n"
-    "call .\\portable_hermes\\launch\\env.cmd %*\r\n"
+    "call .\\portable_hermes\\launch\\env.cmd\r\n"
     "call .\\portable_hermes\\launch\\runtime.cmd\r\n"
     "call exit /b %%errorlevel%%\r\n"
 )
@@ -371,6 +482,222 @@ def test_runtime_upgrade_asks_and_no_changes_nothing(tmp_path):
     assert "Upgrade the portable Python to" in proc.stdout
     assert "Nothing was changed" in proc.stdout and "STAND-IN" not in proc.stdout
     assert not list(root.glob("python_embedded.*"))
+    assert not (root / ".portable" / "runtime-plan.cmd").exists()
+
+
+# --------------------------------------------------------------------------
+# an interrupted Python upgrade is finished or undone at the next start
+# --------------------------------------------------------------------------
+
+#: Ends cmd.exe itself ("exit" without /b), like closing the window or a
+#: power cut in the middle of install.bat --runtime-upgrade.
+INTERRUPT_INSTALL = (
+    "@echo off\r\n"
+    "echo STAND-IN install.bat %*\r\n"
+    "if not defined STANDIN_PARTIAL goto :die\r\n"
+    "mkdir \"%~dp0python_embedded\\Lib\"\r\n"
+    "echo half> \"%~dp0python_embedded\\Lib\\half.txt\"\r\n"
+    ":die\r\n"
+    "exit 9\r\n"
+)
+PIN = (REPO_ROOT / "portable_hermes/manifests/python-runtime.txt").read_text().strip()
+PLAN = Path(".portable") / "runtime-plan.cmd"
+RESUME = Path(".portable") / "runtime-resume.cmd"
+
+
+def interrupted_upgrade(tmp_path, partial: bool = False):
+    root = upgrade_setup(tmp_path)
+    (root / "install.bat").write_bytes(INTERRUPT_INSTALL.encode("ascii"))
+    env = base_env(tmp_path, STANDIN_PARTIAL="1" if partial else None)
+    proc = run(root, "upgrade.cmd", "", env=env)
+    assert proc.returncode == 9, out(proc)
+    assert (root / PLAN).is_file()
+    old = list(root.glob("python_embedded.old-*"))
+    assert len(old) == 1 and (old[0] / "which.txt").read_text().strip() == "old"
+    assert (root / "python_embedded").exists() is partial
+    assert not (root / "python_embedded" / "python.exe").exists()
+    (root / "install.bat").write_bytes(UPGRADE_INSTALL.encode("ascii"))
+    return root, old[0].name
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_interrupted_runtime_upgrade_is_finished_at_the_next_start(tmp_path, partial):
+    root, old = interrupted_upgrade(tmp_path, partial)
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="0"))
+    assert proc.returncode == 0, out(proc)
+    text = proc.stdout
+    assert "An upgrade of the portable Python was interrupted" in text
+    assert "installed again from the beginning" in text
+    assert "Upgrade the portable Python to" not in text            # never asked again
+    assert "STALE-RUNTIME-PRESENT" not in text                     # built from nothing
+    assert text.index("STAND-IN install.bat --runtime-upgrade") < text.index("STUB_ARGS")
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "new"
+    assert (root / old / "which.txt").read_text().strip() == "old"
+    assert not (root / PLAN).exists() and not (root / RESUME).exists()
+    aside = root / f"python_embedded.failed-{PIN}"
+    assert (aside / "Lib" / "half.txt").is_file() is partial       # set aside, not deleted
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_interrupted_runtime_upgrade_that_fails_again_puts_the_previous_python_back(
+        tmp_path, partial):
+    root, old = interrupted_upgrade(tmp_path, partial)
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="1"))
+    assert proc.returncode == 0, out(proc)               # Hermes starts on the previous Python
+    text = proc.stdout
+    assert "upgrade did not complete, so it was undone" in text
+    assert text.index("so it was undone") < text.index("STUB_ARGS")
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+    assert not (root / old).exists()
+    failed = root / f"python_embedded.failed-{PIN}"
+    if partial:
+        assert (failed / "Lib" / "half.txt").is_file()
+        failed = root / f"python_embedded.failed-{PIN}-2"
+    assert (failed / "which.txt").read_text().strip() == "new"
+    assert not (root / PLAN).exists() and not (root / RESUME).exists()
+
+
+def test_interrupted_undo_is_finished(tmp_path):
+    root, old = interrupted_upgrade(tmp_path)
+    shutil.copytree(tmp_path / "spare-runtime", root / "python_embedded")
+    (root / "python_embedded" / "which.txt").write_text("new\n", encoding="ascii")
+    with open(root / PLAN, "ab") as plan:
+        plan.write(b'set "PH_UNDOING=1"\r\n')
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="0"))
+    assert proc.returncode == 0, out(proc)
+    assert "The upgrade was being undone" in proc.stdout
+    assert "STAND-IN" not in proc.stdout                           # no new attempt
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+    assert (root / f"python_embedded.failed-{PIN}" / "which.txt").read_text().strip() == "new"
+    assert not (root / PLAN).exists()
+
+
+@pytest.mark.parametrize("standin_exit, expected_rc", [("0", 0), ("1", 1)])
+def test_interrupted_upgrade_after_the_core_committed_only_goes_forward(
+        tmp_path, standin_exit, expected_rc):
+    root, old = interrupted_upgrade(tmp_path)
+    shutil.copytree(tmp_path / "spare-runtime", root / "python_embedded")
+    (root / "python_embedded" / "which.txt").write_text("new\n", encoding="ascii")
+    (root / ".portable" / "core-state.json").write_text(
+        json.dumps({"commit": "x", "python": PIN}), encoding="utf-8")
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT=standin_exit))
+    assert proc.returncode == expected_rc, out(proc)
+    text = proc.stdout
+    assert f"already installed with Python {PIN}" in text
+    assert "STALE-RUNTIME-PRESENT" in text                         # kept, not set aside
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "new"
+    assert (root / old / "which.txt").read_text().strip() == "old"
+    assert not list(root.glob("python_embedded.failed-*"))         # never undone
+    assert not (root / PLAN).exists()
+    if expected_rc:
+        assert "Run install.bat again to finish" in text
+        assert "Hermes was not started" in text and "STUB_ARGS" not in text
+    else:
+        assert "STUB_ARGS" in text
+
+
+def test_upgrade_interrupted_before_anything_moved_changes_nothing(tmp_path):
+    root = upgrade_setup(tmp_path)
+    runtime.write_plan_file(root, runtime.plan(root, "3.13.12", PIN))
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path, STANDIN_EXIT="0"))
+    assert proc.returncode == 0, out(proc)
+    assert "stopped before anything was moved" in proc.stdout
+    assert "STAND-IN" not in proc.stdout and "STUB_ARGS" in proc.stdout
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "old"
+    assert not list(root.glob("python_embedded.*")) and not (root / PLAN).exists()
+
+
+def test_hidden_gui_start_opens_a_window_to_finish_an_interrupted_upgrade(tmp_path):
+    """hermes_gui.vbs starts the GUI without a window: the resume must not run
+    there. prepare.cmd opens START.bat in a new console window instead, where
+    the upgrade is finished and its messages can be read."""
+    root, old = interrupted_upgrade(tmp_path)
+    env = base_env(tmp_path, STANDIN_EXIT="0", HERMES_PORTABLE_HIDDEN="1")
+    proc = run(root, "hermes_gui.bat", "", env=env)
+    assert proc.returncode == 1, out(proc)
+    assert "STAND-IN" not in out(proc) and "interrupted" not in out(proc)
+    deadline = time.monotonic() + 240
+    while (root / PLAN).exists() and time.monotonic() < deadline:
+        time.sleep(0.5)
+    assert not (root / PLAN).exists(), "the visible window did not finish the upgrade"
+    assert (root / "python_embedded" / "which.txt").read_text().strip() == "new"
+    assert (root / old / "which.txt").read_text().strip() == "old"
+
+
+# --------------------------------------------------------------------------
+# install.bat blocks, run for real (never the whole installer)
+# --------------------------------------------------------------------------
+
+def installer_block(start: str, end: str) -> str:
+    text = (REPO_ROOT / "install.bat").read_text(encoding="ascii")
+    return text[text.index(start):text.index(end)]
+
+
+def run_driver(tmp_path: Path, name: str, text: str, env: dict) -> subprocess.CompletedProcess:
+    bat = tmp_path / name
+    bat.write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii"))
+    return subprocess.run(f'cmd.exe /d /s /c ""{bat}""', cwd=str(tmp_path), env=env,
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_install_step_6b_writes_run_py_sh_with_unix_line_endings(tmp_path):
+    """The real step-6b lines of install.bat, with delayed expansion on as in
+    install.bat, a real Python, and an install folder with awkward characters."""
+    step = installer_block("echo [STEP 6b]", ":: Step 7:")
+    folder = tmp_path / AWKWARD
+    folder.mkdir()
+    head = ("@echo off\nsetlocal enabledelayedexpansion\n"
+            f'set "PYTHON_EXE={sys.executable}"\n')
+    proc = run_driver(tmp_path, "step6b.cmd",
+                      head + f'set "PH_ROOT={folder}"\n' + step + "exit /b 0\n",
+                      base_env(tmp_path))
+    assert "[OK] run_py.sh created." in proc.stdout, out(proc)
+    data = (folder / "run_py.sh").read_bytes()
+    assert data.split(b"\n")[0] == b"#!/bin/bash"
+    assert data == b'#!/bin/bash\n"$(dirname "$0")/python_embedded/python.exe" "$@"\n'
+    assert b"\r" not in data
+    # A step that fails says so, and never prints [OK].
+    proc = run_driver(tmp_path, "step6b-fail.cmd",
+                      head + f'set "PH_ROOT={tmp_path / "missing folder"}"\n' + step
+                      + "exit /b 0\n", base_env(tmp_path))
+    assert "[WARN] run_py.sh could not be written" in proc.stdout, out(proc)
+    assert "[OK]" not in proc.stdout
+
+
+def test_installer_settles_an_interrupted_upgrade_before_installing(tmp_path):
+    """The real resume block of install.bat with a stand-in runtime.cmd."""
+    block = installer_block("if not defined PH_UPGRADE if exist", "if not defined PH_PYTHON_PIN")
+    launch = tmp_path / "portable_hermes" / "launch"
+    launch.mkdir(parents=True)
+    (launch / "runtime.cmd").write_bytes(
+        b"@echo off\r\necho STAND-IN runtime.cmd %*\r\nexit /b 3\r\n")
+    (tmp_path / ".portable").mkdir()
+    head = ("@echo off\nsetlocal enabledelayedexpansion\n"
+            f'set "PH_STATE={tmp_path / ".portable"}"\nset "PH_UPGRADE=%~1"\n')
+    driver = head + block + "echo FELL-THROUGH\nexit /b 0\n"
+    env = base_env(tmp_path)
+    proc = run_driver(tmp_path, "resume.cmd", driver, env)
+    assert proc.returncode == 0 and "FELL-THROUGH" in proc.stdout, out(proc)
+    (tmp_path / PLAN).write_bytes(b'set "PH_OLD_NAME=python_embedded.old-3.13.12"\r\n')
+    proc = run_driver(tmp_path, "resume.cmd", driver, env)
+    assert proc.returncode == 3, out(proc)
+    assert "STAND-IN runtime.cmd resume" in proc.stdout
+    assert "FELL-THROUGH" not in proc.stdout
+
+
+def test_runtime_upgrade_install_ends_without_the_first_install_text(tmp_path):
+    """The real end of install.bat. Seen in a real upgrade: "Installation
+    complete ... First time?" right before runtime.cmd's upgrade summary."""
+    block = installer_block(":: A Python upgrade ends with the summary", "\n:fail")
+    assert "First time?" in block and "goto :install_finished" in block
+    head = ('@echo off\nsetlocal enabledelayedexpansion\nset "PH_PAUSE="\n'
+            'set "PYTHON_VERSION=3.14.9"\n')
+    for upgrade, first_install in (("", True), ("1", False)):
+        proc = run_driver(tmp_path, f"end-{upgrade or 'first'}.cmd",
+                          head + f'set "PH_UPGRADE={upgrade}"\n' + block, base_env(tmp_path))
+        assert proc.returncode == 0, out(proc)
+        assert ("Installation complete." in proc.stdout) is first_install, out(proc)
+        assert ("First time?" in proc.stdout) is first_install, out(proc)
 
 
 # --------------------------------------------------------------------------

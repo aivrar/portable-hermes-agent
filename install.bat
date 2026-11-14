@@ -10,10 +10,28 @@
 ::                                     the pinned Python from nothing, then
 ::                                     install the core. Exit code 11 means the
 ::                                     core was installed but a later step failed.
+::
+:: No command line that runs after "setlocal enabledelayedexpansion" below may
+:: contain a literal exclamation mark: cmd.exe would read it as the start of a
+:: variable. Python one-liners write it as chr(33).
 setlocal disabledelayedexpansion
 pushd "%~dp0"
 for %%I in ("%~dp0.") do set "PH_ROOT=%%~fI"
-call .\portable_hermes\launch\env.cmd %*
+:: Options, read with a shift loop (a "for" over the arguments would trip over
+:: parentheses and expand wildcards). --yes / -y: never ask or pause.
+set "PH_UPGRADE="
+:args
+if [%1]==[] goto :args_done
+if /i "%~1"=="--yes" set "HERMES_PORTABLE_NONINTERACTIVE=1"
+if /i "%~1"=="-y" set "HERMES_PORTABLE_NONINTERACTIVE=1"
+if /i "%~1"=="--runtime-upgrade" set "PH_UPGRADE=1"
+shift
+goto :args
+:args_done
+if defined PH_UPGRADE set "HERMES_PORTABLE_NONINTERACTIVE=1"
+set "PH_REARGS="
+if defined PH_UPGRADE set "PH_REARGS=--runtime-upgrade"
+call .\portable_hermes\launch\env.cmd
 if errorlevel 1 exit /b 1
 
 :: An interrupted update is settled first. The recovery may put back an older
@@ -28,18 +46,23 @@ if exist "%PH_STATE%\journal.json" if exist "%PYTHON_EXE%" if exist "%PH_STATE%\
         exit /b 1
     )
     set "PORTABLE_HERMES_NO_HOOK="
-    call .\install.bat %*
+    call .\install.bat %PH_REARGS%
     call exit /b %%ERRORLEVEL%%
 )
 
 setlocal enabledelayedexpansion
-set "PH_UPGRADE="
-for %%A in (%*) do if /i "%%~A"=="--runtime-upgrade" set "PH_UPGRADE=1"
-if defined PH_UPGRADE (
-    set "PH_PAUSE="
-    set "HERMES_PORTABLE_NONINTERACTIVE=1"
-)
 set "PH_CORE_DONE="
+
+:: An interrupted Python upgrade (.portable\runtime-plan.cmd) is finished or
+:: undone before anything else; never run an ordinary install over it.
+if not defined PH_UPGRADE if exist "%PH_STATE%\runtime-plan.cmd" (
+    echo.
+    echo   An upgrade of the portable Python was interrupted. Settling it first.
+    call .\portable_hermes\launch\runtime.cmd resume
+    set "PH_RESUME_EXIT=!ERRORLEVEL!"
+    if defined PH_PAUSE pause
+    exit /b !PH_RESUME_EXIT!
+)
 
 if not defined PH_PYTHON_PIN (
     echo ERROR: portable_hermes\manifests\python-runtime.txt is missing. Extract the
@@ -77,12 +100,16 @@ echo.
 set "PH_MARKED="
 if not exist "%PYTHON_EXE%" (
     if not exist "%PH_STATE%" mkdir "%PH_STATE%"
-    > "%PH_STATE%\installing" echo install.bat started %DATE% %TIME%
+    > "%PH_STATE%\installing" echo install.bat has not finished yet
     set "PH_MARKED=1"
 )
 
 set "PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/python-%PYTHON_VERSION%-embed-amd64.zip"
 set "PYTHON_ZIP=%PH_ROOT%\python_embedded.zip"
+:: The runtime is unpacked and configured under this name and renamed to
+:: python_embedded only when complete, so python_embedded\python.exe never
+:: exists in a half-extracted runtime.
+set "PYTHON_STAGE=%PH_ROOT%\python_embedded.extracting"
 set "TCLTK_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/amd64/tcltk.msi"
 set "TCLTK_MSI=%PH_ROOT%\tcltk.msi"
 set "TCLTK_TEMP=%PH_ROOT%\_tcltk_temp"
@@ -93,6 +120,22 @@ set "TCLTK_TEMP=%PH_ROOT%\_tcltk_temp"
 if exist "%PYTHON_EXE%" (
     echo [OK] Embedded Python already installed.
     goto :check_pip
+)
+:: A python_embedded folder without python.exe is incomplete: move it aside
+:: (never delete it) so the complete runtime can take its name.
+if exist "%PYTHON_DIR%\" (
+    set "PH_ASIDE=python_embedded.incomplete"
+    for /l %%N in (2,1,99) do if exist "%PH_ROOT%\!PH_ASIDE!" set "PH_ASIDE=python_embedded.incomplete-%%N"
+    for /l %%T in (1,1,10) do if exist "%PYTHON_DIR%\" (
+        ren "%PYTHON_DIR%" "!PH_ASIDE!" 2>nul
+        if exist "%PYTHON_DIR%\" ping -n 2 127.0.0.1 >nul
+    )
+    if exist "%PYTHON_DIR%\" (
+        echo ERROR: The incomplete folder python_embedded could not be moved aside. Close
+        echo        every program started from this folder and run install.bat again.
+        goto :fail
+    )
+    echo [INFO] An incomplete python_embedded folder was moved to !PH_ASIDE!.
 )
 
 echo [STEP 1/10] Downloading Python %PYTHON_VERSION% embedded...
@@ -108,34 +151,53 @@ if not exist "%PYTHON_ZIP%" (
 
 echo [STEP 1/10] Extracting Python...
 set "PH_ZIP=%PYTHON_ZIP%"
-set "PH_DEST=%PYTHON_DIR%"
+set "PH_DEST=%PYTHON_STAGE%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "try { Expand-Archive -LiteralPath $env:PH_ZIP -DestinationPath $env:PH_DEST -Force -ErrorAction Stop } catch { Write-Host $_.Exception.Message; exit 1 }"
-if not exist "%PYTHON_EXE%" (
+if errorlevel 1 (
+    echo ERROR: Python extraction failed.
+    goto :fail
+)
+if not exist "%PYTHON_STAGE%\python.exe" (
     echo ERROR: Python extraction failed.
     goto :fail
 )
 del "%PYTHON_ZIP%" 2>nul
 
 :: ============================================
-:: Step 2: Configure ._pth for site-packages
+:: Step 2: Configure ._pth for site-packages (still under the staging name)
 :: ============================================
 echo [STEP 2/10] Configuring Python for package installation...
 
-if not exist "%PYTHON_DIR%\Lib\site-packages" mkdir "%PYTHON_DIR%\Lib\site-packages"
-if not exist "%PYTHON_DIR%\DLLs" mkdir "%PYTHON_DIR%\DLLs"
+if not exist "%PYTHON_STAGE%\Lib\site-packages" mkdir "%PYTHON_STAGE%\Lib\site-packages"
+if not exist "%PYTHON_STAGE%\DLLs" mkdir "%PYTHON_STAGE%\DLLs"
 
-set "PH_PYDIR=%PYTHON_DIR%"
+set "PH_PYDIR=%PYTHON_STAGE%"
 set "PH_MINOR=%PYTHON_MINOR%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$pth = Get-ChildItem -LiteralPath $env:PH_PYDIR -Filter 'python*._pth' | Select-Object -First 1;" ^
-    "if ($pth) {" ^
-    "  $zip = Get-ChildItem -LiteralPath $env:PH_PYDIR -Filter 'python*.zip' | Select-Object -First 1;" ^
-    "  $zipName = if ($zip) { $zip.Name } else { 'python' + $env:PH_MINOR + '.zip' };" ^
-    "  $content = @($zipName, '.', 'Lib', 'Lib\site-packages', 'DLLs', '', 'import site');" ^
-    "  Set-Content -LiteralPath $pth.FullName -Value $content -Encoding ASCII;" ^
-    "  Write-Host '   Configured:' $pth.Name" ^
-    "}"
+    "if (-not $pth) { Write-Host 'no python*._pth file in the embedded Python'; exit 1 }" ^
+    "$zip = Get-ChildItem -LiteralPath $env:PH_PYDIR -Filter 'python*.zip' | Select-Object -First 1;" ^
+    "$zipName = if ($zip) { $zip.Name } else { 'python' + $env:PH_MINOR + '.zip' };" ^
+    "$content = @($zipName, '.', 'Lib', 'Lib\site-packages', 'DLLs', '', 'import site');" ^
+    "try { Set-Content -LiteralPath $pth.FullName -Value $content -Encoding ASCII -ErrorAction Stop } catch { Write-Host $_.Exception.Message; exit 1 }" ^
+    "Write-Host '   Configured:' $pth.Name"
+if errorlevel 1 (
+    echo ERROR: Could not configure the embedded Python ^(._pth file^).
+    goto :fail
+)
+:: Tried up to 10 times, a second apart: a virus scanner may still be reading
+:: the files just extracted.
+for /l %%T in (1,1,10) do if exist "%PYTHON_STAGE%\python.exe" if not exist "%PYTHON_DIR%\" (
+    ren "%PYTHON_STAGE%" "python_embedded" 2>nul
+    if not exist "%PYTHON_EXE%" ping -n 2 127.0.0.1 >nul
+)
+if not exist "%PYTHON_EXE%" (
+    echo ERROR: The new embedded Python could not be renamed to python_embedded.
+    echo        Close every program started from this folder and run install.bat again.
+    goto :fail
+)
+echo [OK] Embedded Python %PYTHON_VERSION% ready.
 
 :: ============================================
 :: Step 3: Bootstrap pip
@@ -209,7 +271,6 @@ if not exist "%PYTHON_DIR%\libs" mkdir "%PYTHON_DIR%\libs"
 xcopy /E /Y /Q "%TCLTK_TEMP%\libs\*" "%PYTHON_DIR%\libs\" >nul 2>nul
 rmdir /S /Q "%TCLTK_TEMP%" 2>nul
 del "%TCLTK_MSI%" 2>nul
-echo [OK] Tkinter installed.
 
 :check_tk
 "%PYTHON_EXE%" -c "import tkinter; tkinter.Tcl()" >nul 2>&1
@@ -217,6 +278,7 @@ if errorlevel 1 (
     echo ERROR: Embedded Python cannot load Tkinter after installation.
     goto :fail
 )
+echo [OK] Tkinter loads in the embedded Python.
 
 :: ============================================
 :: Step 6: Git submodules (developer clones only)
@@ -243,8 +305,18 @@ if %errorlevel% equ 0 (
 :: Step 6b: Create run_py.sh helper (Unix line endings)
 :: ============================================
 echo [STEP 6b] Creating Python helper script...
-"%PYTHON_EXE%" -c "import sys; q = chr(34); open(sys.argv[1], 'wb').write(('#!/bin/bash' + chr(10) + q + '$(dirname ' + q + '$0' + q + ')/python_embedded/python.exe' + q + ' ' + q + '$@' + q + chr(10)).encode('ascii'))" "%PH_ROOT%\run_py.sh"
-echo [OK] run_py.sh created.
+:: run_py.sh is a developer helper (Git Bash); a failure is a warning only.
+:: The shebang's exclamation mark is chr(33): delayed expansion is on here.
+"%PYTHON_EXE%" -c "import sys; q = chr(34); open(sys.argv[1], 'wb').write(('#' + chr(33) + '/bin/bash' + chr(10) + q + '$(dirname ' + q + '$0' + q + ')/python_embedded/python.exe' + q + ' ' + q + '$@' + q + chr(10)).encode('ascii'))" "%PH_ROOT%\run_py.sh"
+if errorlevel 1 (
+    echo [WARN] run_py.sh could not be written. It is only a helper for developers
+    echo        using Git Bash; Hermes does not need it.
+) else if not exist "%PH_ROOT%\run_py.sh" (
+    echo [WARN] run_py.sh could not be written. It is only a helper for developers
+    echo        using Git Bash; Hermes does not need it.
+) else (
+    echo [OK] run_py.sh created.
+)
 
 :: ============================================
 :: Step 7: Hermes core + Python dependencies
@@ -283,9 +355,10 @@ set "PH_CORE_DONE=1"
 :: Developer clones only: the optional mini-swe-agent submodule.
 if exist "%PH_ROOT%\mini-swe-agent\pyproject.toml" (
     "%PYTHON_EXE%" -m pip install -e "%PH_ROOT%\mini-swe-agent" --quiet 2>nul
+    if errorlevel 1 echo [WARN] The optional mini-swe-agent package could not be installed.
 )
 
-echo [OK] Hermes core and Python dependencies installed.
+if "%CORE_EXIT%"=="0" echo [OK] Hermes core and Python dependencies installed.
 
 :: ============================================
 :: Step 8: Node.js dependencies
@@ -372,7 +445,11 @@ if not exist "%HERMES_HOME%\SOUL.md" (
 :: Default permissions
 if not exist "%HERMES_HOME%\permissions.json" (
     "%PYTHON_EXE%" -c "import json, sys; json.dump({'read': 2, 'write': 1, 'install': 1, 'execute': 2, 'remove': 1, 'network': 2}, open(sys.argv[1], 'w'), indent=2)" "%HERMES_HOME%\permissions.json" 2>nul
-    echo [OK] Default permissions created.
+    if exist "%HERMES_HOME%\permissions.json" (
+        echo [OK] Default permissions created.
+    ) else (
+        echo [WARN] Default permissions could not be written to the Hermes home.
+    )
 )
 
 :: ============================================
@@ -382,12 +459,21 @@ echo [STEP 10/10] Syncing skills...
 "%PYTHON_EXE%" "%PH_ROOT%\tools\skills_sync.py" 2>nul
 if errorlevel 1 (
     rem Fallback: copy only skills the Hermes home does not have yet; never
-    rem overwrite a skill file that is already there.
+    rem overwrite a skill file that is already there. robocopy: 8 or more is
+    rem a failure.
     if exist "%PH_ROOT%\skills" (
         robocopy "%PH_ROOT%\skills" "%HERMES_HOME%\skills" /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP >nul
+        if errorlevel 8 (
+            echo [WARN] Skills could not be copied to the Hermes home.
+        ) else (
+            echo [OK] Skills copied ^(the skill sync script failed; new skills only^).
+        )
+    ) else (
+        echo [WARN] The skill sync failed and this folder has no skills to copy.
     )
+) else (
+    echo [OK] Skills synced.
 )
-echo [OK] Skills synced.
 
 :: ============================================
 :: Final verification - never claim success for a partial install
@@ -414,12 +500,16 @@ echo [OK] Embedded GUI, profile, and portable skills verified.
 
 if exist "%PH_STATE%\installing" del "%PH_STATE%\installing"
 
+:: A Python upgrade ends with the summary runtime.cmd prints next, not with
+:: the first-install text below.
+if defined PH_UPGRADE goto :install_finished
+
 :: ============================================
-:: Done!
+:: Done.
 :: ============================================
 echo.
 echo ============================================
-echo   Installation Complete!
+echo   Installation complete.
 echo ============================================
 echo.
 echo   What's installed:
@@ -438,6 +528,7 @@ echo   First time? The app will guide you through
 echo   setting up your API keys on first launch.
 echo.
 
+:install_finished
 if defined PH_PAUSE pause
 endlocal
 exit /b 0

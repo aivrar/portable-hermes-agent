@@ -1045,7 +1045,7 @@ A first-time setup installs only exact, hash-checked dependency versions from th
 
 The portable folder can live in a path with spaces and characters such as `&`, `(`, `)` or `'`. The launchers refuse to start from a folder whose path contains `!`, `%` or `^`, or with a `HERMES_HOME` that contains `!`, because Windows batch files cannot pass those characters on safely.
 
-`START.bat`, `UPDATE.bat`, `hermes.bat` and `hermes_gui.bat` are one-line files that call the real scripts in `portable_hermes\launch\`. Windows reads a running batch file from disk as it goes, so a one-line launcher is what lets an update replace the launch scripts while a launcher is running.
+`START.bat`, `UPDATE.bat`, `hermes.bat` and `hermes_gui.bat` are one-line files that start the real scripts in `portable_hermes\launch\`. Windows reads a running batch file from disk as it goes, so a one-line launcher is what lets an update replace the launch scripts while a launcher is running. Arguments reach Hermes exactly as typed, including `%`, `^`, `!`, quoted `&` and parentheses (for example `hermes.bat chat -q "is 100% of 2^10 > 1000?"`).
 
 ### How to update
 
@@ -1076,6 +1076,8 @@ Installs made with v1.4.18 and older have embedded Python 3.13; the current upst
 
 If the new core cannot be installed, the upgrade is undone: the incomplete new runtime is renamed to `python_embedded.failed-<version>`, the old folder is renamed back, and your core stays as it was. Everything else in the folder (settings, keys, chats, extensions, workflows, custom tools) is untouched either way. After a successful upgrade, the list of packages the old Python had is saved in `.portable\python_embedded.old-<version>-packages.txt`; reinstall any you added yourself with `python_embedded\python.exe -m pip install <name>`, and delete the old folder once Hermes works for you. Answering N changes nothing; run `UPDATE.bat --core` when you are ready.
 
+If the window is closed or the PC loses power during the upgrade, the next start of Hermes (any launcher, or `install.bat`) settles it first, without asking again: if the new core had already been installed, the remaining setup steps are finished; otherwise a half-built new runtime is moved to `python_embedded.failed-<version>` and the new Python is built again, and if that fails the old folder is renamed back. Started from `hermes_gui.vbs` (no window), Hermes opens a console window for this so you can follow it.
+
 You can also ask Hermes in the chat. "Check whether upstream Hermes Agent has updates" uses `check_hermes_updates`, which reports how many commits behind the core is and whether a new Portable Hermes release exists. "Update upstream Hermes Agent" uses `update_hermes`. **Restart Hermes after a core update** (close and reopen the GUI or CLI) so the new code is loaded.
 
 ### What an update never touches
@@ -1087,7 +1089,7 @@ You can also ask Hermes in the chat. "Check whether upstream Hermes Agent has up
 - The new core is unpacked in `.portable\` inside the portable folder, its packages are installed, and it is tested in a separate process (core imports, the agent, the portable tools in both the CLI and the GUI, the GUI modules) **before** any file is replaced. Packages come from the core's `uv.lock` with hashes; if an updated core has no usable lock, the update uses the version ranges in `pyproject.toml` without hashes and says so.
 - Files are replaced under a journal and tested again. If anything fails, every file goes back to how it was. If the computer loses power or the window is closed mid-update, the next launch settles it before any Hermes code runs: rolled back, or finished if it had already been committed.
 - Changed packages are put back to their previous versions and checked. If that cannot be completed (a package file in use, or an update interrupted while changing packages), the update says so, a note appears when Hermes starts in a console window, and running `UPDATE.bat` again finishes it. pip can leave folders whose names start with `~` in `python_embedded\Lib\site-packages` when a running Hermes had the package loaded; delete them once Hermes is closed.
-- Only files the previous core installed, and that you have not edited, are removed. A file you edited that an update or launch-time repair would replace is first copied to a dated folder under `.portable\kept\`. Unknown files are never deleted.
+- Only files the previous core installed, and that you have not edited, are removed. A file you edited that an update or launch-time repair would replace is first copied to a dated folder under `.portable\kept\`. Unknown files are never deleted. The first core update of an install made with v1.4.18 or older has no record of the previous core's files, so it keeps a copy of every one it replaces or removes (thousands of files), and says how many, where and how large that folder is; delete it once Hermes works.
 - Every launch also restores any portable file that something else replaced or removed (for example upstream's own `hermes update`), so the portable tools never silently disappear.
 
 ### Update troubleshooting

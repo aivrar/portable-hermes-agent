@@ -224,6 +224,7 @@ def _latest_tag_from_redirect(timeout: float) -> str | None:
 def _staged_categories(python: str, top: Path, rels: list[str]) -> dict:
     """Classify *rels* with the STAGED release's ownership rules, in a fresh process."""
     script = top / "portable_hermes" / "ownership.py"
+    common.flush_output()
     proc = subprocess.run([python, "-I", str(script), "classify"],
                           input="\n".join(rels), capture_output=True, text=True,
                           encoding="utf-8", timeout=120, env=common.clean_python_env())
@@ -249,6 +250,7 @@ def _preverify(python: str, top: Path) -> None:
     )
     env = common.clean_python_env({"PORTABLE_HERMES_NO_HOOK": "1"})
     env.pop("PYTHONDONTWRITEBYTECODE", None)
+    common.flush_output()
     proc = subprocess.run([python, "-I", "-c", code, str(top)], capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=300, env=env)
     for cache in top.rglob("__pycache__"):
@@ -410,6 +412,8 @@ class WrapperUpdater:
         categories = _staged_categories(self.python, top, rels)
         install, skipped = [], []
         for rel in rels:
+            if ownership.is_release_only(rel):
+                continue        # shipped for the download (LICENSE); never installed
             if ownership.classify(rel) == "user":
                 skipped.append(f"{rel} (user data)")
             elif categories.get(rel) != "wrapper":
@@ -436,7 +440,10 @@ class WrapperUpdater:
                 if live_hash == hashes[rel]:
                     continue
                 expected = recorded_by_key.get(ownership.key(rel))
-                preserve = expected is None or live_hash != expected
+                # Files a release writes about itself (release.json cannot list
+                # its own hash) are never anyone's edit.
+                preserve = not ownership.is_release_generated(rel) and (
+                    expected is None or live_hash != expected)
             txn.put(rel, top / rel, preserve=preserve)
         removed, kept = [], []
         install_keys = {ownership.key(r) for r in hashes}

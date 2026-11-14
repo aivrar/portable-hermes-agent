@@ -19,6 +19,17 @@ which does the swap at batch level, because no Hermes Python may run from
    changed; or ``runtime partial`` when the core committed but a later setup
    step failed (install.bat must run again).
 
+The plan file is also the marker of an upgrade in progress: runtime.cmd
+removes it on every exit path that settles the upgrade. When a launcher or
+install.bat finds it (the window was closed, the PC lost power), it runs
+``runtime.cmd resume``; ``runtime resume`` (previous Python) settles any
+update journal, then decides: ``discard`` (nothing was moved yet),
+``forward`` (the new core already committed with the new Python: finish the
+setup, never undo), ``rebuild`` (set the incomplete runtime aside and build
+again from nothing; undo on failure) or ``undo`` (the undo itself was
+interrupted). Either way the folder ends upgraded, or with the previous
+Python back.
+
 Set-aside runtime folders are user data for every updater
 (``ownership.USER_TOP_LEVEL_PREFIXES``) and are never deleted automatically.
 Stdlib only.
@@ -34,7 +45,9 @@ from pathlib import Path
 from portable_hermes import common, core
 
 PLAN_FILE = "runtime-plan.cmd"
+RESUME_FILE = "runtime-resume.cmd"
 RUNTIME_DIR = "python_embedded"
+RESUME_DECISIONS = ("discard", "forward", "rebuild", "undo")
 _SAFE_RE = re.compile(r"^[0-9A-Za-z._-]+$")
 
 #: install.bat exit codes runtime.cmd tells apart.
@@ -48,10 +61,10 @@ RUNTIME_DOWNLOAD_MB = 18
 PACKAGES_DOWNLOAD_MB = "150-300"
 
 
-def unique_name(root: Path, base: str) -> str:
+def unique_name(root: Path, base: str, taken=()) -> str:
     root = Path(root)
     name, n = base, 1
-    while (root / name).exists():
+    while (root / name).exists() or name in taken:
         n += 1
         name = f"{base}-{n}"
     return name
@@ -64,10 +77,9 @@ def plan(root: Path, current: str, target: str) -> dict:
             raise common.UpdateError(f"not a Python version: {value!r}", code="usage")
     old = unique_name(root, f"{RUNTIME_DIR}.old-{current}")
     failed = unique_name(root, f"{RUNTIME_DIR}.failed-{target}")
+    # Printed right after the core step's one line saying which Python the
+    # newest core needs (core.runtime_too_old_sentence), so not repeated here.
     lines = [
-        "",
-        f"  The newest Hermes core needs Python {target.rsplit('.', 1)[0]}; this folder's "
-        f"portable Python is {current}.",
         "  The portable Python can be upgraded here, in place. Everything in this folder",
         "  stays: settings, keys, chats, extensions, workflows and custom tools.",
         "",
@@ -77,7 +89,8 @@ def plan(root: Path, current: str, target: str) -> dict:
         f"       Python packages Hermes needs are installed (about {PACKAGES_DOWNLOAD_MB} MB to download).",
         "    3. The newest Hermes core is installed and checked.",
         "  If the new core cannot be installed, the upgrade is undone and your current",
-        "  Python and Hermes core are put back exactly as they are now.",
+        "  Python and Hermes core are put back exactly as they are now. If this window",
+        "  is closed or the PC loses power, the next start of Hermes finishes or undoes it.",
         "  Close Hermes first (GUI, CLI and gateway). This usually takes 5 to 15 minutes.",
         "",
     ]
@@ -98,15 +111,7 @@ def write_plan_file(root: Path, info: dict) -> Path:
     return path
 
 
-def folder_size_mb(path: Path) -> int:
-    total = 0
-    for item in Path(path).rglob("*"):
-        try:
-            if item.is_file():
-                total += item.stat().st_size
-        except OSError:
-            continue
-    return round(total / (1 << 20))
+folder_size_mb = common.folder_size_mb
 
 
 def save_package_list(root: Path, old_name: str) -> Path | None:
@@ -163,9 +168,87 @@ def partial_text(old_name: str) -> str:
         f"  The previous Python is kept in {old_name}; it cannot run the new core.", ""])
 
 
+def resume_decision(root: Path, old_name: str, failed_base: str, target: str,
+                    undoing: bool = False) -> dict:
+    """What to do with an interrupted upgrade (see the module docstring)."""
+    root = Path(root)
+    for what, value in (("old", old_name), ("failed", failed_base), ("target", target)):
+        if not value or not _SAFE_RE.match(value) or (
+                what != "target" and not value.startswith(RUNTIME_DIR + ".")):
+            raise common.UpdateError(f"unsafe or missing {what} name in the upgrade plan: "
+                                     f"{value!r}", code="usage")
+    notes = []
+    if (common.state_dir(root) / "journal.json").exists():
+        # Decide on the files as they are on disk, not on a half-applied swap.
+        with common.InstallLock(root):
+            done = common.recover(root)
+        if done:
+            notes.append(f"  ({done})")
+    runtime = root / RUNTIME_DIR
+    old_present = (root / old_name / "python.exe").is_file()
+    if undoing:
+        decision = "undo"
+    elif not old_present:
+        decision = "discard"
+    else:
+        state = common.read_json(common.state_dir(root) / core.STATE_FILE) or {}
+        committed = state.get("python") == target and (runtime / "python.exe").is_file()
+        decision = "forward" if committed else "rebuild"
+    # Two distinct free names: one for an incomplete runtime set aside before
+    # the rebuild, one for the rebuilt runtime if that fails and is undone.
+    if decision == "rebuild" and runtime.exists():
+        aside = unique_name(root, failed_base)
+        failed = unique_name(root, failed_base, taken={aside})
+    else:
+        failed = unique_name(root, failed_base)
+        aside = unique_name(root, failed_base, taken={failed})
+    if decision == "discard":
+        text = ("  It stopped before anything was moved. Nothing was changed; Hermes "
+                "starts with\n  your current portable Python.")
+    elif decision == "forward":
+        text = (f"  The new Hermes core was already installed with Python {target}. "
+                "Finishing the\n  remaining setup steps; the previous Python stays in "
+                f"{old_name}.")
+    elif decision == "rebuild":
+        text = f"  Python {target} is installed again from the beginning"
+        if runtime.exists():
+            text += f";\n  the incomplete new runtime is moved to {aside} first"
+        text += (".\n  If that fails, your previous Python and Hermes core are put back "
+                 "as they were.")
+    else:
+        text = "  The upgrade was being undone. Finishing that now."
+    return {"decision": decision, "failed_name": failed, "aside_name": aside,
+            "text": "\n".join(notes + [text])}
+
+
+def write_resume_file(root: Path, info: dict) -> Path:
+    names = (info.get("failed_name") or "", info.get("aside_name") or "")
+    if info.get("decision") not in RESUME_DECISIONS or not all(
+            _SAFE_RE.match(n) and n.startswith(RUNTIME_DIR + ".") for n in names):
+        raise common.UpdateError(f"unsafe resume decision: {info!r}", code="internal")
+    path = common.state_dir(root) / RESUME_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = (f'set "PH_RESUME={info["decision"]}"\r\n'
+            f'set "PH_FAILED_NAME={info["failed_name"]}"\r\n'
+            f'set "PH_ASIDE_NAME={info["aside_name"]}"\r\n')
+    path.write_bytes(("@rem written by portable_hermes runtime resume\r\n" + body)
+                     .encode("ascii"))
+    return path
+
+
 def main(args) -> int:
     """``python -m portable_hermes runtime <action>`` (called by runtime.cmd)."""
     root = Path(args.root)
+    if args.action == "resume":
+        try:
+            info = resume_decision(root, args.old, args.failed, args.target,
+                                   getattr(args, "undoing", False))
+            write_resume_file(root, info)
+        except common.UpdateError as exc:
+            print(f"  {exc.reason}")
+            return 1
+        print(info["text"])
+        return 0
     if args.action == "plan":
         target = core.target_python()
         if not target:

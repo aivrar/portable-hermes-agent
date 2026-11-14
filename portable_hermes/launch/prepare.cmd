@@ -6,19 +6,38 @@
 :: message was shown (or, for the hidden GUI start, START.bat was opened so
 :: the message can be seen).
 ::
-:: 1. Setup: no portable Python yet, or install.bat did not finish last time
+:: 1. A Python upgrade was interrupted (.portable\runtime-plan.cmd exists):
+::    runtime.cmd resume finishes it or puts the previous Python back.
+:: 2. Setup: no portable Python yet, or install.bat did not finish last time
 ::    (.portable\installing exists): run install.bat first.
-:: 2. An update was interrupted (.portable\journal.json exists): settle it with
+:: 3. An update was interrupted (.portable\journal.json exists): settle it with
 ::    the standalone .portable\recover.py, which needs nothing but the Python
 ::    standard library, so a half-replaced portable_hermes package cannot get
 ::    in the way. Never start Hermes on top of an unsettled update.
-:: 3. Python packages were left half changed (.portable\deps-pending.json):
+:: 4. Python packages were left half changed (.portable\deps-pending.json):
 ::    say so; UPDATE.bat finishes the change.
 ::
 :: Everything below is one parenthesised block: cmd.exe reads it completely
 :: before running it, so files replaced while it runs cannot change it.
 setlocal disabledelayedexpansion
 (
+    if exist "%PH_STATE%\runtime-plan.cmd" if defined HERMES_PORTABLE_HIDDEN (
+        set "HERMES_PORTABLE_HIDDEN="
+        start "Portable Hermes" "%ComSpec%" /d /c call "%PH_ROOT%\START.bat"
+        exit /b 1
+    )
+    if exist "%PH_STATE%\runtime-plan.cmd" (
+        echo.
+        echo   An upgrade of the portable Python was interrupted. Settling it first.
+        call .\portable_hermes\launch\runtime.cmd resume
+        if errorlevel 3 (
+            echo.
+            echo   Hermes was not started. See the message above.
+            echo.
+            if defined PH_PAUSE pause
+            exit /b 1
+        )
+    )
     set "PH_NEED_SETUP="
     if not exist "%PYTHON_EXE%" set "PH_NEED_SETUP=1"
     if exist "%PH_STATE%\installing" set "PH_NEED_SETUP=1"

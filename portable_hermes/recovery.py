@@ -78,6 +78,14 @@ class JournalError(ValueError):
 # validation
 # --------------------------------------------------------------------------
 
+#: Same rules as ``common.safe_extract``: Windows drops a trailing dot or space
+#: (so ``.hermes./x`` would land in ``.hermes``) and maps device names to devices.
+_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)})
+_BAD_CHARS = set('<>"|?*') | {chr(c) for c in range(1, 32)}
+
+
 def _clean_rel(value, what: str) -> str:
     if not isinstance(value, str) or not value:
         raise JournalError(f"{what} is missing or not text")
@@ -85,8 +93,16 @@ def _clean_rel(value, what: str) -> str:
         raise JournalError(f"{what} {value!r} is not a relative POSIX path")
     if value.startswith("/"):
         raise JournalError(f"{what} {value!r} is an absolute path")
-    if any(part in ("", ".", "..") for part in value.split("/")):
+    parts = value.split("/")
+    if any(part in ("", ".", "..") for part in parts):
         raise JournalError(f"{what} {value!r} has empty, '.' or '..' segments")
+    for part in parts:
+        if part.endswith((".", " ")):
+            raise JournalError(f"{what} {value!r} has a name ending in a dot or space")
+        if any(ch in _BAD_CHARS for ch in part):
+            raise JournalError(f"{what} {value!r} has a character Windows does not allow")
+        if part.split(".", 1)[0].strip().lower() in _RESERVED_NAMES:
+            raise JournalError(f"{what} {value!r} names a Windows device (CON, NUL, ...)")
     return value
 
 

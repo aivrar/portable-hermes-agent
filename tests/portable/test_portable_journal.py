@@ -319,6 +319,18 @@ MALFORMED = {
         {"rel": "a.txt", "action": "remove"}, {"rel": "A.TXT", "action": "remove"}]),
     "created dir inside .portable": lambda root: dict(_good(root), created_dirs=[".portable/x"]),
     "created dir dotdot": lambda root: dict(_good(root), created_dirs=["../x"]),
+    # Windows drops a trailing dot or space: these would land in protected
+    # folders while passing the protected-name comparison.
+    "hermes home with trailing dot": _with_op(rel=".hermes./config.yaml"),
+    "user data with trailing space": _with_op(rel=".env "),
+    "runtime with trailing dot": _with_op(rel="python_embedded./python.exe"),
+    "trailing dot deeper": _with_op(rel="tools./x.py"),
+    "device name": _with_op(rel="tools/NUL"),
+    "device name with extension": _with_op(rel="tools/com1.txt"),
+    "device name as folder": _with_op(rel="aux/x.py"),
+    "forbidden character": _with_op(rel="tools/a?.py"),
+    "staged src with trailing dot": _with_op(action="replace", src=".portable/s./a.txt"),
+    "created dir with trailing space": lambda root: dict(_good(root), created_dirs=["tools "]),
 }
 
 
