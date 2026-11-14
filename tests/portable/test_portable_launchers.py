@@ -351,16 +351,26 @@ def test_pending_package_change_is_announced(tmp_path):
     assert "UPDATE.bat" in proc.stdout and "STUB_ARGS" in proc.stdout
 
 
+#: Like the real install.bat, it leaves the core installer's record behind
+#: (.portable\core-state.json); it writes no run_agent.py, so the launchers
+#: are shown to rely on the record, not on an upstream file name.
 STAND_IN_INSTALL = (
     "@echo off\r\n"
     "echo STAND-IN install.bat %*\r\n"
     "if defined STANDIN_FAIL exit /b 1\r\n"
     "if not exist \"%~dp0python_embedded\\python.exe\" xcopy /e /i /q "
     "\"%~dp0..\\spare-runtime\" \"%~dp0python_embedded\" >nul\r\n"
-    "if not exist \"%~dp0run_agent.py\" echo # stub core> \"%~dp0run_agent.py\"\r\n"
+    "if not exist \"%~dp0.portable\" mkdir \"%~dp0.portable\"\r\n"
+    "if not exist \"%~dp0.portable\\core-state.json\" echo {}> \"%~dp0.portable\\core-state.json\"\r\n"
     "if exist \"%~dp0.portable\\installing\" del \"%~dp0.portable\\installing\"\r\n"
     "exit /b 0\r\n"
 )
+
+
+def write_core_record(root: Path) -> None:
+    """The record the core installer writes (portable_hermes.core.STATE_FILE)."""
+    (root / ".portable").mkdir(exist_ok=True)
+    (root / ".portable" / "core-state.json").write_text("{}", encoding="ascii")
 
 
 def test_first_start_runs_setup_then_hermes(tmp_path):
@@ -391,7 +401,8 @@ def test_unfinished_setup_runs_again_and_failure_stops_the_launch(tmp_path):
 
 def test_a_folder_with_python_but_no_core_runs_setup_first(tmp_path):
     """A git clone has no core (the repository holds only the wrapper): with a
-    Python already in place, the next start installs the core first."""
+    Python already in place, the next start installs the core first. After
+    that, the core installer's record alone means "installed"."""
     root = make_install(tmp_path, core=False)
     (root / "install.bat").write_bytes(STAND_IN_INSTALL.encode("ascii"))
     proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
@@ -401,8 +412,28 @@ def test_a_folder_with_python_but_no_core_runs_setup_first(tmp_path):
     assert "did not finish" not in text
     assert text.index("no Hermes core yet") < text.index("STAND-IN install.bat")
     assert text.index("STAND-IN install.bat") < text.index("STUB_ARGS")
+    assert (root / ".portable" / "core-state.json").is_file()
+    assert not (root / "run_agent.py").exists()
     proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
     assert "STAND-IN" not in proc.stdout and "STUB_ARGS" in proc.stdout
+
+
+@pytest.mark.parametrize("record, run_agent, setup", [
+    (False, False, True),   # no core at all (a fresh clone): setup
+    (True, False, False),   # a core our installer recorded, whatever upstream calls its files
+    (True, True, False),
+    (False, True, False),   # a core from v1.4.18 or older, which has no record
+])
+def test_setup_runs_only_when_neither_the_core_record_nor_an_old_core_exists(
+        tmp_path, record, run_agent, setup):
+    root = make_install(tmp_path, core=run_agent)
+    (root / "install.bat").write_bytes(STAND_IN_INSTALL.encode("ascii"))
+    if record:
+        write_core_record(root)
+    proc = run(root, "hermes.bat", "chat", env=base_env(tmp_path))
+    assert proc.returncode == 0, out(proc)
+    assert ("STAND-IN install.bat" in proc.stdout) is setup, out(proc)
+    assert "STUB_ARGS" in proc.stdout
 
 
 HANDOVER_NOTE = "NOTE: the update is not finished. Run UPDATE.bat once more."
@@ -424,11 +455,14 @@ def test_v1_4_18_hand_over_state_says_to_run_update_once_more(tmp_path):
     proc = run(root, "UPDATE.bat", "--yes --no-core --zip missing.zip", env=base_env(tmp_path))
     assert "wrapper archive not found" in proc.stdout, out(proc)
     assert HANDOVER_NOTE not in proc.stdout
-    # A release (release.json) or a git clone (.git) is never in that state.
-    for marker in ("release", "git"):
+    # A release (release.json), a git clone (.git) or a core our installer put
+    # there (its record) is never in that state, even without tools\registry.py.
+    for marker in ("release", "git", "record"):
         other = make_install(tmp_path / marker, release=marker == "release")
         if marker == "git":
             (other / ".git").mkdir()
+        if marker == "record":
+            write_core_record(other)
         proc = run(other, "hermes.bat", "chat", env=base_env(tmp_path))
         assert proc.returncode == 0 and "STUB_ARGS" in proc.stdout, out(proc)
         assert HANDOVER_NOTE not in proc.stdout, marker

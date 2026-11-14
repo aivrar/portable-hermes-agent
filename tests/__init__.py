@@ -13,8 +13,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: True when a Hermes core is installed in this checkout.
-HAS_CORE = (REPO_ROOT / "run_agent.py").is_file()
+#: True when the core installer has put a Hermes core into this checkout: its
+#: record, not an upstream file name, so a renamed upstream file makes the core
+#: tests fail loudly instead of skipping them.
+HAS_CORE = (REPO_ROOT / ".portable" / "core-state.json").is_file()
 
 NO_CORE_REASON = ("no Hermes core in this checkout: run START.bat first "
                   "(see docs/portable-release-checklist.md, Developing from a clone)")

@@ -9,8 +9,10 @@
 :: 1. A Python upgrade was interrupted (.portable\runtime-plan.cmd exists):
 ::    runtime.cmd resume finishes it or puts the previous Python back.
 :: 2. Setup: no portable Python yet, install.bat did not finish last time
-::    (.portable\installing exists), or no Hermes core (run_agent.py missing:
-::    a git clone, whose repository holds only the wrapper): run install.bat
+::    (.portable\installing exists), or no Hermes core: neither the record the
+::    core installer writes (.portable\core-state.json) nor run_agent.py, the
+::    sign of a core from v1.4.18 or older, which has no record. A git clone
+::    (its repository holds only the wrapper) starts that way. Run install.bat
 ::    first. install.bat exit code 12: GitHub's source download, it said so.
 :: 3. An update was interrupted (.portable\journal.json exists): settle it with
 ::    the standalone .portable\recover.py, which needs nothing but the Python
@@ -20,7 +22,8 @@
 ::    say so; UPDATE.bat finishes the change.
 :: 5. Half of the hand-over from v1.4.18 or older: their updater put these
 ::    launchers (from the repository's main ZIP, so no release.json) next to
-::    the old core. Say that UPDATE.bat must run once more. If that core
+::    the old core (run_agent.py, and no core-state.json: our installer did
+::    not put it there). Say that UPDATE.bat must run once more. If that core
 ::    cannot start (tools\registry.py missing), do not start it at all.
 ::
 :: Everything below is one parenthesised block: cmd.exe reads it completely
@@ -47,7 +50,7 @@ setlocal disabledelayedexpansion
     set "PH_NEED_SETUP="
     if not exist "%PYTHON_EXE%" set "PH_NEED_SETUP=1"
     if exist "%PH_STATE%\installing" set "PH_NEED_SETUP=1"
-    if not exist "%PH_ROOT%\run_agent.py" set "PH_NEED_SETUP=1"
+    if not exist "%PH_STATE%\core-state.json" if not exist "%PH_ROOT%\run_agent.py" set "PH_NEED_SETUP=1"
     if defined PH_NEED_SETUP if defined HERMES_PORTABLE_HIDDEN (
         set "HERMES_PORTABLE_HIDDEN="
         start "Portable Hermes" "%ComSpec%" /d /c call "%PH_ROOT%\START.bat"
@@ -120,7 +123,7 @@ setlocal disabledelayedexpansion
         echo   finishes the change.
         echo.
     )
-    if /i not "%~1"=="update" if not exist "%PH_ROOT%\portable_hermes\release.json" if not exist "%PH_ROOT%\.git" if exist "%PH_ROOT%\run_agent.py" (
+    if /i not "%~1"=="update" if not exist "%PH_ROOT%\portable_hermes\release.json" if not exist "%PH_ROOT%\.git" if not exist "%PH_STATE%\core-state.json" if exist "%PH_ROOT%\run_agent.py" (
         if not exist "%PH_ROOT%\tools\registry.py" if defined HERMES_PORTABLE_HIDDEN (
             set "HERMES_PORTABLE_HIDDEN="
             start "Portable Hermes" "%ComSpec%" /d /c call "%PH_ROOT%\START.bat"
