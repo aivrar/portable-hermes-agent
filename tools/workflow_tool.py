@@ -78,7 +78,10 @@ def _load_workflow(name: str) -> Optional[dict]:
         yaml_path = workflow_dir / f"{name}{ext}"
         if yaml_path.exists():
             try:
-                import yaml
+                try:
+                    import hermes_yaml as yaml  # the core's YAML module; upstream dropped PyYAML
+                except ImportError:
+                    import yaml                 # older cores
                 return yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
             except ImportError:
                 # Fallback: parse simple YAML manually or error
