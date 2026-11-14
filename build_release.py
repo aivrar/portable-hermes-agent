@@ -1,57 +1,51 @@
-"""Build a release zip for portable-hermes-agent."""
+"""Build the wrapper-only release ZIP for portable-hermes-agent.
+
+The archive holds only wrapper-owned files (``portable_hermes.ownership``):
+launchers, the GUI, the portable tools and skills, docs and the
+``portable_hermes`` package, plus the release-only ``LICENSE`` at the root
+(``ownership.RELEASE_ONLY_FILES``; no updater installs it). The upstream
+Hermes core is not shipped; the installer fetches it from
+NousResearch/hermes-agent at install time.
+
+Guarantees kept from the full-fork builder:
+
+* built from git's tracked files (ignored scratch files cannot leak in);
+* fails when a required file is missing;
+* every member is re-read and hash-checked before the archive is published;
+* a failed build never replaces a previously published archive.
+
+Added for the evergreen wrapper:
+
+* ``portable_hermes/payload/<path>``: pristine copies of wrapper files that
+  live inside the core tree (portable tools, skills, README files, ...).
+  Launch-time repair restores them after upstream's own updater replaced
+  them. Generated here, never committed.
+* ``portable_hermes/release.json``: version, source commit, the hash of every
+  member and the payload list. The wrapper updater checks it.
+"""
 import argparse
 import hashlib
+import json
 import os
 import subprocess
+import sys
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_ROOT)
 
-# Minimum bootable portable surface. The complete tracked inventory is checked
-# separately below; these catch accidental removal from that inventory itself.
-REQUIRED_RELEASE_FILES = {
-    "README.md", "README.zh-TW.md", "START.bat", "UPDATE.bat", "install.bat",
-    "hermes.bat", "hermes_gui.bat", "hermes_gui.vbs", "START_HERE.txt",
-    "gui/__init__.py", "gui/app.py", "gui/agent_bridge.py", "gui/i18n.py",
-    "gui/theme.py", "gui/api_setup_wizard.py", "gui/permissions.py",
-    "gui/permissions_panel.py", "gui/extensions.py", "gui/lm_studio.py",
-    "tools/update_hermes_tool.py", "docs/Portable-Hermes-Agent-Manual.pdf",
-    ".gitattributes", "README.es.md", "README.ur-pk.md", "README.zh-CN.md",
-    "scripts/install.cmd", "scripts/install.ps1", "scripts/install.sh",
-    "docs/hermes-guide.md", "docs/portable-release-checklist.md", "assets/SOUL.md",
-    "tools/run_python_tool.py", "tools/lm_studio_tools.py", "tools/gpu_tool.py",
-    "tools/model_switcher_tool.py", "tools/extension_tools.py", "tools/tool_maker.py",
-    "tools/workflow_tool.py", "tools/serper_search_tool.py", "tools/guide_tool.py",
-    "skills/extensions/portable-comfyui/SKILL.md", "skills/extensions/music-server/SKILL.md",
-    "skills/extensions/tts-server/SKILL.md", "skills/getting-started/SKILL.md",
-    "skills/lm-studio/SKILL.md",
-}
+from portable_hermes import ownership  # noqa: E402
 
-# Directories to exclude entirely
-EXCLUDE_DIRS = {
-    ".git",
-    ".github",
-    ".claude",
-    ".codex",
-    ".plans",
-    "python_embedded",
-    "node_modules",
-    "__pycache__",
-    ".hermes",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".venv",
-    "venv",
-    "tests",
-    "codex",
-    "plans",
-    "workspace",
-    "tinker-atropos",
-    "mini-swe-agent",
-}
+PREFIX = "portable-hermes-agent"
 
-# Specific paths to exclude
+# Minimum bootable portable surface (from the ownership model), plus the
+# release-only files such as the licence.
+REQUIRED_RELEASE_FILES = set(ownership.REQUIRED_RELEASE_FILES) | set(ownership.RELEASE_ONLY_FILES)
+
+# Paths that never ship even when tracked inside a wrapper tree.
+EXCLUDE_DIRS = {"__pycache__", "tests"}
 EXCLUDE_PATHS = {
     ".env",
     ".lmstudio_config",
@@ -64,28 +58,7 @@ EXCLUDE_PATHS = {
     "bridge_debug.log",
     "thinking_debug.log",
 }
-
-# Generated Docusaurus source is published on the documentation site and is
-# not consumed by the portable runtime.  Keeping it in the ZIP duplicates
-# skill instructions (including shell examples) and can trigger download-time
-# antivirus heuristics such as Norton's MD:HttpRequest-inf signature.  This
-# includes localized copies under website/i18n/<locale>/.  Retain
-# website/static/api/model-catalog.json, which the updater uses to seed the
-# local model catalog cache.
-EXCLUDE_PREFIXES = {
-    "website/docs",
-}
-I18N_DOCS_PLUGIN_PREFIX = "docusaurus-plugin-content-docs"
-
-# File extensions to exclude
 EXCLUDE_EXTS = {".pyc", ".pyo"}
-
-# Extension subdirs that are cloned repos (exclude their contents)
-EXCLUDE_EXT_REPOS = {
-    os.path.join("extensions", "comfyui"),
-    os.path.join("extensions", "music-server"),
-    os.path.join("extensions", "tts-server"),
-}
 
 
 def parse_args():
@@ -104,53 +77,18 @@ def parse_args():
 
 
 def should_exclude(rel_path):
-    norm_path = rel_path.replace("\\", "/")
+    """True for every tracked path that does not belong in a wrapper release."""
+    norm_path = ownership.normalize(rel_path)
     parts = norm_path.split("/")
-
-    # Check dir exclusions
-    for part in parts:
-        if part in EXCLUDE_DIRS:
-            return True
-
-    # Check path exclusions
-    if norm_path in {path.replace("\\", "/") for path in EXCLUDE_PATHS}:
+    if any(part in EXCLUDE_DIRS for part in parts):
         return True
-
-    # Check path-prefix exclusions
-    for prefix in EXCLUDE_PREFIXES:
-        norm_prefix = prefix.replace("\\", "/").rstrip("/")
-        if norm_path == norm_prefix or norm_path.startswith(norm_prefix + "/"):
-            return True
-
-    # Docusaurus stores localized docs below a locale directory. Plugin IDs may
-    # add a suffix to this component, so match the component prefix rather than
-    # hard-coding the currently shipped locale and plugin directory name.
-    if (
-        len(parts) >= 4
-        and parts[:2] == ["website", "i18n"]
-        and (
-            parts[3] == I18N_DOCS_PLUGIN_PREFIX
-            or parts[3].startswith(I18N_DOCS_PLUGIN_PREFIX + "-")
-        )
-    ):
+    if norm_path in EXCLUDE_PATHS:
         return True
-
-    # Check extension repos
-    for repo in EXCLUDE_EXT_REPOS:
-        norm_repo = repo.replace("\\", "/")
-        if norm_path.startswith(norm_repo + "/"):
-            return True
-
-    # Check extensions
-    _, ext = os.path.splitext(norm_path)
-    if ext in EXCLUDE_EXTS:
+    if os.path.splitext(norm_path)[1] in EXCLUDE_EXTS:
         return True
-
-    # Skip the weird unicode filename
-    if "check_lm_studio" in norm_path and norm_path.startswith("E"):
-        return True
-
-    return False
+    if ownership.is_release_only(norm_path):
+        return False
+    return not ownership.is_release_member(norm_path)
 
 
 def iter_release_files():
@@ -177,13 +115,25 @@ def iter_release_files():
 
 
 def iter_worktree_files():
-    """Fallback file walk for source trees without git metadata."""
-    for root, dirs, files in os.walk(PROJECT_ROOT):
-        # Prune excluded dirs in-place to avoid walking into them
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+    """Fallback walk of the wrapper locations for trees without git metadata."""
+    yield from ownership.iter_wrapper_files(PROJECT_ROOT)
+    for rel in sorted(ownership.RELEASE_ONLY_FILES):
+        if os.path.isfile(os.path.join(PROJECT_ROOT, rel)):
+            yield rel
 
-        for fname in sorted(files):
-            yield os.path.relpath(os.path.join(root, fname), PROJECT_ROOT)
+
+def _source_commit():
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT,
+                                capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def _digest(path):
+    with open(path, "rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
 
 def main():
@@ -200,12 +150,19 @@ def main():
     print(f"Output: {zip_path}")
     print()
 
-    prefix = "portable-hermes-agent"
-    candidates = sorted({p.replace("\\", "/") for p in iter_release_files()
+    candidates = sorted({ownership.normalize(p) for p in iter_release_files()
                          if not should_exclude(p)})
     missing = REQUIRED_RELEASE_FILES - set(candidates)
     if missing:
         raise RuntimeError(f"Incomplete portable inventory: {', '.join(sorted(missing))}")
+
+    # member name (inside the prefix) -> source path on disk
+    members = {rel: os.path.join(PROJECT_ROOT, rel) for rel in candidates}
+    payload = {}
+    for rel in candidates:
+        if ownership.is_payload_path(rel):
+            members[f"{ownership.PAYLOAD_DIR}/{rel}"] = members[rel]
+            payload[rel] = None
 
     # Never replace a good published build with a partial ZIP. Every included
     # source must be readable, and every archive entry must match its source.
@@ -214,19 +171,30 @@ def main():
     try:
         expected = {}
         with zipfile.ZipFile(staging_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            for rel_path in candidates:
-                full_path = os.path.join(PROJECT_ROOT, rel_path)
-                with open(full_path, "rb") as source:
-                    digest = hashlib.file_digest(source, "sha256").digest()
-                archive_name = f"{prefix}/{rel_path}"
-                zf.write(full_path, archive_name)
-                expected[archive_name] = digest
+            for rel, full_path in members.items():
+                digest = _digest(full_path)
+                zf.write(full_path, f"{PREFIX}/{rel}")
+                expected[f"{PREFIX}/{rel}"] = digest
+            for rel in payload:
+                payload[rel] = expected[f"{PREFIX}/{rel}"]
+            manifest = {
+                "schema": 1,
+                "version": f"v{version}",
+                "built_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "source_commit": _source_commit(),
+                "files": {name[len(PREFIX) + 1:]: digest for name, digest in expected.items()},
+                "payload": payload,
+            }
+            manifest_bytes = (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode()
+            manifest_name = f"{PREFIX}/{ownership.RELEASE_MANIFEST}"
+            zf.writestr(manifest_name, manifest_bytes)
+            expected[manifest_name] = hashlib.sha256(manifest_bytes).hexdigest()
         with zipfile.ZipFile(staging_path) as zf:
             if len(zf.namelist()) != len(expected) or set(zf.namelist()) != set(expected):
                 raise RuntimeError("Release archive inventory mismatch")
             for name, digest in expected.items():
                 with zf.open(name) as member:
-                    if hashlib.file_digest(member, "sha256").digest() != digest:
+                    if hashlib.file_digest(member, "sha256").hexdigest() != digest:
                         raise RuntimeError(f"Release archive content mismatch: {name}")
         os.replace(staging_path, zip_path)
     finally:
@@ -234,7 +202,7 @@ def main():
             os.unlink(staging_path)
 
     size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-    print(f"Verified! {len(candidates)} files, {size_mb:.1f} MB")
+    print(f"Verified! {len(expected)} files ({len(payload)} payload copies), {size_mb:.1f} MB")
     print(f"Output: {zip_path}")
 
 

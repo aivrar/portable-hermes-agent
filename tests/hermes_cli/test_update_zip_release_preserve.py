@@ -3,6 +3,14 @@
 The GitHub source ZIP carries only source; the BUILT desktop app
 (release/win-unpacked/Hermes.exe) exists only in the live tree. Swapping
 `apps` without grafting the live release dir deletes the desktop build.
+
+These tests exercise ``hermes_cli/update_cmd.py`` of the core copy that is
+still tracked in this repository (the fork-era core). The portable wrapper no
+longer routes updates through it: UPDATE.bat, ``hermes.bat update`` and the
+``update_hermes`` tool use ``portable_hermes`` instead, whose equivalent
+guarantees (user data, desktop builds and portable files survive both update
+channels) are covered in ``tests/portable/test_portable_lifecycle.py``. These
+tests go away with the in-repo core copy.
 """
 
 from __future__ import annotations

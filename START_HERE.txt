@@ -3,80 +3,125 @@ Portable Hermes Agent - Start Here
 
 For Windows users:
 
-1. Extract the release zip to a normal folder, for example:
-   C:\Users\YourName\Portable-Hermes-Agent
+1. Extract the release zip to a normal folder with a short path, for example:
+   C:\PortableHermes
+   (Avoid C:\Program Files. If Windows long paths are turned off, setup tells
+   you when a folder path is too long. Spaces are fine, but the folder path
+   must not contain ! % or ^ - the launchers refuse to start from such a
+   folder.)
 
 2. Double-click START.bat.
 
    On first launch, START.bat runs the portable setup automatically.
-   It downloads embedded Python and dependencies into this folder only.
-   No admin rights are required.
+   It downloads into this folder only:
+   - embedded Python 3.14
+   - the latest Hermes Agent core from NousResearch/hermes-agent
+   - the exact dependency versions that core pins (hash-checked, from its
+     uv.lock), and the LM Studio SDK
+   Before it finishes, it checks in a separate process that the new core
+   loads, that the portable tools are offered in the CLI and the GUI, and
+   that the GUI modules import. No admin rights are required.
+   If setup is interrupted, the next launch runs it again.
 
 3. After setup finishes, Hermes opens the desktop GUI.
 
 Useful launchers:
 
 - START.bat       - easiest first-time launch
-- UPDATE.bat      - safest one-click update
+- UPDATE.bat      - update Portable Hermes, then optionally the Hermes core
 - hermes_gui.bat  - desktop GUI
 - hermes.bat      - command-line interface
 - install.bat     - full setup or repair install
 
-PowerShell setup:
+Unattended setup (no key presses):
 
-  .\scripts\install.ps1
+  install.bat --yes
+  (or set HERMES_PORTABLE_NONINTERACTIVE=1 before START.bat or install.bat)
 
-Safe update:
+Updating
+--------
+
+Portable Hermes has two parts that update separately:
+
+1. The portable wrapper: launchers, GUI, portable tools and skills, the
+   installer and updater. Comes from aivrar/portable-hermes-agent releases.
+
+2. The Hermes core: the agent itself. Comes from NousResearch/hermes-agent
+   (the latest main branch).
+
+To update, close Hermes and any running gateways, then run:
 
   UPDATE.bat
 
-  or:
+Step 1 updates the wrapper: it downloads the latest release, checks every
+file against the release manifest, replaces only wrapper files, checks the
+result, and rolls everything back if a step fails.
 
-  .\hermes.bat update --backup --yes
+Step 2 shows how far behind upstream your core is and asks:
+"Update the Hermes core now? [y/N]".
 
-Portable Hermes has two separate update paths:
+Unattended:
 
-1. Portable distribution update (recommended for normal maintenance)
+  UPDATE.bat --yes            wrapper only
+  UPDATE.bat --yes --core     wrapper and core
+  UPDATE.bat --yes --no-core  wrapper only, never the core
 
-   - Close Hermes and any running gateways.
-   - Run UPDATE.bat.
-   - This updates from aivrar/portable-hermes-agent.
-   - Runtime folders and custom tools under .hermes are preserved.
+You can also ask Hermes in the chat: "Check whether upstream Hermes Agent has
+updates. Do not install anything yet." and later "Update upstream Hermes
+Agent. When finished, tell me whether I should restart."
 
-2. Optional upstream Hermes Agent update (for the newest core features)
+Coming from v1.4.18 or older: the first UPDATE.bat installs the new
+launchers and asks you to run UPDATE.bat once more. The second run finishes.
 
-   - Start Hermes after the Portable update.
-   - Ask: "Check whether upstream Hermes Agent has updates. Do not install
-     anything yet."
-   - If you want the update, ask: "Update upstream Hermes Agent while
-     preserving Portable Hermes. When finished, tell me whether I should
-     restart."
-   - Restart Hermes after a successful upstream update.
+When the newest core needs a newer Python (installs from v1.4.18 and older
+have Python 3.13; the current core needs 3.14), the core step explains what
+will happen and asks "Upgrade the portable Python to 3.14.9 now? [y/N]".
+It renames python_embedded to python_embedded.old-<version> (kept, not
+deleted), downloads the new Python (about 18 MB) and packages (typically
+150-300 MB), and installs the newest core. If that fails, the upgrade is
+undone and everything stays as it was. Answering N changes nothing. Delete
+the python_embedded.old-<version> folder yourself once Hermes works.
+UPDATE.bat --yes --core upgrades without asking. If the window is closed or
+the PC loses power during the upgrade, the next start of Hermes finishes or
+undoes it first, without asking again.
 
-These are independent. A Portable update installs the Hermes version tested
-with this distribution. The optional agent updater pulls newer core code from
-NousResearch/hermes-agent while restoring the Portable Hermes integrations.
+A core update installs and tests the new core in a staging folder (.portable)
+before any file is replaced. If anything fails, every file goes back to how
+it was, and changed Python packages are put back and checked. If packages
+cannot all be put back (for example a file is in use), the update says so
+and running UPDATE.bat again finishes it. An interrupted update is settled
+the next time Hermes starts, before Hermes itself runs. A file you edited
+that an update would replace is first copied to .portable\kept. Restart
+Hermes after a core update.
 
-Most users do not need daily updates. Use UPDATE.bat for new Portable releases,
-fixes, or security notices (or every week or two). Check upstream weekly if
-you want newer Hermes features; checking daily is optional.
+Never changed by either update: .env, cli-config.yaml, your Hermes home
+(normally %USERPROFILE%\.hermes: settings, sessions, custom tools, LM Studio
+settings, language), extensions, node_modules, workflows, workspace, and
+built desktop apps in apps\desktop\release. python_embedded changes only
+when a core update installs the packages that core needs, and in the Python
+upgrade above.
 
-Full updater guide:
-
-  https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated
+Most users do not need daily updates. Run UPDATE.bat for new Portable
+releases, fixes, or security notices (or every week or two).
 
 Documentation:
 
 - README.md has the short overview and quick start.
-- docs\Portable-Hermes-Agent-Manual.html is the full manual.
-- The PDF manual is also attached to the GitHub release.
+- docs\hermes-guide.md is the built-in guide (the search_guide tool uses it).
+- docs\Portable-Hermes-Agent-Manual.pdf is the illustrated manual. Its setup
+  and update chapters describe older releases; this file and README.md
+  describe the current flow.
 
 Notes:
 
-- Keep the extracted folder together. Portable runtimes such as python_embedded,
-  extensions, and node_modules stay beside the app and survive updates.
-- User settings, skills, workflows, sessions, API keys, and the managed Node.js
-  runtime stay in the active Hermes home (normally %USERPROFILE%\.hermes) and
-  survive both update types.
+- Keep the extracted folder together. Portable runtimes such as
+  python_embedded, extensions, and node_modules stay beside the app.
+- Every launch quietly restores any portable file that something else (for
+  example upstream's own "hermes update") replaced or removed.
+- START.bat, UPDATE.bat, hermes.bat and hermes_gui.bat are one-line files
+  that start the real scripts in portable_hermes\launch. Arguments reach
+  Hermes exactly as typed.
 - API keys belong in the setup wizard or the Hermes-home .env file, not in Git.
 - Extension servers for TTS, Music, and ComfyUI install on first use.
+- Developers working from a git clone: the updaters do not rewrite git
+  checkouts; use git pull.

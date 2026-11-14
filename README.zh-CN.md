@@ -28,30 +28,36 @@ LM Studio 面板将服务器地址及可选 API 密钥保存在当前 `HERMES_HO
 
 ## 快速开始
 
-1. 从 [Portable Hermes Agent 发行页](https://github.com/aivrar/portable-hermes-agent/releases/latest)下载最新的 `portable-hermes-agent-v*.zip`，解压到普通文件夹，例如 `C:\Users\YourName\Portable-Hermes-Agent`。不要放在 `C:\Program Files` 等受保护目录。
-2. 双击 **`START.bat`**。首次启动会在便携文件夹内准备内嵌 Python、依赖、LM Studio SDK 和 Node.js 工具；无需管理员权限。
+1. 从 [Portable Hermes Agent 发行页](https://github.com/aivrar/portable-hermes-agent/releases/latest)下载最新的 `portable-hermes-agent-v*.zip`，解压到普通文件夹，例如 `C:\Users\YourName\Portable-Hermes-Agent`。不要放在 `C:\Program Files` 等受保护目录。路径可以包含空格，但不能包含 `!`、`%` 或 `^`，否则启动器会拒绝运行。
+2. 双击 **`START.bat`**。首次启动会在便携文件夹内下载内嵌 Python 3.14、**来自 `NousResearch/hermes-agent` 的最新 Hermes Agent 核心**、其精确锁定的依赖和 LM Studio SDK，并在单独的进程中确认新核心可以与便携工具和图形界面一起工作；无需管理员权限。
 3. 使用图形界面中的 API 密钥设置向导连接云端模型，或启动 [LM Studio](https://lmstudio.ai) 的本地服务器并在 LM Studio 面板选择模型。
 
 | 文件 | 用途 |
 |---|---|
 | `START.bat` | 最简单的图形界面启动方式 |
-| `UPDATE.bat` | 更新便携发行版 |
+| `UPDATE.bat` | 更新便携外壳，确认后再更新核心 |
 | `hermes_gui.bat` | 启动图形界面 |
 | `hermes.bat` | 启动命令行 |
 | `install.bat` | 手动执行首次准备 |
 
-PowerShell 用户也可以运行 `scripts\install.ps1` 进行手动准备。
+无人值守安装可运行 `install.bat --yes`。
 
 ## 两种独立的更新方式
 
-更新便携发行版**不会**自动更新其内部的上游 Hermes Agent；更新上游 Agent 也**不会**替换便携发行版。
+Portable Hermes 由**两个分别更新的部分**组成：
 
-| 更新渠道 | 来源 | 操作与范围 |
+| 部分 | 来源 | 内容 |
 |---|---|---|
-| **便携发行版** | `aivrar/portable-hermes-agent` | 关闭 Hermes 后双击 **`UPDATE.bat`**；更新 Windows 启动器、图形界面、便携工具、集成模块及本仓库测试过的 Agent 版本 |
-| **内部的上游 Hermes Agent** | `NousResearch/hermes-agent` | 启动 Hermes，先要求它检查上游更新；确认后再要求更新，同时保留便携版的自定义工具、扩展及目录 |
+| **便携外壳** | [`aivrar/portable-hermes-agent` 发行页](https://github.com/aivrar/portable-hermes-agent/releases/latest) | Windows 启动器、图形界面、便携工具与技能、安装与更新程序 |
+| **Hermes 核心** | `NousResearch/hermes-agent`（最新 `main`） | Agent 本身 |
 
-普通维护请使用 `UPDATE.bat`，也可以运行 `hermes.bat update --backup --yes`。便携更新会保留运行时数据、自定义工具、扩展和内嵌 Python。需要更新上游时，先让 Hermes **只检查、不要安装**；确认后再更新，并在完成后重启。发行 ZIP 即使没有 Git 历史，也能使用 ZIP 覆盖模式更新上游代码。详细步骤见[便携版更新指南](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated)。
+关闭 Hermes 后双击 **`UPDATE.bat`**。它先更新便携外壳（逐个校验文件哈希、只替换便携文件，任何一步失败都会完整还原），然后显示核心落后上游多少个提交，并询问是否更新核心。无人值守：`UPDATE.bat --yes`（只更新便携外壳）或 `UPDATE.bat --yes --core`（两者都更新）。也可以在聊天中让 Hermes 检查或安装核心更新。
+
+从 v1.4.18 或更早版本升级时，第一次运行 `UPDATE.bat` 会安装新的启动器并提示再运行一次 `UPDATE.bat`，第二次运行完成更新。
+
+**当最新核心需要更新的 Python 时**（v1.4.18 及更早版本安装的是 Python 3.13，当前核心需要 3.14），核心步骤会说明将要发生什么，并询问 `Upgrade the portable Python to 3.14.9 now? [y/N]`。回答 `y` 后，`python_embedded` 会被重命名为 `python_embedded.old-<版本>`（保留，不删除），然后下载新的 Python（约 18 MB）和依赖包（通常 150-300 MB）并安装核心；失败时会完整撤销。回答 `N` 则不做任何更改。`UPDATE.bat --yes --core` 不询问直接升级。确认 Hermes 正常后可自行删除旧文件夹。
+
+新核心会先在暂存目录中安装依赖并在单独的进程中测试，通过后才替换文件；失败时文件会还原，改动过的依赖包会恢复并经过检查（若无法全部恢复，更新会明确提示，再次运行 `UPDATE.bat` 即可完成）。`.env`、`cli-config.yaml`、`HERMES_HOME`（自定义工具、LM Studio 设置、语言偏好）、`extensions\` 和 `workflows\` 永远不会被改动；`python_embedded\` 只会在安装核心所需的依赖包以及上述 Python 升级时发生变化。核心更新后请重启 Hermes。Git 克隆（开发者）请使用 `git pull` 更新。
 
 ---
 

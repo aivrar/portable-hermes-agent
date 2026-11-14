@@ -1,444 +1,141 @@
-import io
+"""update_hermes / check_hermes_updates: thin callers of the portable lifecycle.
+
+The update logic itself is covered offline in tests/portable/. These tests pin
+the model-visible contract: names, toolset, schema compatibility, how results
+are reported (restart notice, kept core, git checkouts) and that no upstream
+file is patched any more.
+"""
+
+from __future__ import annotations
+
 import json
 import subprocess
-import zipfile
 from pathlib import Path
+
 import pytest
 
-from tools import update_hermes_tool
-
+import tools.update_hermes_tool as tool
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_REAL_REFRESH = update_hermes_tool._refresh_portable_dependencies
 
 
-@pytest.fixture(autouse=True)
-def isolate_dependency_installer(monkeypatch):
-    # Source-update integration tests must not install packages into the host.
-    monkeypatch.setattr(update_hermes_tool, "_refresh_portable_dependencies",
-                        lambda timeout: {"success": True})
+def _completed(result: dict, rc: int = 0):
+    return subprocess.CompletedProcess(
+        args=[], returncode=rc,
+        stdout="progress line\nPORTABLE_RESULT " + json.dumps(result) + "\n", stderr="")
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        check=check,
-        capture_output=True,
-        text=True,
-    )
+@pytest.fixture()
+def calls(monkeypatch):
+    seen = []
+    replies = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.append({"cmd": cmd, **kwargs})
+        key = tuple(a for a in cmd if a in ("core", "wrapper", "update", "check"))
+        return replies.get(key, _completed({"ok": False, "reason": "no reply"}, 1))
+
+    monkeypatch.setattr(tool.subprocess, "run", fake_run)
+    return seen, replies
 
 
-def test_check_updates_without_git_uses_upstream_zip_overlay(monkeypatch):
-    def fake_run_git(*args, timeout=120):
-        raise AssertionError(f"no-.git update checks must not require git: {args}")
+def test_tools_keep_their_names_toolset_and_parameters():
+    from tools.registry import registry
 
-    monkeypatch.setattr(update_hermes_tool, "_is_git_checkout", lambda: False)
-    monkeypatch.setattr(update_hermes_tool, "_run_git", fake_run_git)
-
-    result = json.loads(update_hermes_tool.check_updates_handler({}))
-
-    assert result["upstream"] == "NousResearch/hermes-agent"
-    assert result["can_update"] is True
-    assert result["needs_update"] is None
-    assert result["update_mode"] == "upstream_zip_overlay"
-    assert "without requiring Git" in result["reason"]
+    assert registry.get_toolset_for_tool("update_hermes") == "hermes_update"
+    assert registry.get_toolset_for_tool("check_hermes_updates") == "hermes_update"
+    assert set(tool.UPDATE_SCHEMA["parameters"]["properties"]) == {
+        "branch", "timeout", "allow_merge_commit", "backup_branch", "reset_upstream"}
+    assert set(tool.CHECK_UPDATES_SCHEMA["parameters"]["properties"]) == {
+        "branch", "timeout", "reset_upstream"}
+    assert "NousResearch/hermes-agent" in tool.UPDATE_SCHEMA["description"]
 
 
-def test_update_hermes_fast_forward_repairs_portable_surface(monkeypatch):
-    calls = []
-    snapshot = {"tools/update_hermes_tool.py": b"portable updater"}
-    repaired = {
-        "restored_portable_sources": [],
-        "custom_core_tools": "all custom core tools present",
-        "custom_toolsets": "all custom toolsets present",
-        "preserved_runtime_paths": [".hermes", "python_embedded"],
-    }
-
-    def fake_run_git(*args, timeout=120):
-        calls.append(args)
-        if args == ("fetch", "hermes-upstream", "main", "--quiet"):
-            return 0, "", ""
-        if args == ("rev-parse", "HEAD"):
-            return 0, "abc123", ""
-        if args == ("merge", "--ff-only", "hermes-upstream/main"):
-            return 0, "Fast-forward", ""
-        if args == ("log", "--oneline", "-1"):
-            return 0, "def456 portable update", ""
-        return 0, "", ""
-
-    seen = {}
-    monkeypatch.setattr(update_hermes_tool, "_is_git_checkout", lambda: True)
-    monkeypatch.setattr(
-        update_hermes_tool,
-        "_ensure_upstream_remote",
-        lambda reset_wrong_remote=False: (True, "hermes-upstream", "exists"),
-    )
-    monkeypatch.setattr(
-        update_hermes_tool, "_create_backup_branch", lambda: "before-sync"
-    )
-    monkeypatch.setattr(
-        update_hermes_tool,
-        "_stash_local_changes_if_needed",
-        lambda: (True, None, "clean"),
-    )
-    monkeypatch.setattr(
-        update_hermes_tool, "_restore_stash", lambda ref: (True, "not needed")
-    )
-    monkeypatch.setattr(
-        update_hermes_tool, "_snapshot_portable_sources", lambda: snapshot
-    )
-    monkeypatch.setattr(update_hermes_tool, "_run_git", fake_run_git)
-
-    def fake_repair(captured_snapshot):
-        seen["snapshot"] = captured_snapshot
-        return repaired
-
-    monkeypatch.setattr(update_hermes_tool, "_repair_portable_surface", fake_repair)
-
-    result = json.loads(update_hermes_tool.update_hermes_handler({"branch": "main"}))
-
-    assert result["success"] is True
-    assert result["mode"] == "git_merge"
-    assert result["portable_repair"] == repaired
-    assert result["current_commit"] == "def456 portable update"
-    assert seen["snapshot"] == snapshot
-    assert ("fetch", "hermes-upstream", "main", "--quiet") in calls
-    assert ("merge", "--ff-only", "hermes-upstream/main") in calls
-
-    monkeypatch.setattr(update_hermes_tool, "_refresh_portable_dependencies",
-                        lambda timeout: {"success": False, "error": "dependency repair failed"})
-    failed = json.loads(update_hermes_tool.update_hermes_handler({"branch": "main"}))
-    assert failed["success"] is False
-    assert failed["error"] == "dependency repair failed"
+def test_update_success_reports_commit_and_restart(calls):
+    seen, replies = calls
+    replies[("core", "update")] = _completed({
+        "ok": True, "changed": True, "commit": "a" * 40, "repository": "NousResearch/hermes-agent",
+        "message": "core installed at aaaaaaaaaaaa", "dependencies": {"strategy": "uv.lock"},
+        "files_written": 10, "files_removed": 2})
+    out = json.loads(tool.update_hermes_handler({"timeout": 5}))
+    assert out["success"] and out["updated"] and out["restart_required"]
+    assert "Restart Hermes" in out["next_step"]
+    assert out["commit"] == "a" * 40
+    cmd = seen[0]["cmd"]
+    assert cmd[-3:] == ["core", "update", "--json"]
+    assert seen[0]["timeout"] == 60                       # clamped to the minimum
+    # Credentials never reach the updater process.
+    assert not any(k.endswith("_API_KEY") for k in seen[0]["env"])
 
 
-def test_divergent_merge_uses_upstream_tree_and_restores_portable_surface(
-    tmp_path, monkeypatch
-):
-    repo = tmp_path / "portable"
-    repo.mkdir()
-    _git(repo, "init", "-b", "main")
-    _git(repo, "config", "user.name", "Portable Test")
-    _git(repo, "config", "user.email", "portable@example.invalid")
-    exclude = repo / ".git" / "info" / "exclude"
-    exclude.write_text(
-        exclude.read_text(encoding="utf-8")
-        + "\n.env\n.hermes/\n.venv/\nextensions/\nnode_modules/\n"
-        "python_embedded/\nvenv/\n",
-        encoding="utf-8",
-    )
-
-    (repo / "seed.txt").write_text("shared\n", encoding="utf-8")
-    (repo / "removed-upstream.txt").write_text("remove me\n", encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "shared base")
-    _git(repo, "branch", "upstream-main")
-
-    _git(repo, "switch", "upstream-main")
-    (repo / "README.md").write_text("upstream readme\n", encoding="utf-8")
-    (repo / "toolsets.py").write_text(
-        '_HERMES_CORE_TOOLS = [\n    "terminal",\n]\n\n'
-        "# Core toolset definitions\nTOOLSETS = {\n"
-        '    "terminal": {"description": "Terminal", "tools": ["terminal"], "includes": []},\n'
-        "}\n",
-        encoding="utf-8",
-    )
-    (repo / "upstream-only.txt").write_text("new upstream code\n", encoding="utf-8")
-    (repo / "removed-upstream.txt").unlink()
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "upstream changes")
-
-    _git(repo, "switch", "main")
-    portable_source_contents = {}
-    for rel_path in update_hermes_tool._PORTABLE_SOURCE_PATHS:
-        path = repo / rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = (
-            b"# Portable Hermes Agent\nportable instructions\n"
-            if rel_path == "README.md"
-            else f"portable:{rel_path}\n".encode()
-        )
-        path.write_bytes(content)
-        portable_source_contents[rel_path] = content
-    portable_tree_contents = {}
-    for rel_path in update_hermes_tool._PORTABLE_REQUIRED_TREE_FILES:
-        path = repo / rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = f"portable-tree:{rel_path}\n".encode()
-        path.write_bytes(content)
-        portable_tree_contents[rel_path] = content
-    (repo / "toolsets.py").write_text(
-        '_HERMES_CORE_TOOLS = [\n    "terminal",\n]\n\n'
-        "# Core toolset definitions\nTOOLSETS = {\n"
-        '    "terminal": {"description": "Terminal", "tools": ["terminal"], "includes": []},\n'
-        "}\n",
-        encoding="utf-8",
-    )
-    (repo / ".github" / "workflows").mkdir(parents=True)
-    (repo / ".github" / "workflows" / "portable.yml").write_text(
-        "name: portable\n", encoding="utf-8"
-    )
-    (repo / "tests").mkdir()
-    (repo / "tests" / "portable-policy.txt").write_text(
-        "portable tests\n", encoding="utf-8"
-    )
-    (repo / "build_release.py").write_text(
-        "# portable release builder\n", encoding="utf-8"
-    )
-    runtime_markers = {
-        ".env": "PORTABLE_SECRET=kept\n",
-        ".hermes/config.yaml": "portable: true\n",
-        ".hermes/gui_config.json": '{"language": "zh-hant"}\n',
-        ".hermes/.lmstudio_config": '{"api_key":"test-only"}\n',
-        ".hermes/custom_tools/user_tool.py": "# user tool\n",
-        ".hermes/extensions/user-extension/state.json": "{}\n",
-        ".venv/pyvenv.cfg": "home = portable\n",
-        "extensions/comfyui/user-model.txt": "keep me\n",
-        "node_modules/.portable-marker": "keep me\n",
-        "python_embedded/python.exe": "portable python\n",
-        "venv/pyvenv.cfg": "home = portable\n",
-    }
-    for rel_path, content in runtime_markers.items():
-        path = repo / rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "portable surface")
-    pre_merge_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
-
-    merge = _git(repo, "merge", "--no-edit", "upstream-main", check=False)
-    assert merge.returncode != 0
-    assert (_git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD")).returncode == 0
-
-    monkeypatch.setattr(update_hermes_tool, "_PROJECT_ROOT", repo)
-    success, details = update_hermes_tool._finish_divergent_upstream_merge(
-        "upstream-main", pre_merge_head, timeout=120
-    )
-
-    assert success is True, details
-    assert details["portable_verification"] == "portable surface verified"
-    assert _git(repo, "status", "--porcelain").stdout == ""
-    assert len(_git(repo, "show", "-s", "--format=%P", "HEAD").stdout.split()) == 2
-    assert (repo / "upstream-only.txt").read_text(
-        encoding="utf-8"
-    ) == "new upstream code\n"
-    assert not (repo / "removed-upstream.txt").exists()
-    assert (repo / "README.md").read_text(encoding="utf-8") == (
-        portable_source_contents["README.md"].decode()
-    )
-    assert (repo / ".github" / "workflows" / "portable.yml").is_file()
-    assert (repo / "tests" / "portable-policy.txt").is_file()
-    assert (repo / "build_release.py").is_file()
-    for rel_path, content in runtime_markers.items():
-        assert (repo / rel_path).read_text(encoding="utf-8") == content
-
-    for rel_path in update_hermes_tool._PORTABLE_SOURCE_PATHS:
-        assert (repo / rel_path).read_text(encoding="utf-8") == (
-            portable_source_contents[rel_path].decode()
-        )
-    for rel_path, content in portable_tree_contents.items():
-        assert (repo / rel_path).read_text(encoding="utf-8") == content.decode()
-
-    toolsets = (repo / "toolsets.py").read_text(encoding="utf-8")
-    assert all(
-        f'"{name}"' in toolsets for name in update_hermes_tool._CUSTOM_CORE_TOOLS
-    )
-    assert all(
-        f'    "{name}": {{' in toolsets for name in update_hermes_tool._CUSTOM_TOOLSETS
-    )
+def test_update_passes_branch_and_reports_up_to_date(calls):
+    seen, replies = calls
+    replies[("core", "update")] = _completed({"ok": True, "changed": False,
+                                              "commit": "b" * 40, "message": "core already at b"})
+    out = json.loads(tool.update_hermes_handler({"branch": "release-x"}))
+    assert out["success"] and not out["updated"] and "restart_required" not in out
+    assert "--ref" in seen[0]["cmd"] and "release-x" in seen[0]["cmd"]
 
 
-def test_portable_surface_repair_reinjects_tools_and_toolsets(tmp_path, monkeypatch):
-    toolsets = tmp_path / "toolsets.py"
-    toolsets.write_text(
-        '_HERMES_CORE_TOOLS = [\n    "terminal",\n]\n\n'
-        "# Core toolset definitions\nTOOLSETS = {\n"
-        '    "terminal": {"description": "Terminal", "tools": ["terminal"], "includes": []},\n'
-        "}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(update_hermes_tool, "_PROJECT_ROOT", tmp_path)
-
-    core_status = update_hermes_tool._ensure_custom_core_tools()
-    toolset_status = update_hermes_tool._ensure_custom_toolsets()
-    repaired = toolsets.read_text(encoding="utf-8")
-
-    assert core_status.startswith("added ")
-    assert toolset_status.startswith("added ")
-    assert '"update_hermes",' in repaired
-    assert '"check_hermes_updates",' in repaired
-    assert '    "hermes_update": {' in repaired
+def test_update_failure_says_the_core_was_kept(calls):
+    _, replies = calls
+    replies[("core", "update")] = _completed({
+        "ok": False, "code": "verify_failed", "kept_existing_core": True,
+        "reason": "verification of cccccccccccc failed: cli_selection: lm_studio_status"}, 3)
+    out = json.loads(tool.update_hermes_handler({}))
+    assert not out["success"] and out["code"] == "verify_failed"
+    assert "kept unchanged" in out["note"]
 
 
-def test_zip_overlay_preserves_portable_runtime_and_source_paths():
-    assert update_hermes_tool._is_preserved_overlay_path(".hermes/custom_tools/demo.py")
-    assert update_hermes_tool._is_preserved_overlay_path("extensions/demo")
-    assert update_hermes_tool._is_preserved_overlay_path("python_embedded/python.exe")
-    assert update_hermes_tool._is_preserved_overlay_path("tools/update_hermes_tool.py")
-    assert update_hermes_tool._is_preserved_overlay_path("gui/future_panel.py")
-    assert update_hermes_tool._is_preserved_overlay_path(
-        "skills/extensions/portable-comfyui/SKILL.md"
-    )
-    assert update_hermes_tool._is_preserved_overlay_path("tests/portable-policy.py")
-    assert not update_hermes_tool._is_preserved_overlay_path("run_agent.py")
+def test_update_in_a_git_checkout_is_reported_not_performed(calls):
+    _, replies = calls
+    replies[("core", "update")] = _completed({
+        "ok": False, "code": "git_checkout", "reason": "this install is a git checkout"}, 3)
+    out = json.loads(tool.update_hermes_handler({}))
+    assert not out["success"] and out["install_type"] == "git"
 
 
-def test_upstream_zip_update_preserves_runtime_readme_and_portable_tools(
-    tmp_path, monkeypatch
-):
-    project = tmp_path / "portable"
-    project.mkdir()
-    portable_files = {
-        "README.md": "# Portable Hermes Agent\nportable instructions\n",
-        "README.zh-TW.md": "portable translated instructions\n",
-        ".gitattributes": "*.bat text eol=crlf\n",
-        "gui/i18n.py": "# portable translations\n",
-        "gui/future_panel.py": "# preserve whole GUI tree\n",
-        "tools/update_hermes_tool.py": "# portable upstream updater\n",
-        ".github/workflows/portable.yml": "name: portable\n",
-        ".hermes/config.yaml": "portable: true\n",
-        ".hermes/gui_config.json": '{"language": "zh-hant"}\n',
-        ".hermes/.lmstudio_config": '{"api_key":"test-only"}\n',
-        ".hermes/custom_tools/user_tool.py": "# user tool\n",
-        ".hermes/extensions/user-extension/state.json": "{}\n",
-        "extensions/comfyui/user-model.txt": "keep me\n",
-        "python_embedded/python.exe": "portable python\n",
-    }
-    for rel_path, content in portable_files.items():
-        path = project / rel_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+def test_timeout_is_reported_with_the_recovery_path(monkeypatch):
+    def slow(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
-    upstream_toolsets = (
-        '_HERMES_CORE_TOOLS = [\n    "terminal",\n]\n\n'
-        "# Core toolset definitions\nTOOLSETS = {\n"
-        '    "terminal": {"description": "Terminal", "tools": ["terminal"], "includes": []},\n'
-        "}\n"
-    )
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w") as zf:
-        root = "hermes-agent-main/"
-        zf.writestr(root + "README.md", "# Hermes Agent\nupstream readme\n")
-        for name in ("README.zh-TW.md", ".gitattributes", "gui/i18n.py",
-                     "gui/future_panel.py", ".hermes/gui_config.json"):
-            zf.writestr(root + name, "upstream replacement\n")
-        zf.writestr(root + "tools/update_hermes_tool.py", "# upstream file\n")
-        zf.writestr(root + ".github/workflows/upstream.yml", "name: upstream\n")
-        zf.writestr(root + ".hermes/config.yaml", "portable: false\n")
-        zf.writestr(root + "extensions/comfyui/user-model.txt", "overwrite\n")
-        zf.writestr(root + "python_embedded/python.exe", "overwrite\n")
-        zf.writestr(root + "run_agent.py", "# current upstream core\n")
-        zf.writestr(root + "toolsets.py", upstream_toolsets)
-    payload = archive.getvalue()
-
-    monkeypatch.setattr(update_hermes_tool, "_PROJECT_ROOT", project)
-    monkeypatch.setattr(update_hermes_tool, "_is_git_checkout", lambda: False)
-    monkeypatch.setattr(
-        update_hermes_tool,
-        "_PORTABLE_SOURCE_PATHS",
-        {"README.md", "README.zh-TW.md", ".gitattributes", "tools/update_hermes_tool.py"},
-    )
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_DIRS", {"gui"})
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_REQUIRED_TREE_FILES", {"gui/i18n.py"})
-    monkeypatch.setattr(
-        update_hermes_tool, "urlopen", lambda *args, **kwargs: io.BytesIO(payload)
-    )
-
-    result = json.loads(update_hermes_tool.update_hermes_handler({"branch": "main"}))
-
-    assert result["success"] is True, result
-    assert result["portable_verification"] == "portable surface verified"
-    assert (project / "run_agent.py").read_text(encoding="utf-8") == (
-        "# current upstream core\n"
-    )
-    for rel_path, content in portable_files.items():
-        assert (project / rel_path).read_text(encoding="utf-8") == content
-    assert not (project / ".github" / "workflows" / "upstream.yml").exists()
-
-    toolsets = (project / "toolsets.py").read_text(encoding="utf-8")
-    assert all(
-        f'"{name}"' in toolsets for name in update_hermes_tool._CUSTOM_CORE_TOOLS
-    )
-    assert all(
-        f'    "{name}": {{' in toolsets for name in update_hermes_tool._CUSTOM_TOOLSETS
-    )
+    monkeypatch.setattr(tool.subprocess, "run", slow)
+    out = json.loads(tool.update_hermes_handler({"timeout": 60}))
+    assert not out["success"] and out["code"] == "timeout"
+    assert "rolled back the next time Hermes starts" in out["error"]
 
 
-def test_portable_surface_rejects_upstream_readme(tmp_path, monkeypatch):
-    (tmp_path / "README.md").write_text(
-        "# Hermes Agent\nupstream instructions\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(update_hermes_tool, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_PATHS", {"README.md"})
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_DIRS", set())
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_REQUIRED_TREE_FILES", set())
-    monkeypatch.setattr(update_hermes_tool, "_CUSTOM_CORE_TOOLS", [])
-    monkeypatch.setattr(update_hermes_tool, "_CUSTOM_TOOLSETS", {})
-
-    ready, status = update_hermes_tool._portable_surface_is_ready()
-
-    assert ready is False
-    assert status == "README.md is not the Portable Hermes Agent README"
+def test_check_reports_both_channels_separately(calls):
+    seen, replies = calls
+    replies[("core", "check")] = _completed({"ok": True, "install_type": "zip",
+                                             "commit": "a" * 40, "behind_by": 57,
+                                             "update_available": True})
+    replies[("wrapper", "check")] = _completed({"ok": True, "installed_version": "v2.0.0",
+                                                "latest_version": "v2.1.0",
+                                                "update_available": True})
+    out = json.loads(tool.check_updates_handler({"branch": "main"}))
+    assert out["success"]
+    assert "57 upstream commits behind" in out["summary"]
+    assert "v2.1.0 is available" in out["summary"] and "UPDATE.bat" in out["summary"]
+    assert any("--ref" in c["cmd"] for c in seen)
 
 
-def test_portable_source_directories_are_snapshotted_and_restored(tmp_path, monkeypatch):
-    gui_file = tmp_path / "gui" / "future_panel.py"
-    skill_file = tmp_path / "skills" / "lm-studio" / "references" / "usage.md"
-    gui_file.parent.mkdir(parents=True)
-    skill_file.parent.mkdir(parents=True)
-    gui_file.write_bytes(b"portable gui\n")
-    skill_file.write_bytes(b"portable skill support\n")
-
-    monkeypatch.setattr(update_hermes_tool, "_PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(update_hermes_tool, "_PORTABLE_SOURCE_PATHS", set())
-    monkeypatch.setattr(
-        update_hermes_tool,
-        "_PORTABLE_SOURCE_DIRS",
-        {"gui", "skills/lm-studio"},
-    )
-
-    snapshot = update_hermes_tool._snapshot_portable_sources()
-    gui_file.unlink()
-    skill_file.write_bytes(b"upstream replacement\n")
-
-    restored = update_hermes_tool._restore_portable_sources(snapshot)
-
-    assert set(restored) == {
-        "gui/future_panel.py",
-        "skills/lm-studio/references/usage.md",
-    }
-    assert gui_file.read_bytes() == b"portable gui\n"
-    assert skill_file.read_bytes() == b"portable skill support\n"
+def test_check_degrades_gracefully_offline(calls):
+    _, replies = calls
+    replies[("core", "check")] = _completed({"ok": True, "install_type": "zip",
+                                             "update_available": None,
+                                             "network_error": "network error fetching x"})
+    replies[("wrapper", "check")] = _completed({"ok": True, "update_available": None,
+                                                "network_error": "HTTP 403"})
+    out = json.loads(tool.check_updates_handler({}))
+    assert "could not check" in out["summary"]
 
 
-def test_update_tool_explicitly_targets_both_repositories():
+def test_no_upstream_file_is_patched_any_more():
     source = (REPO_ROOT / "tools" / "update_hermes_tool.py").read_text(encoding="utf-8")
-
-    assert "github.com/NousResearch/hermes-agent.git" in source
-    assert "NousResearch/hermes-agent/archive" in source
-    assert "aivrar/portable-hermes-agent" in source
-
-
-def test_default_cli_tool_definitions_include_portable_tools():
-    import model_tools
-
-    definitions = model_tools.get_tool_definitions(
-        enabled_toolsets=["hermes-cli"],
-        quiet_mode=True,
-    )
-    names = {definition["function"]["name"] for definition in definitions}
-
-    assert {
-        "update_hermes",
-        "check_hermes_updates",
-        "create_tool",
-        "delete_tool",
-        "list_custom_tools",
-        "run_python",
-        "workflow_create",
-        "workflow_list",
-    }.issubset(names)
+    assert "toolsets.py" not in source.replace("``toolsets``", "")
+    assert "_HERMES_CORE_TOOLS" not in source
+    assert "git merge" not in source and "read-tree" not in source
 
 
 def test_portable_tool_modules_match_builtin_discovery_contract():
@@ -461,3 +158,14 @@ def test_portable_tool_modules_match_builtin_discovery_contract():
         _module_registers_tools(REPO_ROOT / "tools" / module)
         for module in portable_modules
     )
+
+
+def test_bridge_lists_exactly_the_tools_the_portable_modules_register():
+    from portable_hermes import bridge
+    from tools.registry import registry
+
+    import model_tools  # noqa: F401  (runs discovery)
+
+    registered = {name for name in registry.get_all_tool_names()
+                  if registry.get_toolset_for_tool(name) in bridge.PORTABLE_TOOLSETS}
+    assert registered == set(bridge.PORTABLE_TOOLS)
