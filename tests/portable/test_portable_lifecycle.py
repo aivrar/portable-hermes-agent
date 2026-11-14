@@ -415,9 +415,23 @@ def test_staged_files_must_live_in_the_staging_folder(tmp_path):
 # dependency plans
 # --------------------------------------------------------------------------
 
+def _reference_marker():
+    """The reference marker evaluator: the standalone ``packaging`` (a locked
+    base dependency, so present in CI's uv-made environments, which have no
+    pip), else the copy vendored in pip."""
+    try:
+        from packaging.markers import Marker
+    except ImportError:
+        try:
+            from pip._vendor.packaging.markers import Marker
+        except ImportError:
+            pytest.skip("neither packaging nor pip is installed: no reference evaluator")
+    return Marker
+
+
 def test_marker_evaluator_matches_pip_packaging_on_real_lock_markers():
     import tomllib
-    from pip._vendor.packaging.markers import Marker
+    Marker = _reference_marker()
 
     lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
     markers = {dep["marker"] for pkg in lock["package"]

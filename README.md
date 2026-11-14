@@ -91,6 +91,8 @@ Double-click:
 START.bat
 ```
 
+From PowerShell, run `.\START.bat` (or `.\install.bat` for setup only). Upstream's `scripts\install.ps1` installs a regular, non-portable Hermes with its own uv-managed Python; the portable bundle does not use it.
+
 On first launch, `START.bat` runs the portable setup automatically. It downloads embedded Python 3.14, the **latest Hermes Agent core from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)**, its exact pinned dependencies, and the LM Studio SDK into this folder only. No admin rights are needed. The new core is checked in a separate process (portable tools, CLI and GUI tool selection, GUI modules) before setup reports success.
 
 Manual setup:
