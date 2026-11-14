@@ -130,6 +130,13 @@ def test_gitignore_hides_the_core_and_user_data_but_no_wrapper_file():
            ".portable/kept/20261114-101500-wrapper/tools/update_hermes_tool.py",
            "gui/__pycache__/app.cpython-314.pyc", "portable_hermes/core.pyc",
            "tests/portable/__pycache__/x.cpython-314.pyc"})
+    # Secrets dropped into a folder git otherwise tracks, at any depth.
+    secrets = {f"{folder}/{name}"
+               for folder in ("gui", "portable_hermes/launch", "tests/portable", ".github",
+                              "skills/extensions/music-server", "skills/lm-studio",
+                              "skills/getting-started")
+               for name in (".env", ".env.local", ".env.production")}
+    user_paths |= secrets | {".env.local"}
     assert sorted(user_paths - ignored(user_paths)) == []
 
     # What the release builder adds to a release is never committed.

@@ -167,7 +167,7 @@ The four launchers in the folder (`START.bat`, `UPDATE.bat`, `hermes.bat`, `herm
 
 Most users do not need daily updates. Run `UPDATE.bat` when a release, fix, or security notice is published (or every week or two). Checking daily is optional.
 
-**Git clones** (developers): this repository holds only the portable wrapper. Run `START.bat` in a clone to install the Hermes core into it (git ignores the core and your data); then `git pull` updates the wrapper and `UPDATE.bat` the core. To run the tests, see [Developing from a clone](docs/portable-release-checklist.md#developing-from-a-clone).
+**Git clones** (developers): this repository holds only the portable wrapper. Run `START.bat` in a clone to install the Hermes core into it (git ignores the core, the portable Python and your data at the paths Hermes uses); then `git pull` updates the wrapper and `UPDATE.bat` the core. Those ignored files live inside the git folder, so never run `git clean -x` (it deletes them) or `git clean -fd` (it deletes untracked files in the wrapper folders) in a clone you use; for a pristine tree, make a second clone. To run the tests, see [Developing from a clone](docs/portable-release-checklist.md#developing-from-a-clone).
 
 ### 4. Connect an AI Model
 

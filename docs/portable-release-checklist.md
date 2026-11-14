@@ -187,8 +187,14 @@ A clone becomes a working install the same way a release folder does:
    `START.bat` in the clone. Setup downloads the portable Python and installs
    the newest upstream core into the clone (pin one with
    `HERMES_PORTABLE_CORE_REF`). `.gitignore` is an allowlist of wrapper paths,
-   so the core, `python_embedded\`, `.portable\` and your data never show up in
-   `git status`, and the core installer never writes a tracked file.
+   so the core, `python_embedded\`, `.portable\` and your data at the paths
+   Hermes uses stay out of `git status`, and the core installer never writes a
+   tracked file. Those are ignored files inside the git folder, so
+   `git clean -x` (for example `git clean -fdx`) DELETES the core, the portable
+   Python and your data (`.env`, `workspace\`, `workflows\`, `extensions\`,
+   `tools\custom`), and `git clean -fd` deletes untracked files inside the
+   wrapper folders. Never run them in a clone you use (check with `git clean -n`
+   first if you must); for a pristine tree, make a second clone.
 2. `git pull` updates the wrapper (`UPDATE.bat`'s wrapper step says so and
    leaves the clone alone); `UPDATE.bat --core` updates the core as in any
    install. A clone without a core, such as one made before v1.6.0 after a
