@@ -708,18 +708,26 @@ def test_windows_installer_fails_closed_instead_of_finishing_partial_setup():
     assert "/XC /XN /XO" in installer
 
 
-@pytest.mark.needs_core  # the upstream comfyui skill comes with the core
+@pytest.mark.needs_core  # the upstream skills come with the core
 def test_portable_comfyui_skill_does_not_collide_with_upstream_skill():
     root = Path(build_release.PROJECT_ROOT)
     portable = (root / "skills/extensions/portable-comfyui/SKILL.md").read_text(
         encoding="utf-8"
     )
-    upstream = (root / "skills/creative/comfyui/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
     assert "\nname: portable-comfyui\n" in portable
-    assert "\nname: comfyui\n" in upstream
+
+    # Upstream's own skills (its ComfyUI skill has lived in skills/ and in
+    # optional-skills/) never use the portable skill's name.
+    upstream = [path for top in ("skills", "optional-skills")
+                for path in (root / top).rglob("SKILL.md")
+                if ownership.classify(path.relative_to(root).as_posix()) == "core"]
+    assert upstream, "the installed core has no skills"
+    names = set()
+    for path in upstream:
+        match = re.search(r"^name:\s*(\S+)\s*$", path.read_text(encoding="utf-8"), re.M)
+        if match:
+            names.add(match.group(1).strip("'\""))
+    assert "portable-comfyui" not in names
 
 
 def test_release_zip_excludes_development_only_dirs():

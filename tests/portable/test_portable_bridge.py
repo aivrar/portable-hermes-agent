@@ -97,8 +97,12 @@ print("RESULT " + json.dumps({
 
 @pytest.mark.needs_core
 def test_repo_core_does_not_offer_portable_tools_without_the_bridge():
-    """Documents why the bridge exists: upstream files stay unpatched."""
-    result = _run(SELECTION_PROBE.replace("{setup}", ""))
+    """Documents why the bridge exists: upstream files stay unpatched.
+
+    The interpreter may carry the bridge's .pth hook (the core installer puts
+    it into python_embedded, which CI runs the tests with): it is switched
+    off here."""
+    result = _run(SELECTION_PROBE.replace("{setup}", ""), env_extra={bridge.NO_HOOK_ENV: "1"})
     assert result["augmented"] is False
     assert result["selected"] == [] and result["core"] == []
 
