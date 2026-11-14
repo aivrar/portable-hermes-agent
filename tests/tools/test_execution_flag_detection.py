@@ -32,6 +32,18 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+def _sort_version_first_line():
+    """First line of `sort --version` for the sort on PATH ('' if it prints none)."""
+    completed = subprocess.run(
+        ["sort", "--version"],
+        stdin=subprocess.DEVNULL,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    return completed.stdout.partition("\n")[0]
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
@@ -49,6 +61,17 @@ def test_real_binaries_execute_leading_dash_program_payload(
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
+    if tool == "sort":
+        # The sort case pins GNU sort's getopt grammar: the argv after
+        # --compress-program is its value even when it starts with '-'.
+        # Other sorts, such as uutils (Rust) coreutils, the default on
+        # Ubuntu 25.10 and later, do not promise that grammar.
+        sort_version = _sort_version_first_line()
+        if "GNU coreutils" not in sort_version:
+            pytest.skip(
+                "this case proves a property of GNU sort; the sort on PATH is not "
+                f"GNU coreutils (sort --version: {sort_version!r})"
+            )
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"
