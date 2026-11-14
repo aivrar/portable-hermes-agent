@@ -59,7 +59,7 @@ Portable Hermes 由**两个分别更新的部分**组成：
 
 新核心会先在暂存目录中安装依赖并在单独的进程中测试，通过后才替换文件；失败时文件会还原，改动过的依赖包会恢复并经过检查（若无法全部恢复，更新会明确提示，再次运行 `UPDATE.bat` 即可完成）。如果更新中途被打断（断电或关闭了窗口），下次启动 Hermes 时会先将其完成或撤销，然后才运行其他内容。
 
-两种更新都永远不会改动 `.env`、`cli-config.yaml`、`HERMES_HOME`（设置、聊天记录、自定义工具、LM Studio 设置、语言偏好）、`extensions\`、`workflows\` 和 `workspace\`；`python_embedded\` 只会在安装核心所需的依赖包以及上述 Python 升级时发生变化。如果你修改过的文件将被更新替换，会先把它复制到 `.portable\kept\`。核心更新后请重启 Hermes。Git 克隆（开发者）请使用 `git pull` 更新。
+两种更新都永远不会改动 `.env`、`cli-config.yaml`、`HERMES_HOME`（设置、聊天记录、自定义工具、LM Studio 设置、语言偏好）、`extensions\`、`workflows\` 和 `workspace\`；`python_embedded\` 只会在安装核心所需的依赖包以及上述 Python 升级时发生变化。如果你修改过的文件将被更新替换，会先把它复制到 `.portable\kept\`。核心更新后请重启 Hermes。在 Git 克隆中（开发者），`git pull` 更新便携外壳；`START.bat` 会把核心安装到克隆中，`UPDATE.bat` 负责更新核心。
 
 ---
 

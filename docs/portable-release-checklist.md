@@ -1,8 +1,9 @@
 # Portable update and release contract
 
-Portable Hermes is a **wrapper** around the upstream Hermes core. The release
-ZIP contains only wrapper-owned files; the core is installed from
-`NousResearch/hermes-agent` at install time and updated on request.
+Portable Hermes is a **wrapper** around the upstream Hermes core. This
+repository and the release ZIP contain only wrapper-owned files; the core is
+installed from `NousResearch/hermes-agent` at install time (also into a git
+clone, see "Developing from a clone") and updated on request.
 
 One ownership model, `portable_hermes/ownership.py`, decides for every path
 whether it is `user` (never written by any updater), `wrapper` (shipped in the
@@ -40,12 +41,14 @@ the other:
 
 Launch layout: the four root launchers are single-line trampolines into
 `portable_hermes/launch/*.cmd` (`env.cmd` sets the shared environment,
-`prepare.cmd` runs first-time or unfinished setup and settles an interrupted
-update with the standalone `.portable/recover.py` before any portable Python
-code is imported). `UPDATE.bat` is padded so that the v1.4.18 updater, which
-resumes reading at a byte offset after replacing it, lands on a tail that asks
-the user to run it again. Keep root launchers to one line plus that tail;
-`tests/portable/test_portable_launchers.py` replays the v1.4.18 swap.
+`prepare.cmd` runs first-time or unfinished setup, also for a folder with no
+core (neither `.portable/core-state.json` nor a v1.4.18-era `run_agent.py`),
+and settles an interrupted update with the standalone `.portable/recover.py`
+before any portable Python code is imported). `UPDATE.bat` is padded so that
+the v1.4.18 updater, which resumes reading at a byte offset after replacing it,
+lands on a tail that asks the user to run it again; until that second run, a
+console launch prints a note saying so. Keep root launchers to one line plus
+that tail; `tests/portable/test_portable_launchers.py` replays the v1.4.18 swap.
 
 Upstream files are never edited. The portable tools register themselves with
 upstream's registry; `portable_hermes/bridge.py` adds them to upstream's
@@ -100,15 +103,14 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
    the same commit (`git archive`, no line-ending conversion). Installs updated
    from that archive (v1.4.18's updater downloads it) otherwise see different
    bytes, and the wrapper updater keeps unedited files as "your edits".
-2. Run `scripts/run_tests.sh` for `tests/portable`, `tests/gui`,
-   `tests/test_portable_gui.py`, `tests/test_build_release.py`,
-   `tests/tools/test_update_hermes_tool.py`,
-   `tests/tools/test_portable_dependency_refresh.py` and
-   `tests/hermes_cli/test_update_zip*.py`. Use an existing development Python;
-   this does not change the embedded Python used by the portable application.
+   `tools/` and `skills/` are left out of that archive (see item 11); their
+   shipped files must equal the committed files.
+2. Run the tests in a clone with a core installed ("Developing from a clone"):
+   `python_embedded\python.exe -m pytest tests --ignore=tests/gui`. CI runs
+   the same on the first last-known-good core; a release needs it green.
 3. Run real Tk widget tests on a machine with a display. A skipped display test
    is not evidence that the GUI works. On Windows use
-   `scripts/run_tests.sh tests/gui -j 1 --file-retries 0 --capture=sys`:
+   `python_embedded\python.exe -m pytest tests/gui --capture=sys`:
    pytest's default file-descriptor capture can interfere with Tcl file channels.
    Do not mask failures with retries.
 4. Run the real-upstream test against the upstream commit you intend to vouch
@@ -150,12 +152,17 @@ default tool selection in memory, from a `.pth` hook in `python_embedded`.
    install" below), then one wrapper update from a second built ZIP and one core
    update. Check the GUI starts and lists the portable tools.
 9. Verify the tag resolves to the reviewed, passing commit. Upload the verified
-   `portable-hermes-agent-<tag>.zip`, not GitHub's automatic source archive (the
-   wrapper updater rejects archives without `portable_hermes/release.json`).
+   `portable-hermes-agent-<tag>.zip`, not GitHub's automatic source archive (it
+   lacks `tools/` and `skills/`, and the wrapper updater rejects archives
+   without `portable_hermes/release.json`).
    Download the published asset and compare SHA-256 with the local verified ZIP.
 10. Check README and release-page download links, CI results, and release notes.
     Record test results and any untested boundaries; never claim all future
     upstream changes are guaranteed compatible.
+11. Keep `/tools export-ignore` and `/skills export-ignore` in `.gitattributes`
+    while v1.4.18 installs may still update (the comment there explains why).
+    Anything merged to `main` reaches those installs at once: their updater
+    downloads GitHub's archive of `main`.
 
 ## Scratch install, core update and wrapper update
 
@@ -172,26 +179,47 @@ hermes.bat update --yes --no-core --zip C:\path\portable-hermes-agent-vX.zip
 hermes.bat update --yes --core
 ```
 
-## Removing the in-repo core copy (follow-up)
+## Developing from a clone
 
-This repository still tracks a copy of the fork-era core next to the wrapper.
-Nothing in the wrapper uses it at runtime; it is kept until the wrapper model
-has shipped. To remove it mechanically:
+A clone becomes a working install the same way a release folder does:
 
-```bash
-# every tracked path the ownership model classifies as "core"
-python -c "import subprocess; from portable_hermes import ownership as o; \
-paths = subprocess.run(['git', 'ls-files', '-z'], capture_output=True, text=True).stdout.split('\0'); \
-print('\n'.join(p for p in paths if p and o.classify(p) == 'core'))" > core-files.txt
-# drop the developer files the wrapper repository still needs from the list
-# (pyproject.toml and uv.lock for the test environment, scripts/run_tests.sh,
-# tests/conftest.py and the portable tests, .github/workflows/portable-integrity.yml,
-# LICENSE), then:
-git rm -q --pathspec-from-file=core-files.txt
-```
+1. `git clone https://github.com/aivrar/portable-hermes-agent`, then run
+   `START.bat` in the clone. Setup downloads the portable Python and installs
+   the newest upstream core into the clone (pin one with
+   `HERMES_PORTABLE_CORE_REF`). `.gitignore` is an allowlist of wrapper paths,
+   so the core, `python_embedded\`, `.portable\` and your data never show up in
+   `git status`, and the core installer never writes a tracked file.
+2. `git pull` updates the wrapper (`UPDATE.bat`'s wrapper step says so and
+   leaves the clone alone); `UPDATE.bat --core` updates the core as in any
+   install. A clone without a core, such as one made before v1.6.0 after a
+   `git pull`, runs setup again at its next start.
+3. Tests, from the clone:
 
-Tests that import core modules (the bridge proof, `tests/gui`, the tool tests)
-then need a core: have CI install a pinned upstream commit first (the same
-`portable_hermes core install --ref <commit>` the installer uses) and point
-`PYTHONPATH` at it. The `tests/hermes_cli/test_update_zip*.py` files test the
-fork-era core's own updater and are deleted with it.
+   ```bat
+   python_embedded\python.exe -m pip install -r tests\requirements.txt
+   python_embedded\python.exe -m pytest tests --ignore=tests/gui
+   python_embedded\python.exe -m pytest tests/gui --capture=sys
+   ```
+
+   `pytest.ini` holds the options. With any Python 3.14 and
+   `tests/requirements.txt` but no core, the wrapper-only tests run and the
+   tests that need the core are skipped, naming `START.bat`. Under CI (`CI`
+   set) a missing core stops the run instead.
+4. CI (`.github/workflows/portable-integrity.yml`, required through `ci.yml`)
+   does the same on Windows: Python 3.14 in `python_embedded` with the checkout
+   on its path (`hermes_project.pth`), `python -m portable_hermes core install
+   --ref <first last-known-good commit>`, an empty `git status`, the tests and
+   the release build. `upstream-canary.yml` runs it weekly against upstream
+   `main`, outside the required checks.
+5. A new tracked file must ship (a wrapper path, see item 6 above) or be one of
+   the development files listed in `tests/portable/test_portable_repository.py`.
+   A new wrapper file inside `tools/`, `docs/` or `assets/` (or a new portable
+   skill folder) also needs its `!` line in `.gitignore`. That test checks both.
+
+## The in-repo core copy (removed in v1.6.0)
+
+Until v1.5.1 this repository also tracked a fork-era copy of the core, which
+the wrapper never used at runtime. v1.6.0 (issue #176) removed it in one
+commit, so a clone holds only the wrapper and installs the core like a
+release does. The export-ignore lines (item 11) keep the v1.4.18 update path
+working without it.

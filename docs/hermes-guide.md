@@ -1103,7 +1103,8 @@ You can also ask Hermes in the chat. "Check whether upstream Hermes Agent has up
 | "Portable Hermes cannot run from this folder ... Its path contains one of the characters ! % ^" | Move or rename the portable folder to a path without those characters, for example `C:\PortableHermes`. |
 | "Portable Hermes cannot use this Hermes home folder" | Set `HERMES_HOME` to a folder whose path has no `!`. |
 | "the install folder path is N characters long" | Windows long paths are turned off and the folder is too deep for upstream's longest files. Move the portable folder to a short path such as `C:\PortableHermes`. |
-| "this install is a git checkout" | Developer clones are updated with `git pull`, not by the portable updaters. |
+| "git checkout: update the wrapper with git pull" | A developer clone: update the portable wrapper with `git pull`. The core step updates the core as in any install. |
+| "This folder is GitHub's source download of Portable Hermes" | The folder came from GitHub's green "Code > Download ZIP" button or a "Source code" link, which lack the portable tools. Nothing was installed or changed. Download `portable-hermes-agent-vX.Y.Z.zip` from the Assets list of the latest release and extract it into a new folder. |
 | "could not reach GitHub" | Check your internet connection or proxy; nothing was changed. |
 | Browser tools unavailable after setup | Current upstream cores install their Node.js packages with pnpm, which the portable setup does not run yet. Other tools are unaffected. |
 

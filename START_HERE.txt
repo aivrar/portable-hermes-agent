@@ -123,5 +123,7 @@ Notes:
   Hermes exactly as typed.
 - API keys belong in the setup wizard or the Hermes-home .env file, not in Git.
 - Extension servers for TTS, Music, and ComfyUI install on first use.
-- Developers working from a git clone: the updaters do not rewrite git
-  checkouts; use git pull.
+- Developers working from a git clone: the repository holds only the
+  portable wrapper. START.bat installs the Hermes core into the clone (git
+  ignores it); git pull updates the wrapper, UPDATE.bat the core. See
+  "Developing from a clone" in docs\portable-release-checklist.md.
