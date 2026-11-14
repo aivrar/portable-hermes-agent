@@ -8,14 +8,20 @@
 ::
 :: 1. A Python upgrade was interrupted (.portable\runtime-plan.cmd exists):
 ::    runtime.cmd resume finishes it or puts the previous Python back.
-:: 2. Setup: no portable Python yet, or install.bat did not finish last time
-::    (.portable\installing exists): run install.bat first.
+:: 2. Setup: no portable Python yet, install.bat did not finish last time
+::    (.portable\installing exists), or no Hermes core (run_agent.py missing:
+::    a git clone, whose repository holds only the wrapper): run install.bat
+::    first. install.bat exit code 12: GitHub's source download, it said so.
 :: 3. An update was interrupted (.portable\journal.json exists): settle it with
 ::    the standalone .portable\recover.py, which needs nothing but the Python
 ::    standard library, so a half-replaced portable_hermes package cannot get
 ::    in the way. Never start Hermes on top of an unsettled update.
 :: 4. Python packages were left half changed (.portable\deps-pending.json):
 ::    say so; UPDATE.bat finishes the change.
+:: 5. Half of the hand-over from v1.4.18 or older: their updater put these
+::    launchers (from the repository's main ZIP, so no release.json) next to
+::    the old core. Say that UPDATE.bat must run once more. If that core
+::    cannot start (tools\registry.py missing), do not start it at all.
 ::
 :: Everything below is one parenthesised block: cmd.exe reads it completely
 :: before running it, so files replaced while it runs cannot change it.
@@ -41,18 +47,25 @@ setlocal disabledelayedexpansion
     set "PH_NEED_SETUP="
     if not exist "%PYTHON_EXE%" set "PH_NEED_SETUP=1"
     if exist "%PH_STATE%\installing" set "PH_NEED_SETUP=1"
+    if not exist "%PH_ROOT%\run_agent.py" set "PH_NEED_SETUP=1"
     if defined PH_NEED_SETUP if defined HERMES_PORTABLE_HIDDEN (
         set "HERMES_PORTABLE_HIDDEN="
         start "Portable Hermes" "%ComSpec%" /d /c call "%PH_ROOT%\START.bat"
         exit /b 1
     )
     if defined PH_NEED_SETUP (
-        if exist "%PYTHON_EXE%" (
+        if exist "%PYTHON_EXE%" if exist "%PH_STATE%\installing" (
             echo.
             echo   The last setup of this folder did not finish. Running it again now.
             echo.
         )
+        if exist "%PYTHON_EXE%" if not exist "%PH_STATE%\installing" (
+            echo.
+            echo   This folder has no Hermes core yet. Running setup to install it now.
+            echo.
+        )
         call .\install.bat
+        if errorlevel 12 if not errorlevel 13 exit /b 1
         if errorlevel 1 (
             echo.
             echo   Setup did not finish, so Hermes was not started. Check your internet
@@ -106,6 +119,23 @@ setlocal disabledelayedexpansion
         echo   packages. Some features may not work until you run UPDATE.bat, which
         echo   finishes the change.
         echo.
+    )
+    if /i not "%~1"=="update" if not exist "%PH_ROOT%\portable_hermes\release.json" if not exist "%PH_ROOT%\.git" if exist "%PH_ROOT%\run_agent.py" (
+        if not exist "%PH_ROOT%\tools\registry.py" if defined HERMES_PORTABLE_HIDDEN (
+            set "HERMES_PORTABLE_HIDDEN="
+            start "Portable Hermes" "%ComSpec%" /d /c call "%PH_ROOT%\START.bat"
+            exit /b 1
+        )
+        echo.
+        echo   NOTE: the update is not finished. Run UPDATE.bat once more.
+        echo.
+        if not exist "%PH_ROOT%\tools\registry.py" (
+            echo   Hermes was not started: its core is incomplete until UPDATE.bat has
+            echo   run once more. Your settings and data are kept.
+            echo.
+            if defined PH_PAUSE pause
+            exit /b 1
+        )
     )
     exit /b 0
 )

@@ -11,6 +11,10 @@ for %%I in ("%PORTABLE_HERMES_ROOT%") do set "PH_ROOT=%%~fI"
 call .\portable_hermes\launch\env.cmd
 if errorlevel 1 exit /b 1
 title Portable Hermes Agent
+:: GitHub's source download cannot be installed: install.bat says so (exit
+:: code 12) before the welcome text promises a setup. Same test as there.
+:: Started without CALL: the window is handed over to install.bat.
+if not exist "%PH_ROOT%\tools\update_hermes_tool.py" if not exist "%PH_ROOT%\portable_hermes\release.json" if not exist "%PH_ROOT%\.git" .\install.bat
 set "PH_FIRST="
 if not exist "%PYTHON_EXE%" set "PH_FIRST=1"
 if exist "%PH_STATE%\installing" set "PH_FIRST=1"

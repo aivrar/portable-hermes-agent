@@ -844,6 +844,35 @@ def test_clean_install_of_one_release_updated_to_the_next_keeps_nothing(tmp_path
         "gui/app.py"]
 
 
+def test_first_release_over_an_unrecorded_wrapper_names_the_kept_files_honestly(
+        root, tmp_path, capsys):
+    """The second UPDATE.bat run of a v1.4.18 hand-over: the wrapper files came
+    from the repository's main ZIP and nothing records them, so the differing
+    ones are the previous version's copies, not necessarily the user's edits."""
+    from portable_hermes import __main__ as cli
+    assert not (root / ownership.RELEASE_MANIFEST).exists()
+    release = release_zip(tmp_path, NEW_WRAPPER, "v9.0.0")
+    result = WrapperUpdater(root, quiet=True, run_verify=FakeVerify(root)).update(
+        zip_path=str(release))
+    assert result["ok"] and result["adopted"] and result["kept_edits_count"] == 5, result
+    cli._emit(result, False)
+    printed = " ".join(capsys.readouterr().out.split())
+    assert (f"5 file(s) of the previous Portable Hermes version were kept in "
+            f"{result['kept_edits']}, as they were before this update (with any change you "
+            "made to them). Once Hermes works, you may delete that folder.") in printed
+    assert "your edits" not in printed
+    # From then on the release is recorded: a later edit is called an edit.
+    (root / "gui/app.py").write_bytes(b"# my own change\n")
+    release = release_zip(tmp_path, dict(NEW_WRAPPER, **{"gui/app.py": b"# v3\n"}), "v9.0.1")
+    result = WrapperUpdater(root, quiet=True, run_verify=FakeVerify(root)).update(
+        zip_path=str(release))
+    assert result["ok"] and not result.get("adopted") and result["kept_edits_count"] == 1
+    cli._emit(result, False)
+    printed = " ".join(capsys.readouterr().out.split())
+    assert "1 file(s) that differed from what was installed (your edits" in printed
+    assert "previous Portable Hermes version" not in printed
+
+
 @pytest.mark.parametrize("edited", [False, True])
 def test_release_licence_is_owned_by_the_core_and_never_installed_by_the_wrapper(
         root, tmp_path, edited):

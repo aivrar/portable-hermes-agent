@@ -490,7 +490,7 @@ class WrapperUpdater:
             common.prune_empty_dirs(self.root, removed)
         except OSError:
             pass
-        return {
+        result = {
             "ok": True, "changed": changed, "version": version, "source": source,
             "files_written": written, "files_removed": len(removed),
             "kept_modified": kept, "skipped": skipped[:50], "skipped_count": len(skipped),
@@ -499,3 +499,9 @@ class WrapperUpdater:
             "message": (f"wrapper updated to {version}" if changed else
                         f"wrapper files already match {version}"),
         }
+        if not recorded:
+            # Nothing records what was installed (a v1.4.18-or-older install
+            # updated from the repository's main ZIP): every differing file
+            # is the previous version's copy, not necessarily the user's edit.
+            result.update(adopted=True, adopted_what="the previous Portable Hermes version")
+        return result
