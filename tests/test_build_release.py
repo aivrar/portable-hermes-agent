@@ -83,7 +83,8 @@ def test_release_tag_produces_the_expected_asset_name(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["build_release.py", "--version", "v9.8.7", "--output-dir", str(tmp_path)],
+        ["build_release.py", "--version", "v9.8.7", "--output-dir", str(tmp_path),
+         "--no-git-check"],
     )
     monkeypatch.setattr(build_release, "iter_release_files", lambda: iter(()))
     monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", set())
@@ -103,7 +104,7 @@ def test_incomplete_build_never_replaces_previous_archive(tmp_path, monkeypatch,
     published = output / "portable-hermes-agent-vtest.zip"
     published.write_bytes(b"previous verified release")
     monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "test",
-                                     "--output-dir", str(output)])
+                                     "--output-dir", str(output), "--no-git-check"])
     monkeypatch.setattr(build_release, "PROJECT_ROOT", str(source))
     monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", {"README.md"})
     candidates = [] if failure == "inventory" else ["README.md"]
@@ -145,8 +146,10 @@ def test_built_release_is_wrapper_only_with_payload_and_manifest(tmp_path, monke
     import hashlib
     import json
 
+    # The real tree, which may hold uncommitted work while tests run: the
+    # git-archive check has its own tests below (on a scratch repository).
     monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "v0.0.1-test",
-                                      "--output-dir", str(tmp_path)])
+                                      "--output-dir", str(tmp_path), "--no-git-check"])
     build_release.main()
     archive = tmp_path / "portable-hermes-agent-v0.0.1-test.zip"
     with zipfile.ZipFile(archive) as zf:
@@ -158,6 +161,8 @@ def test_built_release_is_wrapper_only_with_payload_and_manifest(tmp_path, monke
             data = zf.read("portable-hermes-agent/" + rel)
             assert hashlib.sha256(data).hexdigest() == digest, rel
     assert manifest["version"] == "v0.0.1-test"
+    assert manifest["git_archive_check"] == "skipped (--no-git-check)"
+    assert manifest["source_commit"] is None
     assert set(manifest["files"]) == rels - {ownership.RELEASE_MANIFEST}
     assert "run_agent.py" not in rels and "hermes_cli/main.py" not in rels
     assert "tools/lm_studio_tools.py" in rels
@@ -169,6 +174,131 @@ def test_built_release_is_wrapper_only_with_payload_and_manifest(tmp_path, monke
     assert ownership.PAYLOAD_DIR + "/START.bat" not in rels       # wrapper-only name
     shipped = {r for r in rels if not r.startswith("portable_hermes/")}
     assert set(manifest["payload"]) == {r for r in shipped if ownership.is_payload_path(r)}
+
+
+# --------------------------------------------------------------------------
+# a release is byte-identical to `git archive` of its commit
+# --------------------------------------------------------------------------
+
+SOURCE_FILES = {
+    "README.md": b"# Portable Hermes Agent\nreadme\n",
+    "START_HERE.txt": b"Start here\nline two\n",
+    "LICENSE": b"MIT License\n",
+}
+
+
+def _git(cwd, *args):
+    """git in a scratch repository, independent of the machine's git settings."""
+    return subprocess.run(
+        ["git", "-c", "user.name=Release Test", "-c", "user.email=release-test@example.invalid",
+         "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", *args],
+        cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def release_source(tmp_path, monkeypatch):
+    """A committed scratch checkout (LF files, core.autocrlf=false) to build from."""
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-q")
+    _git(source, "config", "core.autocrlf", "false")
+    for rel, data in SOURCE_FILES.items():
+        (source / rel).write_bytes(data)
+    _git(source, "add", "-A")
+    _git(source, "commit", "-q", "-m", "release source")
+    output = tmp_path / "dist"
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(source))
+    monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", set(SOURCE_FILES))
+    monkeypatch.setattr(sys, "argv", ["build_release.py", "--version", "v9.9.9",
+                                      "--output-dir", str(output)])
+    return source, output
+
+
+def _built_manifest(output):
+    import json
+    with zipfile.ZipFile(output / "portable-hermes-agent-v9.9.9.zip") as zf:
+        for rel, data in SOURCE_FILES.items():
+            assert zf.read("portable-hermes-agent/" + rel) == data, rel
+        return json.loads(zf.read("portable-hermes-agent/" + ownership.RELEASE_MANIFEST))
+
+
+def test_release_from_a_clean_checkout_passes_and_records_its_commit(release_source):
+    source, output = release_source
+    build_release.main()
+    manifest = _built_manifest(output)
+    head = _git(source, "rev-parse", "HEAD").stdout.decode().strip()
+    assert manifest["source_commit"] == head
+    assert manifest["git_archive_check"] == "passed"
+
+
+def test_a_crlf_copy_of_an_archived_lf_file_stops_the_build_and_is_named(
+        release_source, monkeypatch):
+    """An ordinary Windows clone (core.autocrlf=true) of files without a
+    line-ending rule: git sees no change, but the bytes differ from the archive.
+    A rule (text eol=lf) makes the same clone build."""
+    source, output = release_source
+    clone = source.parent / "windows-clone"
+    _git(source.parent, "clone", "-q", "-c", "core.autocrlf=true", str(source), str(clone))
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(clone))
+    assert (clone / "START_HERE.txt").read_bytes() == b"Start here\r\nline two\r\n"
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                            cwd=clone, capture_output=True, check=True)
+    assert status.stdout == b""                 # nothing uncommitted as far as git knows
+    with pytest.raises(build_release.SourceCheckError) as info:
+        build_release.main()
+    message = str(info.value)
+    assert "  START_HERE.txt: line endings (CRLF here, LF in the archive)\n" in message
+    assert "  README.md: line endings (CRLF here, LF in the archive)\n" in message
+    assert "git add --renormalize" in message and "core.autocrlf=false" in message
+    assert not output.exists() or list(output.iterdir()) == []
+    # The fix: line-ending rules, committed; a fresh clone then builds.
+    (source / ".gitattributes").write_bytes(
+        b"*.md text eol=lf\n/LICENSE text eol=lf\n/START_HERE.txt text eol=lf\n")
+    _git(source, "add", ".gitattributes")
+    _git(source, "commit", "-q", "-m", "line-ending rules")
+    fixed = source.parent / "windows-clone-2"
+    _git(source.parent, "clone", "-q", "-c", "core.autocrlf=true", str(source), str(fixed))
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(fixed))
+    assert (fixed / "START_HERE.txt").read_bytes() == SOURCE_FILES["START_HERE.txt"]
+    build_release.main()
+    assert _built_manifest(output)["git_archive_check"] == "passed"
+
+
+def test_an_uncommitted_change_stops_the_build_and_is_named(release_source):
+    source, output = release_source
+    (source / "README.md").write_bytes(b"# Portable Hermes Agent\nnot committed\n")
+    with pytest.raises(build_release.SourceCheckError) as info:
+        build_release.main()
+    message = str(info.value)
+    assert "not committed:\n  README.md\n" in message
+    assert "START_HERE.txt" not in message
+    assert not output.exists() or list(output.iterdir()) == []
+    # Staged but not committed counts too.
+    _git(source, "add", "README.md")
+    with pytest.raises(build_release.SourceCheckError):
+        build_release.main()
+
+
+def test_a_source_that_is_not_a_git_checkout_needs_no_git_check(tmp_path, monkeypatch):
+    source = tmp_path / "extracted"
+    source.mkdir()
+    for rel, data in SOURCE_FILES.items():
+        (source / rel).write_bytes(data)
+    output = tmp_path / "dist"
+    monkeypatch.setattr(build_release, "PROJECT_ROOT", str(source))
+    monkeypatch.setattr(build_release, "REQUIRED_RELEASE_FILES", set(SOURCE_FILES))
+    monkeypatch.setattr(build_release, "iter_release_files", lambda: iter(SOURCE_FILES))
+    argv = ["build_release.py", "--version", "v9.9.9", "--output-dir", str(output)]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(build_release.SourceCheckError) as info:
+        build_release.main()
+    assert "is not a git checkout" in str(info.value) and "--no-git-check" in str(info.value)
+    assert not output.exists() or list(output.iterdir()) == []
+    monkeypatch.setattr(sys, "argv", argv + ["--no-git-check"])
+    build_release.main()
+    manifest = _built_manifest(output)
+    assert manifest["source_commit"] is None
+    assert manifest["git_archive_check"] == "skipped (--no-git-check)"
 
 
 def test_root_readmes_keep_portable_identity_and_consistent_language_links():

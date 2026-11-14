@@ -34,3 +34,13 @@ docker/entrypoint.sh text eol=lf
 *.ps1   text eol=crlf
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
+
+# Portable release files that no extension rule above covers. A release ZIP
+# must hold the same bytes as GitHub's archive of its commit (which v1.4.18's
+# updater downloads), so these check out as LF on every machine, also where
+# core.autocrlf=true. Committed as LF: the archive does not change.
+/LICENSE                                        text eol=lf
+/START_HERE.txt                                 text eol=lf
+/hermes_gui.vbs                                 text eol=lf
+portable_hermes/manifests/legacy-core-files.txt text eol=lf
+portable_hermes/manifests/python-runtime.txt    text eol=lf
