@@ -9,9 +9,8 @@ records what it installed. The portable tools are never patched into upstream
 files; ``portable_hermes.bridge`` offers them to the agent at runtime.
 
 The portable wrapper itself (launchers, GUI, these tools) is updated from the
-aivrar/portable-hermes-agent releases by ``UPDATE.bat``, a separate channel.
-
-Developer git checkouts are reported, never rewritten: update them with git.
+aivrar/portable-hermes-agent releases by ``UPDATE.bat``, a separate channel
+(in a git clone of that repository: ``git pull``).
 """
 
 from __future__ import annotations
@@ -117,8 +116,6 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
                            "not all be put back. Run UPDATE.bat to finish.")
     elif result.get("kept_existing_core"):
         payload["note"] = "The existing core was kept unchanged."
-    if result.get("code") == "git_checkout":
-        payload["install_type"] = "git"
     return json.dumps(payload, default=str)
 
 
@@ -129,9 +126,7 @@ def check_updates_handler(args: dict, **kwargs) -> str:
     core = _run_portable(["core", "check"] + (["--ref", branch] if branch else []), timeout)
     wrapper = _run_portable(["wrapper", "check"], timeout)
     lines = []
-    if core.get("install_type") == "git":
-        lines.append("Core: git checkout, update it with git.")
-    elif core.get("update_available") is False:
+    if core.get("update_available") is False:
         lines.append("Core: up to date.")
     elif core.get("update_available"):
         behind = core.get("behind_by")
@@ -139,7 +134,9 @@ def check_updates_handler(args: dict, **kwargs) -> str:
                      else "Core: an upstream update is available.")
     else:
         lines.append(f"Core: could not check ({core.get('network_error') or core.get('reason')}).")
-    if wrapper.get("update_available"):
+    if wrapper.get("install_type") == "git":
+        lines.append("Portable wrapper: git checkout, update it with git pull.")
+    elif wrapper.get("update_available"):
         lines.append(f"Portable wrapper: {wrapper.get('latest_version')} is available "
                      f"(installed {wrapper.get('installed_version') or 'unknown'}); run UPDATE.bat.")
     elif wrapper.get("update_available") is False:
@@ -163,8 +160,7 @@ UPDATE_SCHEMA = {
         "Update the upstream Hermes Agent core (NousResearch/hermes-agent) inside this "
         "Portable Hermes install: download it, install its dependencies, verify it in a "
         "fresh process, then swap it in with automatic rollback on failure. Portable tools, "
-        "the GUI and user data are kept. Hermes must be restarted afterwards. Developer "
-        "git checkouts are not modified."
+        "the GUI and user data are kept. Hermes must be restarted afterwards."
     ),
     "parameters": {
         "type": "object",

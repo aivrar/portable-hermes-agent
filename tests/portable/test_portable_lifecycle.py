@@ -695,15 +695,40 @@ def test_update_of_existing_core_never_falls_back(root, tmp_path, monkeypatch):
     assert not result["ok"] and result["kept_existing_core"]
 
 
-def test_git_checkout_is_never_rewritten(root, tmp_path):
+CLONE_DEV_FILES = {
+    ".gitignore": b"/*\n!/gui/\n",
+    ".gitattributes": b"*.bat text eol=crlf\n",
+    "pytest.ini": b"[pytest]\n",
+    "build_release.py": b"# release builder\n",
+}
+
+
+def test_a_git_clone_gets_its_core_and_keeps_its_tracked_files(root, tmp_path):
+    # The repository holds only the wrapper: a clone installs the core like a
+    # ZIP install, and the core never writes over the files git tracks.
     (root / ".git").mkdir()
+    write_files(root, CLONE_DEV_FILES)
+    before = snapshot(root, list(WRAPPER_FILES) + list(USER_FILES) + list(CLONE_DEV_FILES))
+    upstream = dict(CORE_V1, **{".gitignore": b"upstream ignore\n",
+                                ".gitattributes": b"upstream attributes\n",
+                                "pytest.ini": b"[pytest]\nupstream\n",
+                                "build_release.py": b"upstream must not own this\n"})
     life, _, _ = lifecycle(root)
-    result = life.install(zip_path=str(core_zip(tmp_path, CORE_V1, SHA1, "v1.zip")))
-    assert not result["ok"] and result["code"] == "git_checkout"
-    assert not (root / "run_agent.py").exists()
-    assert life.check()["install_type"] == "git"
-    assert WrapperUpdater(root, run_verify=FakeVerify(root)).update(zip_path="x")["code"] == \
-        "git_checkout"
+    result = life.install(zip_path=str(core_zip(tmp_path, upstream, SHA1, "v1.zip")))
+    assert result["ok"] and result["changed"], result
+    assert (root / "run_agent.py").read_bytes() == CORE_V1["run_agent.py"]
+    assert snapshot(root, before) == before
+    assert not result.get("kept_edits_count")
+    assert life.check()["install_type"] == "zip"
+    for rel in CLONE_DEV_FILES:
+        assert ownership.classify(rel) == "wrapper"
+        assert not ownership.is_release_member(rel) and not ownership.is_payload_path(rel)
+    # The wrapper channel leaves the clone to git, as a success (UPDATE.bat
+    # then goes on to the core step).
+    wrapper_result = WrapperUpdater(root, run_verify=FakeVerify(root)).update(zip_path="x")
+    assert wrapper_result["ok"] and not wrapper_result["changed"]
+    assert "git pull" in wrapper_result["message"]
+    assert snapshot(root, before) == before
 
 
 def test_check_reports_how_far_behind_and_degrades_offline(root, tmp_path, monkeypatch):
@@ -1024,6 +1049,21 @@ def test_update_command_hands_the_core_step_to_the_newly_installed_wrapper(root,
     monkeypatch.setattr(subprocess, "call", lambda cmd: calls.append(cmd) or 0)
     assert cli.main(["--root", str(root), "update", "--core", "--yes"]) == 0
     assert calls[0][-5:] == [str(root), "update", "--core-only", "--core", "--yes"]
+
+
+def test_update_command_in_a_git_clone_leaves_the_wrapper_to_git_and_updates_the_core(
+        root, monkeypatch, capsys):
+    from portable_hermes import __main__ as cli
+
+    (root / ".git").mkdir()
+    installs = []
+    monkeypatch.setattr(CoreLifecycle, "install", lambda self, **kw: installs.append(kw) or {
+        "ok": True, "changed": True, "commit": SHA2, "message": "core installed at 2222"})
+    assert cli.main(["--root", str(root), "update", "--core", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "git checkout: update the wrapper with git pull." in out
+    assert "FAILED" not in out
+    assert installs == [{}]
 
 
 def test_update_output_keeps_its_order_when_piped(root, tmp_path):

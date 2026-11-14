@@ -308,11 +308,16 @@ class WrapperUpdater:
         return info
 
     def update(self, *, zip_path: str | None = None, tag: str | None = None,
-               force: bool = False, allow_git: bool = False) -> dict:
-        """Update the wrapper. Returns a result dict (never raises)."""
-        if (self.root / ".git").exists() and not allow_git:
-            return {"ok": False, "code": "git_checkout",
-                    "reason": "this install is a git checkout; update it with git pull"}
+               force: bool = False) -> dict:
+        """Update the wrapper. Returns a result dict (never raises).
+
+        In a git clone git owns the wrapper files: nothing is changed and the
+        result says to use ``git pull`` (a success, so UPDATE.bat goes on to
+        the core step)."""
+        if (self.root / ".git").exists():
+            return {"ok": True, "changed": False, "code": "git_checkout",
+                    "install_type": "git",
+                    "message": "git checkout: update the wrapper with git pull."}
         try:
             with common.InstallLock(self.root):
                 recovered = common.recover(self.root)

@@ -123,7 +123,10 @@ WRAPPER_CORE_TREE_DIRS = frozenset({
 
 #: Wrapper-owned files that are tracked in git for development but are not
 #: part of a release (the release builder itself and repo-level metadata).
-WRAPPER_DEV_ONLY = frozenset({"build_release.py"})
+#: Upstream ships its own ``.gitignore`` and ``.gitattributes``; as wrapper
+#: paths the core installer never writes them, so a git clone of this
+#: repository keeps its own copies when the core is installed into it.
+WRAPPER_DEV_ONLY = frozenset({"build_release.py", ".gitattributes", ".gitignore", "pytest.ini"})
 
 #: Files at the root of a release archive that no updater manages. The licence
 #: ships with every release so a downloaded ZIP carries it; upstream ships its
