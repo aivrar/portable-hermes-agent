@@ -448,6 +448,29 @@ def _streamed(chunks):
 
 
 @pytest.mark.needs_core
+def test_gui_wrapped_session_title_is_left_aligned():
+    import tkinter as tk
+    from gui import app
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        sidebar = object.__new__(app.Sidebar)
+        sidebar.session_frame = tk.Frame(root)
+        sidebar._add_session_entry({"id": "s1", "title": "Output sequence of numbers 1 to 60",
+                                    "message_count": 4, "model": "gemma-4-e4b-it"})
+        entry = sidebar._session_widgets["s1"]
+        title = entry.winfo_children()[0].winfo_children()[0]
+        assert title.cget("text").startswith("Output sequence")
+        assert str(title.cget("justify")) == "left" and str(title.cget("anchor")) == "w"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
     chunks = ("\n", "\n", "Hello", " world\n", "line two", "\n\n", " \n")
     shown, height, raw = _streamed(chunks)

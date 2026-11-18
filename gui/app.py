@@ -961,7 +961,8 @@ class Sidebar(tk.Frame):
 
         tk.Label(top_row, text=title, font=FONTS["small"],
                 fg=C["text_primary"], bg=C["bg_sidebar"],
-                anchor="w", wraplength=S(190)).pack(side="left", fill="x", expand=True)
+                anchor="w", justify="left",   # a wrapped second line too
+                wraplength=S(190)).pack(side="left", fill="x", expand=True)
 
         # Delete button (only visible on hover)
         del_btn = tk.Label(top_row, text="\u2715", font=SF("Segoe UI", 9),
