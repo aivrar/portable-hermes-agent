@@ -336,6 +336,25 @@ class StreamingBubble(tk.Frame):
 # Sidebar
 # ============================================================================
 
+def _list_sessions_with_messages(db, limit=20, fallback_window=200):
+    """Recent sessions that have at least one message.
+
+    Sessions without messages (a first turn that failed, gateway resets,
+    compression parents) have nothing to resume, so the sidebar hides them.
+    A core whose list_sessions_rich has no min_message_count gets a wider
+    window filtered here, so newer empty rows cannot crowd out real ones.
+    """
+    try:
+        import inspect
+        supported = "min_message_count" in inspect.signature(db.list_sessions_rich).parameters
+    except (TypeError, ValueError):
+        supported = False
+    if supported:
+        return db.list_sessions_rich(source=None, limit=limit, min_message_count=1)
+    rows = db.list_sessions_rich(source=None, limit=fallback_window)
+    return [s for s in rows if s.get("message_count", 1)][:limit]
+
+
 class Sidebar(tk.Frame):
     """Left sidebar with branding, new-chat, session history, and model switcher."""
 
@@ -787,14 +806,7 @@ class Sidebar(tk.Frame):
         try:
             from hermes_state import SessionDB
             with SessionDB() as db:
-                # Sessions without messages (a first turn that failed, gateway
-                # resets, compression parents) have nothing to resume: hide them.
-                try:
-                    sessions = db.list_sessions_rich(source=None, limit=20,
-                                                     min_message_count=1)
-                except TypeError:  # a core without the filter
-                    sessions = [s for s in db.list_sessions_rich(source=None, limit=20)
-                                if s.get("message_count", 1)]
+                sessions = _list_sessions_with_messages(db, limit=20)
             self._sessions_data = sessions
             self._render_sessions()
         except Exception:

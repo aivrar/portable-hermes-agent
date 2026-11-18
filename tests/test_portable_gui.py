@@ -309,25 +309,67 @@ def test_gui_sidebar_hides_sessions_without_messages():
 
 
 @pytest.mark.needs_core
-def test_gui_sidebar_hides_empty_sessions_with_core_lacking_filter(monkeypatch):
-    import sys
-    from gui import app
+def test_gui_sidebar_detects_current_core_session_filter():
+    import inspect
+    from hermes_state import SessionDB
 
-    class OldSessionDB:
+    with SessionDB() as db:
+        params = inspect.signature(db.list_sessions_rich).parameters
+
+    assert "min_message_count" in params
+
+
+def _fake_session_db(rows, calls, supports_filter):
+    """A SessionDB stand-in whose rows are newest first, honouring ``limit``."""
+
+    class FakeSessionDB:
         def __enter__(self):
             return self
 
         def __exit__(self, *exc):
             return False
 
-        def list_sessions_rich(self, source=None, limit=20):
-            return [{"id": "empty", "message_count": 0},
-                    {"id": "chat", "message_count": 3}]
+        if supports_filter:
+            def list_sessions_rich(self, source=None, limit=20, min_message_count=0):
+                calls.append({"limit": limit, "min_message_count": min_message_count})
+                raise TypeError("bug inside a core that supports the filter")
+        else:
+            def list_sessions_rich(self, source=None, limit=20):
+                calls.append({"limit": limit})
+                return rows[:limit]
 
+    return SimpleNamespace(SessionDB=FakeSessionDB)
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_old_core_fallback_survives_20_newer_empty_sessions(monkeypatch):
+    import sys
+    from gui import app
+
+    rows = ([{"id": f"empty{i}", "message_count": 0} for i in range(20)]
+            + [{"id": f"chat{i}", "message_count": 2} for i in range(25)])
+    calls = []
     monkeypatch.setitem(sys.modules, "hermes_state",
-                        SimpleNamespace(SessionDB=OldSessionDB))
+                        _fake_session_db(rows, calls, supports_filter=False))
 
     sidebar = _sidebar_shell(app)
     sidebar._load_sessions()
 
-    assert [s["id"] for s in sidebar._sessions_data] == ["chat"]
+    assert [s["id"] for s in sidebar._sessions_data] == [f"chat{i}" for i in range(20)]
+    assert calls == [{"limit": 200}]
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_does_not_retry_when_supporting_core_raises_type_error(monkeypatch):
+    import sys
+    from gui import app
+
+    calls = []
+    monkeypatch.setitem(sys.modules, "hermes_state",
+                        _fake_session_db([], calls, supports_filter=True))
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert calls == [{"limit": 20, "min_message_count": 1}]
+    assert sidebar._sessions_data == []

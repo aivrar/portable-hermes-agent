@@ -66,14 +66,23 @@ def init_dpi_scaling(root: tk.Tk):
 
     # How much does Tk already scale point sizes?  Fonts are only enlarged
     # by whatever DPI factor Tk has not applied itself.
+    px_per_pt = None
     try:
-        tk_scaling = float(root.tk.call("tk", "scaling"))
-        if tk_scaling > 0:
-            _TK_FONT_SCALE = max(1.0, min(tk_scaling / _TK_SCALING_96DPI, 4.0))
-        else:
-            _TK_FONT_SCALE = 1.0
+        px_per_pt = float(root.tk.call("tk", "scaling"))
     except Exception:
-        _TK_FONT_SCALE = 1.0
+        pass
+    if not px_per_pt or px_per_pt <= 0:
+        # Same basis as `tk scaling`: Tk's pixels per inch / 72 points.
+        try:
+            px_per_pt = root.winfo_fpixels("1i") / 72.0
+        except Exception:
+            px_per_pt = None
+    if px_per_pt and px_per_pt > 0:
+        _TK_FONT_SCALE = max(1.0, min(px_per_pt / _TK_SCALING_96DPI, 4.0))
+    else:
+        # Unknown: assume Tk already scales fonts and leave point sizes as
+        # they are; slightly small text beats text so large it hides buttons.
+        _TK_FONT_SCALE = _DPI_SCALE
 
     # Rebuild font sizes with the actual scale factor
     init_fonts()
