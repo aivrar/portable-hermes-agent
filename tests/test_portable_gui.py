@@ -637,7 +637,8 @@ def _new_chat_bridge(agent, history):
 
     bridge = object.__new__(AgentBridge)
     bridge.__dict__.update(agent=agent, conversation_history=list(history),
-                           session_id="gui_old", _session_db=None, is_running=False)
+                           session_id="gui_old", _session_db=None, is_running=False,
+                           _resume_session_id=None)
     return bridge
 
 
@@ -758,10 +759,9 @@ def test_gui_failing_release_never_raises_into_the_gui():
 @pytest.mark.needs_core
 def test_gui_permissions_and_api_keys_rebuild_through_the_bridge():
     from unittest.mock import Mock
-    from gui import app
 
-    gui = SimpleNamespace(bridge=Mock(), _add_msg=Mock())
-    app.HermesGUI._on_permissions_saved(gui, {})
+    gui = _gui_with_bridge(Mock())
+    gui._on_permissions_saved({})
     gui.bridge.rebuild_agent.assert_called_once_with()
 
 
@@ -863,6 +863,193 @@ def test_gui_resumed_session_continues_under_its_own_id(monkeypatch, tmp_path):
         assert built[1] != "stored" and built[2] not in ("stored", built[1])
     finally:
         db.close()
+
+
+# --- session changes vs a running turn, pending resumes (item 11) -----------
+
+def _fake_agent_build(monkeypatch, agent_class):
+    import run_agent
+    from hermes_cli import runtime_provider
+
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kw: {
+        "provider": "custom", "api_mode": "chat_completions",
+        "base_url": "http://127.0.0.1:9/v1", "api_key": "k"})
+    monkeypatch.setattr(run_agent, "AIAgent", agent_class)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **kw: subprocess.CompletedProcess(a[0], 1, "", ""))
+
+
+@pytest.mark.needs_core
+def test_gui_bridge_refuses_session_changes_during_a_turn():
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.is_running = True
+
+    assert bridge.new_session() is False
+    assert bridge.resume_session("gui_other", []) is False
+    assert bridge.agent is agent and bridge.conversation_history == HISTORY
+    assert bridge.session_id == "gui_old" and agent.calls == []
+
+
+def _gui_with_bridge(bridge):
+    from unittest.mock import Mock
+    from gui import app
+
+    gui = object.__new__(app.HermesGUI)
+    gui.__dict__.update(bridge=bridge, _add_msg=Mock(), msg_frame=Mock(),
+                        sidebar=Mock(), status_bar=Mock(), chat_title=Mock(),
+                        input_text=Mock())
+    gui.msg_frame.winfo_children.return_value = []
+    return gui
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_select_and_delete_ask_to_stop_first(monkeypatch):
+    from unittest.mock import Mock
+    from gui import app
+    from gui.i18n import t
+
+    bridge = _new_chat_bridge(_ReleasableAgent(), HISTORY)
+    bridge.is_running = True
+    bridge.new_session = Mock()
+    bridge.resume_session = Mock()
+    gui = _gui_with_bridge(bridge)
+    busy = t("chat.busy_stop_first", stop=t("chat.stop"))
+
+    gui._new_chat()
+    gui._on_session_select("gui_other")
+    assert gui._can_delete_session("gui_old") is False       # the active session
+    assert gui._can_delete_session("gui_other") is True      # any other session
+
+    bridge.new_session.assert_not_called()
+    bridge.resume_session.assert_not_called()
+    assert [c.args for c in gui._add_msg.call_args_list] == [(busy, "system")] * 3
+
+    sidebar = object.__new__(app.Sidebar)
+    sidebar.__dict__.update(can_delete_session=lambda sid: False, _confirm_delete=False,
+                            _perform_delete=Mock())
+    sidebar._delete_session("gui_old")
+    sidebar._perform_delete.assert_not_called()
+
+
+@pytest.mark.needs_core
+def test_gui_turn_survives_the_agent_being_dropped_before_it_starts(monkeypatch):
+    from gui import agent_bridge
+    import tools.terminal_tool as terminal_tool
+
+    errors = []
+    bridge = _new_chat_bridge(None, HISTORY)
+    bridge.__dict__.update(root=SimpleNamespace(after=lambda _ms, fn: fn()),
+                           on_error=errors.append, _interrupted=False,
+                           _is_model_configured=lambda: True,
+                           _create_agent=lambda: None,        # agent gone again
+                           get_model=lambda: "m", _active_provider="cloud")
+    monkeypatch.setattr(terminal_tool, "set_approval_callback", lambda cb: None)
+    bridge.is_running = True
+
+    agent_bridge.AgentBridge._run_agent(bridge, "hi")
+
+    assert errors and "replaced before the turn started" in errors[0]
+    assert "NoneType" not in errors[0]
+    assert bridge.is_running is False and bridge.conversation_history == HISTORY
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("switch", ["set_cloud_mode", "set_local_mode"])
+def test_gui_model_switch_drops_a_pending_resume(switch):
+    bridge = _new_chat_bridge(None, HISTORY)
+    bridge.resume_session("stored", HISTORY)
+    assert bridge._resume_session_id == "stored"
+
+    args = ("cloud/m",) if switch == "set_cloud_mode" else ("http://127.0.0.1:1234", "local")
+    assert getattr(bridge, switch)(*args) is True            # it was dropped
+    assert bridge._resume_session_id is None
+    assert bridge.conversation_history == HISTORY            # history kept as context
+    assert getattr(bridge, switch)(*args) is False           # nothing pending now
+
+
+@pytest.mark.needs_core
+def test_gui_model_switch_says_the_resumed_session_is_not_continued():
+    from unittest.mock import Mock
+    from gui.i18n import t
+
+    bridge = Mock(_known_local_models=set(), _active_provider="cloud")
+    bridge.set_model.return_value = True
+    gui = _gui_with_bridge(bridge)
+    gui.sidebar._all_models = []
+
+    gui._on_model_change("cloud/m")
+
+    assert gui._add_msg.call_args_list[-1].args == (t("chat.resume_not_continued"), "system")
+
+
+@pytest.mark.needs_core
+def test_gui_failed_agent_build_keeps_the_pending_resume(monkeypatch, tmp_path):
+    from gui import agent_bridge
+
+    built = []
+
+    class FlakyAgent:
+        def __init__(self, **kwargs):
+            built.append(kwargs["session_id"])
+            if len(built) == 1:
+                raise RuntimeError("agent build failed")
+
+    _fake_agent_build(monkeypatch, FlakyAgent)
+    bridge = _bridge_shell(agent_bridge, tmp_path)
+    bridge.__dict__.update(agent=None, conversation_history=[], session_id=None, is_running=False)
+    bridge.resume_session("stored", HISTORY)
+
+    with pytest.raises(RuntimeError):
+        bridge._create_agent()
+    assert bridge._resume_session_id == "stored"             # still pending
+
+    bridge._create_agent()                                   # retry
+    assert built == ["stored", "stored"]
+    assert bridge._resume_session_id is None
+
+
+@pytest.mark.needs_core
+def test_gui_resume_fails_when_the_core_cannot_reopen_the_session(monkeypatch):
+    import hermes_state
+    from gui.i18n import t
+
+    class RefusingDB:
+        def reopen_session(self, session_id):
+            raise RuntimeError("database is locked")
+
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge._session_db = RefusingDB()
+
+    assert bridge.resume_session("stored", [{"role": "user", "content": "old"}]) is False
+    assert bridge.agent is agent and agent.calls == []        # current chat untouched
+    assert bridge.session_id == "gui_old" and bridge._resume_session_id is None
+    assert bridge.conversation_history == HISTORY
+
+    class StoredDB:  # the GUI's own read of the stored messages works
+        def __enter__(self):
+            return SimpleNamespace(
+                get_messages_as_conversation=lambda sid: [{"role": "user", "content": "old"}])
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(hermes_state, "SessionDB", StoredDB)
+    gui = _gui_with_bridge(bridge)
+    gui._on_session_select("stored")
+
+    gui._add_msg.assert_called_once_with(t("chat.session_load_failed"), "error")
+    gui.msg_frame.winfo_children.assert_not_called()          # chat view not cleared
+
+
+@pytest.mark.needs_core
+def test_gui_reselecting_the_active_session_does_not_end_it():
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+
+    assert bridge.resume_session("gui_old", HISTORY) is True
+    assert agent.calls == ["release_clients"]                 # not close(): row stays open
 
 
 class _InlineThread:

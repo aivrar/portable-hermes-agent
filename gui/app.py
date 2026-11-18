@@ -421,10 +421,12 @@ class Sidebar(tk.Frame):
 
     def __init__(self, parent, on_new=None, on_model_change=None,
                  on_session_select=None, on_local_models=None,
-                 on_auto_load=None, **kw):
+                 on_auto_load=None, can_delete_session=None, **kw):
         super().__init__(parent, bg=C["bg_sidebar"], width=S(260), **kw)
         self.pack_propagate(False)
         self.on_new = on_new
+        # callback(session_id) -> bool; False refuses the delete (it explains why)
+        self.can_delete_session = can_delete_session
         self.on_model_change = on_model_change
         self.on_session_select = on_session_select
         self.on_local_models = on_local_models  # callback(list_of_model_ids)
@@ -958,6 +960,9 @@ class Sidebar(tk.Frame):
 
     def _delete_session(self, session_id):
         """Delete a session with optional confirmation dialog."""
+        allowed = getattr(self, "can_delete_session", None)
+        if allowed is not None and not allowed(session_id):
+            return
         if self._confirm_delete:
             # Custom dialog with "don't show again" checkbox
             dlg = tk.Toplevel(self)
@@ -1583,7 +1588,8 @@ class HermesGUI:
                                on_model_change=self._on_model_change,
                                on_session_select=self._on_session_select,
                                on_local_models=self._on_local_models_discovered,
-                               on_auto_load=self._on_auto_load_status)
+                               on_auto_load=self._on_auto_load_status,
+                               can_delete_session=self._can_delete_session)
         self.sidebar.pack(side="left", fill="y")
 
         # Vertical separator
@@ -1909,8 +1915,27 @@ class HermesGUI:
 
     # ---- Commands ----
 
+    def _refuse_while_running(self) -> bool:
+        """While a reply is running, session changes are refused (the running
+        turn would write into the new session); True when refused."""
+        if not self.bridge.is_running:
+            return False
+        self._add_msg(t("chat.busy_stop_first", stop=t("chat.stop")), "system")
+        return True
+
+    def _can_delete_session(self, session_id) -> bool:
+        """Sidebar delete guard: not the active session while its turn runs."""
+        if session_id and session_id == self.bridge.session_id and self._refuse_while_running():
+            return False
+        return True
+
+    def _note_dropped_resume(self, dropped: bool):
+        if dropped:
+            self._add_msg(t("chat.resume_not_continued"), "system")
+
     def _new_chat(self):
-        self.bridge.new_session()
+        if self._refuse_while_running() or not self.bridge.new_session():
+            return
         for w in self.msg_frame.winfo_children():
             w.destroy()
         self._chat_title_kind = "new"
@@ -1937,11 +1962,11 @@ class HermesGUI:
         if model_id in self.bridge._known_local_models:
             url = self.bridge._resolve_lm_studio_url()
             if url:
-                self.bridge.set_local_mode(url, model_id)
+                dropped = self.bridge.set_local_mode(url, model_id)
             else:
-                self.bridge.set_model(model_id)
+                dropped = self.bridge.set_model(model_id)
         else:
-            self.bridge.set_model(model_id)
+            dropped = self.bridge.set_model(model_id)
         # Show friendly name in status bar
         display = model_id
         for mid, name, note in self.sidebar._all_models:
@@ -1951,14 +1976,19 @@ class HermesGUI:
         is_local = self.bridge._active_provider == "local"
         self.status_bar.set_model(f"LM Studio: {display}" if is_local else display)
         self._add_msg(t("chat.model_switched", model=display), "system")
+        self._note_dropped_resume(dropped)
 
     def _on_session_select(self, session_id):
         """Load a past session into the chat view."""
+        if self._refuse_while_running():
+            return
         try:
             from hermes_state import SessionDB
             with SessionDB() as db:
                 messages = db.get_messages_as_conversation(session_id)
-            if not messages:
+            # Continue the stored session (same id) with its history; the
+            # bridge refuses if the core cannot reopen it.
+            if not messages or not self.bridge.resume_session(session_id, messages):
                 self._add_msg(t("chat.session_load_failed"), "error")
                 return
 
@@ -1966,8 +1996,6 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            # Continue the stored session (same id) with its history
-            self.bridge.resume_session(session_id, messages)
             self._chat_title_kind = "resumed"
             self.chat_title.configure(text=t("chat.resumed_session"))
 
@@ -2019,8 +2047,9 @@ class HermesGUI:
         PermissionsPanel(self.root, on_save=self._on_permissions_saved)
 
     def _on_permissions_saved(self, perms):
-        self.bridge.rebuild_agent()  # Force agent recreation with new permissions
+        dropped = self.bridge.rebuild_agent()  # Force agent recreation with new permissions
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
+        self._note_dropped_resume(dropped)
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
@@ -2030,8 +2059,9 @@ class HermesGUI:
 
     def _on_lm_studio_ready(self, base_url, model_id):
         """Switch Hermes to use LM Studio as the LLM provider."""
+        dropped = False
         if model_id:
-            self.bridge.set_local_mode(base_url, model_id)
+            dropped = self.bridge.set_local_mode(base_url, model_id)
             short = model_id.split("/")[-1] if "/" in model_id else model_id
             self.status_bar.set_model(f"LM Studio: {short}")
             self.sidebar.set_model(model_id)
@@ -2039,6 +2069,7 @@ class HermesGUI:
         self._add_msg(t("chat.local_model_ready",
                         model=model_id or t("chat.default_loaded_model"),
                         new_chat=t("sidebar.new_chat")), "system")
+        self._note_dropped_resume(dropped)
 
     def _show_api_setup(self):
         def on_done(saved_keys):
@@ -2046,7 +2077,7 @@ class HermesGUI:
                 names = ", ".join(saved_keys.keys())
                 self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
-                self.bridge.rebuild_agent()
+                self._note_dropped_resume(self.bridge.rebuild_agent())
             m = self.bridge.get_model()
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)

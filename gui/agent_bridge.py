@@ -128,14 +128,14 @@ class AgentBridge:
         self._active_provider = "local"
         self._lm_studio_base_url = base_url.rstrip("/")
         self._selected_model = model_id
-        self.rebuild_agent()  # Force recreation
+        return self.rebuild_agent()  # Force recreation
 
     def set_cloud_mode(self, model: str):
         """Switch to OpenRouter as the active provider."""
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
-        self.rebuild_agent()
+        return self.rebuild_agent()
 
     # -- dropping agents ------------------------------------------------------
     # Every dropped AIAgent is released, never just forgotten: it holds LLM
@@ -150,9 +150,17 @@ class AgentBridge:
     #   the conversation is committed once, when it really ends.
     # Both exist in the current core and the last-known-good one (8d285687).
 
-    def rebuild_agent(self):
-        """Drop the agent so the next turn builds a new one; the chat goes on."""
+    def rebuild_agent(self) -> bool:
+        """Drop the agent so the next turn builds a new one; the chat goes on.
+
+        A rebuilt agent always gets a new session id (model switch, saved
+        permissions or API keys start a new session, history kept), so a
+        resumed session that has not been continued yet is not continued
+        either. Returns True when such a pending resume was dropped."""
+        dropped_resume = bool(getattr(self, "_resume_session_id", None))
+        self._resume_session_id = None
         self._discard_agent(conversation_over=False)
+        return dropped_resume
 
     def _release_state(self):
         """The lock guarding is_running and the pending-release list (created
@@ -272,11 +280,11 @@ class AgentBridge:
         # first turn starts (source "gui" from platform="gui", with model,
         # system prompt, model config and profile): creating it here first
         # left an empty row whenever building the agent failed. A resumed
-        # session keeps its id (resume_session).
+        # session keeps its id (resume_session); the pending resume is cleared
+        # only once the agent is built, so a failed build retries the same id.
         resume_id = getattr(self, "_resume_session_id", None)
         if resume_id:
             self.session_id = resume_id
-            self._resume_session_id = None
         else:
             self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
 
@@ -466,6 +474,8 @@ You are running on **{os_name} {os_release}**.
             clarify_callback=self._on_clarify,
             stream_delta_callback=self._on_stream_delta,
         )
+        if resume_id and getattr(self, "_resume_session_id", None) == resume_id:
+            self._resume_session_id = None
 
     def _post(self, callback, *args):
         """Post a callback to the tkinter main thread."""
@@ -911,8 +921,14 @@ You are running on **{os_name} {os_release}**.
             logging.getLogger("hermes.bridge").warning(
                 "memory commit at session end failed", exc_info=True)
 
-    def new_session(self):
-        """Start a fresh session. Commits the old one to memory first."""
+    def new_session(self) -> bool:
+        """Start a fresh session. Commits the old one to memory first.
+
+        Refused (returns False, nothing changes) while a turn is running: the
+        running turn would write its reply into the new session. The GUI
+        asks the user to press Stop first."""
+        if getattr(self, "is_running", False):
+            return False
         # End old session in database (before the agent's close() records
         # its own "agent_close"; the first reason recorded wins)
         if self._session_db and self.session_id:
@@ -930,28 +946,42 @@ You are running on **{os_name} {os_release}**.
         self.conversation_history = []
         self.session_id = None
         self._resume_session_id = None
+        return True
 
-    def resume_session(self, session_id: str, messages: list):
+    def resume_session(self, session_id: str, messages: list) -> bool:
         """Continue a stored session under its own id, as the CLI's resume does.
 
         The next agent is built with *session_id* (see _create_agent), so new
         turns are appended to the same session row instead of a new one; the
-        core restores the session's stored system prompt for it."""
-        # The conversation shown so far is over: close its agent first (that
-        # ends its row), then reopen the stored session.
-        self._discard_agent(conversation_over=True)
-        if self._session_db:
+        core restores the session's stored system prompt for it.
+
+        Returns False and changes nothing while a turn is running, or when
+        the core cannot reopen the session (then nothing may be written under
+        its id)."""
+        if getattr(self, "is_running", False):
+            return False
+        db = getattr(self, "_session_db", None)
+        if db:
             try:
-                self._session_db.reopen_session(session_id)
+                db.reopen_session(session_id)
             except Exception:
-                pass
+                import logging
+                logging.getLogger("hermes.bridge").warning(
+                    "could not reopen session %s", session_id, exc_info=True)
+                return False
+        # The conversation shown so far is over: close its agent (that ends
+        # its own row). Re-selecting the session that is already active only
+        # rebuilds the agent, so the row just reopened is not ended again.
+        same = session_id == getattr(self, "session_id", None)
+        self._discard_agent(conversation_over=not same)
         self.conversation_history = messages
         self.session_id = session_id
         self._resume_session_id = session_id
+        return True
 
     def set_model(self, model: str):
         """Switch model from the sidebar dropdown — always cloud."""
-        self.set_cloud_mode(model)
+        return self.set_cloud_mode(model)
 
     def get_token_usage(self) -> Dict[str, int]:
         """Get token usage from current agent."""
