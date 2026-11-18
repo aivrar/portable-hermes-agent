@@ -346,6 +346,7 @@ class TestApplicationLanguageSwitchingRegression(unittest.TestCase):
             dlg.key_entries = {}
             dlg.model_var = HeadlessWidgetStub(text="")
             dlg.bridge = MagicMock()
+            dlg.bridge.is_running = False   # saves are refused during a reply
             dlg.destroy = MagicMock()
 
             # User selected Traditional Chinese in Settings

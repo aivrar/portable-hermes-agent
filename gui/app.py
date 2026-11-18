@@ -1203,6 +1203,12 @@ class SettingsDialog(tk.Toplevel):
         self.lang_combo.pack(fill="x", pady=(4, 12))
 
     def _save(self):
+        if self.bridge.is_running:
+            # Defensive (the dialog is not opened during a reply): never write
+            # what a running reply reads; the dialog stays open.
+            messagebox.showinfo(t("settings.title"),
+                                t("chat.busy_stop_first", stop=t("chat.stop")), parent=self)
+            return
         env_path = get_hermes_home() / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         import re
@@ -1481,7 +1487,7 @@ class HermesGUI:
         # First-run wizard — show if any required keys are missing
         missing = get_missing_keys()
         if any(s["required"] for s in missing):
-            self.root.after(500, self._show_api_setup)
+            self.root.after(500, self._first_run_api_setup)
 
         model = self.bridge.get_model()
         self.status_bar.set_model(model)
@@ -2106,7 +2112,8 @@ class HermesGUI:
     def _open_permissions(self):
         if self._refuse_while_running():
             return
-        PermissionsPanel(self.root, on_save=self._on_permissions_saved)
+        PermissionsPanel(self.root, on_save=self._on_permissions_saved,
+                         can_save=lambda: not self.bridge.is_running)
 
     def _on_permissions_saved(self, perms):
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
@@ -2116,9 +2123,10 @@ class HermesGUI:
         ExtensionsManager(self.root)
 
     def _open_lm_studio(self):
-        LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
-                      can_change_model=lambda: not self.bridge.is_running,
-                      track_model_work=self._track_model_work)
+        panel = LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
+                              can_change_model=lambda: not self.bridge.is_running,
+                              track_model_work=self._track_model_work)
+        self._lm_panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed] + [panel]
 
     # -- model loading is "busy" too -------------------------------------------
     # A load or unload in LM Studio (sidebar auto-load, panel load/cancel) runs
@@ -2132,8 +2140,17 @@ class HermesGUI:
         self._model_work.append(thread)
 
     def _model_work_running(self) -> bool:
+        """Busy until the work AND its Tk-side completion are done: a worker
+        thread is alive, the sidebar's auto-load has not completed
+        (_loading_model, cleared by _on_auto_load_complete), or an open panel
+        still awaits its load/cancel completion (model_work_pending)."""
         self._model_work = [w for w in getattr(self, "_model_work", []) if w.is_alive()]
-        return bool(self._model_work)
+        sidebar = getattr(self, "sidebar", None)
+        panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed]
+        self._lm_panels = panels
+        return (bool(self._model_work)
+                or getattr(sidebar, "_loading_model", False) is True
+                or any(p.model_work_pending() for p in panels))
 
     def _on_lm_studio_ready(self, base_url, model_id):
         """Switch Hermes to use LM Studio as the LLM provider (refused during
@@ -2167,8 +2184,15 @@ class HermesGUI:
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)
 
-        w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True)
+        w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True,
+                           can_save=lambda: not self.bridge.is_running)
         self.root.wait_window(w)
+
+    def _first_run_api_setup(self):
+        """First-run timer: skipped when another of our modal dialogs is open
+        (its grab would be replaced and not restored); the menu entry stays."""
+        if self.root.grab_current() is None:
+            self._show_api_setup()
 
     def _toggle_sidebar(self):
         if self.sidebar.winfo_viewable():

@@ -620,7 +620,7 @@ def _working_panel(monkeypatch, client, reply_running=False):
         model_list=Mock(curselection=lambda: (0,)), models=[{"id": "gemma-4-e4b-it"}],
         ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH), gpu_var=Mock(get=lambda: ""),
         _gpu_label_to_placement={}, _set_status=Mock(), status_dot=Mock(),
-        load_btn=Mock(), unload_btn=Mock(), client=client,
+        load_btn=Mock(), unload_btn=Mock(), client=client, _closed=False,
         _post_ui=lambda name, *a: posted.append(name),
         can_change_model=lambda: not reply_running, track_model_work=tracked.append)
     monkeypatch.setattr(lm.ttk, "Button", Mock())
@@ -646,6 +646,41 @@ def test_panel_load_and_unload_are_refused_during_a_reply(monkeypatch):
     client.unload_model.assert_not_called()
     assert tracked == [] and info.call_count == 2
     assert info.call_args.args[1] == lm.t("chat.busy_stop_first", stop=lm.t("chat.stop"))
+
+
+def test_panel_cancel_is_refused_during_a_reply(monkeypatch):
+    info = Mock()
+    monkeypatch.setattr(lm.messagebox, "showinfo", info)
+    client = Mock()
+    panel, tracked, _posted = _working_panel(monkeypatch, client, reply_running=True)
+    panel._loading = True
+
+    lm.LMStudioPanel._cancel_load(panel)               # would unload every model
+
+    assert tracked == [] and panel._loading is True
+    client._sdk_client.llm.list_loaded.assert_not_called()
+    assert info.call_args.args[1] == lm.t("chat.busy_stop_first", stop=lm.t("chat.stop"))
+
+
+def test_panel_work_is_pending_until_the_buttons_are_restored(monkeypatch):
+    import threading
+    gate = threading.Event()
+    client = Mock(last_loaded_identifier="m", last_gpu_plan=None)
+    client.load_model.side_effect = lambda *a, **k: gate.wait(10)
+    panel, tracked, _posted = _working_panel(monkeypatch, client)
+
+    lm.LMStudioPanel._load_model(panel)
+    gate.set()
+    assert _all_done(tracked)                           # the worker has exited ...
+    assert panel.model_work_pending() is True           # ... but the Tk side has not run
+    lm.LMStudioPanel._restore_load_btn(panel)           # what every completion does
+    assert panel.model_work_pending() is False
+
+    lm.LMStudioPanel._load_model(panel)
+    panel._closed = True                                # closed mid-load
+    assert panel.model_work_pending() is False
+    for worker in tracked:
+        worker.join(10)
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "closed"])

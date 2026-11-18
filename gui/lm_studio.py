@@ -949,6 +949,13 @@ class LMStudioPanel(tk.Toplevel):
                             parent=self)
         return True
 
+    def model_work_pending(self) -> bool:
+        """A load (or its cancel) has not completed on the Tk side yet: the
+        Cancel button is shown until _restore_load_btn. A closed panel's
+        completion never runs, so it no longer counts (its worker thread
+        still does, see track_model_work)."""
+        return not self._closed and hasattr(self, "_cancel_btn")
+
     def _start_model_work(self, target):
         """Run a load/unload worker; the app knows while it is alive."""
         worker = threading.Thread(target=target, daemon=True)
@@ -1040,6 +1047,8 @@ class LMStudioPanel(tk.Toplevel):
 
     def _cancel_load(self):
         """Cancel an in-progress model load by unloading all models."""
+        if self._refuse_during_reply():   # it unloads every model
+            return
         self._loading = False
         self._set_status("lmstudio.cancelling")
         def _do():

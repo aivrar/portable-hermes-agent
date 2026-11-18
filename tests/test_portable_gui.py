@@ -1402,6 +1402,80 @@ def test_gui_send_is_refused_while_a_model_loads():
 
 
 @pytest.mark.needs_core
+def test_gui_busy_lasts_until_the_tk_side_completion_ran():
+    from unittest.mock import Mock
+
+    gui = _gui_with_bridge(Mock(is_running=False))
+    gui.sidebar = SimpleNamespace(_loading_model=True)    # thread done, completion queued
+    assert gui._model_work_running() is True
+    gui.sidebar._loading_model = False                    # _on_auto_load_complete ran
+    assert gui._model_work_running() is False
+
+    panel = SimpleNamespace(_closed=False, model_work_pending=lambda: True)
+    gui._lm_panels = [panel]                              # Cancel button still shown
+    assert gui._model_work_running() is True
+    panel._closed = True                                  # closed: completion never runs
+    assert gui._model_work_running() is False and gui._lm_panels == []
+
+
+@pytest.mark.needs_core
+def test_gui_first_run_wizard_is_skipped_over_another_modal_dialog():
+    from unittest.mock import Mock
+
+    gui = _gui_with_bridge(Mock(is_running=False))
+    gui._show_api_setup = Mock()
+    gui.root = Mock()
+    gui.root.grab_current.return_value = object()         # Settings/Permissions open
+    gui._first_run_api_setup()
+    gui._show_api_setup.assert_not_called()
+
+    gui.root.grab_current.return_value = None
+    gui._first_run_api_setup()
+    gui._show_api_setup.assert_called_once_with()
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("dialog", ["settings", "permissions", "wizard_save", "wizard_finish"])
+def test_gui_dialog_saves_are_refused_during_a_reply(monkeypatch, tmp_path, dialog):
+    """Defensive: even if a dialog is open under a reply, nothing is written."""
+    from unittest.mock import Mock
+    from gui import app, api_setup_wizard, permissions_panel
+    from gui.i18n import t
+
+    busy = t("chat.busy_stop_first", stop=t("chat.stop"))
+    info = Mock()
+    for module in (app, api_setup_wizard, permissions_panel):
+        monkeypatch.setattr(module.messagebox, "showinfo", info)
+    written = Mock()
+
+    if dialog == "settings":
+        monkeypatch.setattr(app, "get_hermes_home", lambda: tmp_path)
+        dlg = object.__new__(app.SettingsDialog)
+        dlg.__dict__.update(bridge=Mock(is_running=True), destroy=written)
+        dlg._save()
+        assert not (tmp_path / ".env").exists()
+        dlg.bridge.set_model.assert_not_called()
+    elif dialog == "permissions":
+        monkeypatch.setattr(permissions_panel, "save_permissions", written)
+        dlg = object.__new__(permissions_panel.PermissionsPanel)
+        dlg.__dict__.update(can_save=lambda: False, on_save=written, destroy=written,
+                            sliders={}, perms={})
+        dlg._save()
+    else:
+        monkeypatch.setattr(api_setup_wizard, "_save_key_to_env", written)
+        dlg = object.__new__(api_setup_wizard.APISetupWizard)
+        dlg.__dict__.update(can_save=lambda: False, on_complete=written, destroy=written,
+                            key_entries={"K": Mock(get=lambda: "sk-key")}, saved_keys={})
+        if dialog == "wizard_save":
+            dlg._save_current({"key": "K"})
+        else:
+            dlg._finish()
+
+    written.assert_not_called()                           # nothing saved, dialog stays open
+    assert info.call_args.args[1] == busy
+
+
+@pytest.mark.needs_core
 @pytest.mark.parametrize("outcome", ["ok", "error", "crash"])
 def test_gui_sidebar_auto_load_is_tracked_and_always_reports(monkeypatch, outcome):
     from unittest.mock import Mock

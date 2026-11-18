@@ -3,7 +3,7 @@ Hermes Agent - Permissions Panel (GUI)
 Visual configuration for read/write/install/execute/network permissions.
 """
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, center_window, SF
 from gui.i18n import t
@@ -16,9 +16,10 @@ from gui.permissions import (
 class PermissionsPanel(tk.Toplevel):
     """Visual permissions configuration panel."""
 
-    def __init__(self, parent, on_save=None):
+    def __init__(self, parent, on_save=None, can_save=None):
         super().__init__(parent)
         self.on_save = on_save
+        self.can_save = can_save  # () -> False while a chat reply runs
         self.title(t("permissions.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
@@ -162,6 +163,12 @@ class PermissionsPanel(tk.Toplevel):
             self.level_labels[key].configure(fg=color)
 
     def _save(self):
+        can_save = getattr(self, "can_save", None)
+        if can_save is not None and not can_save():
+            # Never under a running reply (it reads these files): stay open.
+            messagebox.showinfo(t("permissions.title"),
+                                t("chat.busy_stop_first", stop=t("chat.stop")), parent=self)
+            return
         # Snap all values to int
         for key, var in self.sliders.items():
             self.perms[key] = int(float(var.get()))
