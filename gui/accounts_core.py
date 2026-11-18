@@ -163,12 +163,13 @@ def use(provider: str, model: str) -> str:
     from hermes_cli.model_assignment import (
         ModelAssignmentRejected, apply_main_model_assignment,
         normalize_main_model_assignment, validated_main_model_selection)
-    config = load_config()
     provider, model = normalize_main_model_assignment(provider, model)
-    try:
-        result = validated_main_model_selection(config, provider, model)
+    try:   # may take a while (catalog/network): nothing is held meanwhile
+        result = validated_main_model_selection(load_config(), provider, model)
     except ModelAssignmentRejected as exc:
         raise Rejected(str(exc)) from exc
+    # Then one short step on a fresh copy, so an edit made during validation is kept.
+    config = load_config()
     config["model"] = apply_main_model_assignment(config.get("model", {}), result)
     save_config(config)
     return result.new_model

@@ -136,12 +136,14 @@ class _Config:
         self.data = config
 
 
-def _assignment(monkeypatch, calls, reject=False):
+def _assignment(monkeypatch, calls, reject=False, during=None):
     class ModelAssignmentRejected(ValueError):
         pass
 
     def validated(config, provider, model):
         calls.append(("validate", provider, model))
+        if during:
+            during()
         if reject:
             raise ModelAssignmentRejected("not supported with this account")
         return types.SimpleNamespace(target_provider=provider, new_model=model)
@@ -160,8 +162,20 @@ def test_use_validates_then_writes_provider_and_model_together(monkeypatch):
     calls = config.calls
     _assignment(monkeypatch, calls)
     assert core.use("openai-codex", "gpt-6-sol") == "gpt-6-sol"
-    assert calls == ["load", ("validate", "openai-codex", "gpt-6-sol"), "apply", "save"]
+    # validate first, then load fresh, apply and save in one short step
+    assert calls == ["load", ("validate", "openai-codex", "gpt-6-sol"), "load", "apply", "save"]
     assert config.data["model"] == {"default": "gpt-6-sol", "provider": "openai-codex"}
+
+
+def test_use_keeps_an_edit_made_while_it_validated(monkeypatch):
+    config = _Config(monkeypatch, {"default": "google/gemini-2.5-flash"})
+
+    def edit_elsewhere():          # e.g. the CLI or the dashboard saves meanwhile
+        config.data = dict(config.data, agent={"max_turns": 7})
+    _assignment(monkeypatch, config.calls, during=edit_elsewhere)
+    core.use("xai-oauth", "grok-4.6")
+    assert config.data["agent"] == {"max_turns": 7}
+    assert config.data["model"]["provider"] == "xai-oauth"
 
 
 def test_a_rejected_model_leaves_the_config_untouched(monkeypatch):
