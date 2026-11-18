@@ -5,9 +5,10 @@ Run with the product interpreter::
     python -m portable_hermes.verify --root <tree> [--json] [--no-gui]
 
 The caller (the core/wrapper updaters) runs this with a scrubbed environment
-(no API keys), a throw-away Hermes home in ``PORTABLE_VERIFY_HOME`` (which it
-removes after this process exits) and ``PORTABLE_HERMES_NO_HOOK=1`` so the
-tree under test, not the live install, provides every module.
+(no API keys), a throw-away Hermes home given as ``--home`` (an existing empty
+folder, which it removes after this process exits) and
+``PORTABLE_HERMES_NO_HOOK=1`` so the tree under test, not the live install,
+provides every module. Without ``--home`` this process makes and removes its own.
 
 Each check reports a precise reason. Exit status 0 means every check passed.
 A check can also pass with a visible warning (for example when a private
@@ -478,15 +479,25 @@ def main(argv=None) -> int:
     parser.add_argument("--root", required=True)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-gui", action="store_true")
+    parser.add_argument("--home", help="an existing empty folder to use as the throw-away "
+                                       "Hermes home (the installer makes and removes it)")
     args = parser.parse_args(argv)
-    # Tool modules print to stdout while importing; keep the JSON channel clean.
-    # The installer makes the home, passes it in VERIFY_HOME_ENV and removes it once
-    # this process has exited (also after a timeout). Run directly, this
-    # process makes its own. Only a folder made here is ever removed here
-    # (never one decided by name, never an inherited HERMES_HOME).
-    from portable_hermes.common import VERIFY_HOME_ENV
-    given = os.environ.get(VERIFY_HOME_ENV)
+    # Without --home this process makes its own home and removes it. Only a
+    # folder made here is ever removed here (never one decided by name, never
+    # an inherited HERMES_HOME); the environment is not consulted for it.
+    given = args.home
+    if given:
+        try:
+            refused = (None if Path(given).is_dir() and not any(Path(given).iterdir())
+                       else "is not an existing empty folder")
+        except OSError as exc:
+            refused = f"cannot be read ({exc})"
+        if refused:
+            print(f"portable verify: --home {given} {refused}; nothing was verified "
+                  "or written", file=sys.stderr)
+            return 2
     made = None if given else tempfile.mkdtemp(prefix="portable-verify-home-")
+    # Tool modules print to stdout while importing; keep the JSON channel clean.
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
