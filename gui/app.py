@@ -821,6 +821,7 @@ class Sidebar(tk.Frame):
         self.model_combo.configure(state="disabled")
 
         settings = self.get_local_settings()
+        self._loading_placement = settings.get("gpu_placement")  # for the result line
 
         def _load():
             import logging as _log
@@ -857,8 +858,11 @@ class Sidebar(tk.Frame):
 
         target = loaded_id if success and loaded_id else model_id
         if success:
-            if error:  # loaded, but the GPU could only be estimated
+            in_ram = getattr(self, "_loading_placement", None) == "cpu"
+            if error:  # loaded, but the GPU could not be confirmed
                 self._show_load_status("sidebar.model_loaded_gpu_unconfirmed", prefix="\u26a0 ")
+            elif in_ram:  # layers in RAM; LM Studio may still use some GPU memory
+                self._show_load_status("sidebar.model_loaded_cpu", prefix="\u2713 ")
             else:
                 self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
             self._model_states[target] = "loaded"
@@ -871,7 +875,8 @@ class Sidebar(tk.Frame):
                 if self.on_local_models:
                     self.on_local_models([mid for mid, _, _ in self._lm_studio_models])
             self.after(500, self.refresh_models)
-            self.after(1500, lambda: self._show_load_status(""))
+            # A note (unconfirmed GPU, CPU only) stays long enough to be read.
+            self.after(8000 if error or in_ram else 1500, lambda: self._show_load_status(""))
         else:
             short_err = error[:80] if error else t("sidebar.unknown_error")
             self._show_load_status("sidebar.load_failed", prefix="\u2717 ", error=short_err)

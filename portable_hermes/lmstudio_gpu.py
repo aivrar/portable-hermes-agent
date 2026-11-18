@@ -59,6 +59,8 @@ SPLIT_STRATEGY = "favorMainGpu"
 MAP_UUID = "lmstudio-survey-uuid"
 MAP_NAME = "lmstudio-survey-name"
 MAP_FALLBACK = "estimated"
+#: CPU only, but no GPU could be listed at all, so none could be disabled.
+MAP_NO_GPU_LIST = "no-gpu-list"
 #: Sources that identify the GPU for sure.
 CONFIRMED_MAPPINGS = (MAP_UUID, MAP_NAME)
 
@@ -103,16 +105,40 @@ class GpuPlan:
 
     @property
     def confirmed(self) -> bool:
-        """False when the GPU indices are only an estimate (no usable survey).
+        """False when the GPU indices are only an estimate (no usable survey),
+        or when CPU only could not disable any GPU (none could be listed).
 
-        Auto and CPU-only plans name no GPU, so they need no confirmation."""
+        Auto names no GPU, so it needs no confirmation."""
         return self.mapping is None or self.mapping in CONFIRMED_MAPPINGS
 
+    @property
+    def note(self) -> Optional[str]:
+        """English notes for this plan (tool results): unconfirmed GPU, and
+        for CPU only what LM Studio may still put on a GPU. None if none."""
+        notes = []
+        if not self.confirmed:
+            notes.append(UNCONFIRMED_HINTS[self.mapping])
+        if self.placement == CPU:
+            notes.append(CPU_HINT)
+        return " ".join(notes) or None
 
+
+_CHECK = ("Check where the model is loaded in LM Studio, or compare GPU memory use "
+          "in nvidia-smi.")
 #: Shown (in English, e.g. in tool results) when a plan is not confirmed.
-UNCONFIRMED_HINT = ("The GPU could not be confirmed: LM Studio's GPU list was not available, "
-                    "so the GPU numbering was estimated (largest card first). Check where the "
-                    "model is loaded in LM Studio, or compare GPU memory use in nvidia-smi.")
+UNCONFIRMED_HINTS = {
+    MAP_FALLBACK: ("The GPU could not be confirmed: LM Studio's GPU list was not available, "
+                   "so the GPU numbering was estimated (largest card first). " + _CHECK),
+    MAP_NO_GPU_LIST: ("CPU only could not be confirmed: no GPU could be listed (nvidia-smi "
+                      "and LM Studio's GPU list were both unavailable), so no GPU could be "
+                      "disabled. " + _CHECK),
+}
+UNCONFIRMED_HINT = UNCONFIRMED_HINTS[MAP_FALLBACK]
+#: CPU only keeps the model's layers in RAM; LM Studio's runtime and a vision
+#: model's image part may still use a GPU (measured: ~0.6 GB for a text model,
+#: ~3 GB for a vision model on the owner's PC); the SDK cannot prevent it.
+CPU_HINT = ("The model's layers are in RAM; LM Studio may still use some GPU memory, "
+            "more for vision models.")
 
 
 # ---------------------------------------------------------------------------
@@ -364,12 +390,15 @@ def plan(placement, nvidia: Optional[Sequence[NvidiaGpu]] = None, survey=_UNSET)
 
     if kind == CPU:
         # The strongest "no GPU" the SDK can express: offload ratio 0, KV
-        # cache in RAM, and every GPU disabled (ratio 0 + KV cache alone
-        # still put ~3 GB of a vision model on a GPU). The installed SDK
-        # (1.5.0) has no separate setting for a vision projector. All GPUs
-        # are disabled, so their order does not matter: no mapping needed.
+        # cache in RAM, and every GPU disabled. The model's layers then stay
+        # in RAM, but LM Studio's runtime and a vision model's image part
+        # still use some GPU memory (CPU_HINT); the installed SDK (1.5.0) has
+        # no setting to prevent that. All GPUs are disabled, so their order
+        # does not matter; with no GPU list at all none can be disabled and
+        # the plan is not confirmed.
         return GpuPlan(placement=CPU, gpu={"ratio": 0.0, "disabled_gpus": every or None},
-                       load={"offload_kv_cache_to_gpu": False})
+                       load={"offload_kv_cache_to_gpu": False},
+                       mapping=None if every else MAP_NO_GPU_LIST)
 
     if kind == "gpu":
         if index not in mapping:

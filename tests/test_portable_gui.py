@@ -653,6 +653,22 @@ def test_gui_sidebar_auto_load_reports_an_estimated_gpu(monkeypatch):
     assert [c.args for c in gui._add_msg.call_args_list][1] == (note, "system")
 
 
+@pytest.mark.needs_core
+@pytest.mark.parametrize("outcome", ["cpu_ok", "failed"])
+def test_gui_sidebar_auto_load_result_lines(outcome):
+    from gui import app
+
+    sidebar = _auto_load_sidebar(app, ["deepseek"])
+    sidebar._loading_placement = "cpu"
+    if outcome == "cpu_ok":
+        sidebar._on_auto_load_complete("deepseek", True, "", "deepseek")
+        assert sidebar._show_load_status.call_args_list[0].args[0] == "sidebar.model_loaded_cpu"
+    else:
+        sidebar._on_auto_load_complete("deepseek", False, "unknown model architecture", None)
+    # The load unloads existing instances first: the list is refreshed either way.
+    assert (500, sidebar.refresh_models) in [c.args for c in sidebar.after.call_args_list]
+
+
 def _auto_load_sidebar(app, local_ids):
     from unittest.mock import Mock
 

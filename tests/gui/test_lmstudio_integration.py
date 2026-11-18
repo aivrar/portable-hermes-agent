@@ -484,7 +484,10 @@ def test_panel_without_a_choice_defaults_to_the_first_gpu_after_detection():
 def test_load_success_with_an_estimated_gpu_warns(monkeypatch):
     rows = [{"id": VARIANT, "state": "loaded"}]
     panel = _panel_refreshing_to(rows, VARIANT)
-    warn = Mock()
+    order = []
+    refresh = panel._refresh_models
+    panel._refresh_models = lambda **kw: (order.append("refresh"), refresh(**kw))
+    warn = Mock(side_effect=lambda *a, **k: order.append("dialog"))
     monkeypatch.setattr(lm.messagebox, "showwarning", warn)
     plan = lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, None)
     note = lm.gpu_unconfirmed_note(plan, "GPU 1: RTX 3090")
@@ -494,8 +497,26 @@ def test_load_success_with_an_estimated_gpu_warns(monkeypatch):
 
     panel._set_status.assert_called_with("lmstudio.loaded_model_gpu_unconfirmed", model=VARIANT)
     assert warn.call_args.args[1] == note
+    assert order == ["refresh", "dialog"]           # list refreshed before the modal dialog
     assert lm.gpu_unconfirmed_note(lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, OWNER_SURVEY),
                                    "x") is None
+
+
+def test_cpu_load_says_lm_studio_may_still_use_some_gpu_memory(monkeypatch):
+    panel = _panel_refreshing_to([{"id": VARIANT, "state": "loaded"}], VARIANT)
+    warn = Mock()
+    monkeypatch.setattr(lm.messagebox, "showwarning", warn)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None, None, True)
+
+    panel._set_status.assert_called_with("lmstudio.loaded_model_cpu", model=VARIANT)
+    warn.assert_not_called()                         # a status line, no dialog
+    assert lm.gpu_place.plan("cpu", OWNER_NVIDIA, OWNER_SURVEY).confirmed
+
+
+def test_cpu_only_without_a_gpu_list_gets_its_own_warning():
+    blind = lm.gpu_place.plan("cpu", [], None)
+    assert lm.gpu_unconfirmed_note(blind, "x") == lm.t("lmstudio.gpu_cpu_unconfirmed")
 
 
 def test_failed_load_refreshes_the_list_keeping_the_selection(monkeypatch):
@@ -529,8 +550,12 @@ def test_gpu_unconfirmed_strings_exist_in_every_language():
         table = i18n.TRANSLATIONS[code]
         for key in ("lmstudio.gpu_unconfirmed", "lmstudio.gpu_unconfirmed_title",
                     "lmstudio.loaded_model_gpu_unconfirmed",
-                    "sidebar.model_loaded_gpu_unconfirmed"):
+                    "sidebar.model_loaded_gpu_unconfirmed", "lmstudio.gpu_cpu_unconfirmed",
+                    "lmstudio.loaded_model_cpu", "sidebar.model_loaded_cpu"):
             assert table[key], (code, key)
+        assert "RAM" in table["lmstudio.gpu_cpu"] or "記憶體" in table["lmstudio.gpu_cpu"] \
+            or "内存" in table["lmstudio.gpu_cpu"]
+        assert "{model}" in table["lmstudio.loaded_model_cpu"]
         assert "{choice}" in table["lmstudio.gpu_unconfirmed"]
         assert "nvidia-smi" in table["lmstudio.gpu_unconfirmed"]
         assert "{model}" in table["lmstudio.loaded_model_gpu_unconfirmed"]

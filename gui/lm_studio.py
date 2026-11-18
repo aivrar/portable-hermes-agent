@@ -130,9 +130,12 @@ def gpu_choices(gpus) -> List[tuple]:
 
 
 def gpu_unconfirmed_note(plan, choice_label: str) -> Optional[str]:
-    """User-facing warning when *plan*'s GPU numbering was only estimated."""
+    """User-facing warning when *plan*'s GPU could not be confirmed: the
+    numbering was only estimated, or CPU only could not disable any GPU."""
     if plan is None or getattr(plan, "confirmed", True):
         return None
+    if plan.mapping == gpu_place.MAP_NO_GPU_LIST:
+        return t("lmstudio.gpu_cpu_unconfirmed")
     return t("lmstudio.gpu_unconfirmed", choice=choice_label)
 
 
@@ -981,10 +984,11 @@ class LMStudioPanel(tk.Toplevel):
                 self.client.load_model(model_path, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
-                    note = gpu_unconfirmed_note(getattr(self.client, "last_gpu_plan", None),
-                                                gpu_label)
+                    plan = getattr(self.client, "last_gpu_plan", None)
                     self._post_ui("_on_load_success", model_id,
-                                  getattr(self.client, "last_loaded_identifier", None), note)
+                                  getattr(self.client, "last_loaded_identifier", None),
+                                  gpu_unconfirmed_note(plan, gpu_label),
+                                  getattr(plan, "placement", None) == gpu_place.CPU)
             except Exception as e:
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
@@ -1027,23 +1031,27 @@ class LMStudioPanel(tk.Toplevel):
         # Back in its original slot: [Load Model][Unload][Refresh Models]
         self.load_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
 
-    def _on_load_success(self, model_id, loaded_id=None, gpu_note=None):
+    def _on_load_success(self, model_id, loaded_id=None, gpu_note=None, in_ram=False):
         """*loaded_id*: the instance id LM Studio gave the load, if known; it can
         differ from the requested row id (e.g. for "name@quant" variants).
-        *gpu_note*: set when the GPU could only be estimated (gpu_unconfirmed_note)."""
+        *gpu_note*: set when the GPU could not be confirmed (gpu_unconfirmed_note).
+        *in_ram*: a CPU-only load (LM Studio may still use some GPU memory)."""
         self._restore_load_btn()
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         if gpu_note:
             self.status_dot.configure(fg=C["warning_dark"])
             self._set_status("lmstudio.loaded_model_gpu_unconfirmed", model=short)
-            messagebox.showwarning(t("lmstudio.gpu_unconfirmed_title"), gpu_note, parent=self)
         else:
             self.status_dot.configure(fg=C["success"])
-            self._set_status("lmstudio.loaded_model", model=short)
+            self._set_status("lmstudio.loaded_model_cpu" if in_ram else "lmstudio.loaded_model",
+                             model=short)
         # Prefer the real instance id, else the only row marked loaded, else
-        # the requested row.
+        # the requested row. Started before the (modal) warning below, so the
+        # list is not stale while it is open.
         prefer = (loaded_id,) if loaded_id else ()
         self._refresh_models(select_ids=prefer + (ONLY_LOADED_ROW, model_id))
+        if gpu_note:
+            messagebox.showwarning(t("lmstudio.gpu_unconfirmed_title"), gpu_note, parent=self)
 
     def _on_load_error(self, error, model_id=None):
         """*model_id*: the row the user tried to load; it stays selected when

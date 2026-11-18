@@ -96,6 +96,24 @@ def test_plans_say_whether_the_gpu_is_confirmed(owner):
     assert "nvidia-smi" in g.UNCONFIRMED_HINT and "LM Studio" in g.UNCONFIRMED_HINT
 
 
+def test_cpu_only_without_any_gpu_list_is_not_confirmed():
+    blind = g.plan("cpu", [], None)                    # nvidia-smi and survey both failed
+    assert blind.gpu == {"ratio": 0.0, "disabled_gpus": None}
+    assert blind.mapping == g.MAP_NO_GPU_LIST and not blind.confirmed
+    assert g.UNCONFIRMED_HINTS[g.MAP_NO_GPU_LIST] in blind.note and g.CPU_HINT in blind.note
+    survey_only = g.plan("cpu", [], [g.LmStudioGpu(0, "RTX 3090", 24575)])
+    assert survey_only.confirmed and survey_only.gpu["disabled_gpus"] == [0]
+
+
+def test_plan_notes_for_tool_results(owner):
+    nvidia, survey = owner
+    assert g.plan("gpu:1", nvidia, survey).note is None
+    assert g.plan("auto", nvidia, survey).note is None
+    assert g.plan("gpu:1", nvidia, None).note == g.UNCONFIRMED_HINT
+    assert g.plan("cpu", nvidia, survey).note == g.CPU_HINT     # honest about the GPU use
+    assert "vision" in g.CPU_HINT and "RAM" in g.CPU_HINT
+
+
 def _survey_with(gpu_info):
     return {"engines": [{"hardwareSurvey": {"gpuSurveyResult": {"gpuInfo": gpu_info}}}]}
 

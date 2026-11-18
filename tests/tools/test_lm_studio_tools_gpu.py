@@ -57,8 +57,10 @@ def test_cpu_and_default_modes(sdk):
     result, cpu = _load(sdk, gpu_mode="cpu")
     assert cpu.gpu.ratio == 0.0 and cpu.offload_kv_cache_to_gpu is False
     assert list(cpu.gpu.disabled_gpus) == [0, 1]              # every GPU off
-    assert result["gpu_confirmed"] is True and "gpu_note" not in result
+    assert result["gpu_confirmed"] is True
+    assert result["gpu_note"] == gpu_place.CPU_HINT           # may still use some GPU
     result, auto = _load(sdk)
+    assert "gpu_note" not in result
     assert auto.gpu is None and result["gpu_placement"] == "auto"
 
 
@@ -73,6 +75,15 @@ def test_estimated_gpu_numbering_is_reported_plainly(sdk, monkeypatch):
     monkeypatch.setattr(gpu_place, "lmstudio_gpu_survey", lambda *a, **k: list(SURVEY))
     result, _config = _load(sdk, gpu_index=1)
     assert result["gpu_confirmed"] is True and "gpu_note" not in result
+
+
+def test_cpu_only_without_any_gpu_list_is_reported_unconfirmed(sdk, monkeypatch):
+    monkeypatch.setattr(gpu_place, "list_nvidia_gpus", lambda timeout=10: [])
+    monkeypatch.setattr(gpu_place, "lmstudio_gpu_survey", lambda *a, **k: None)
+    result, config = _load(sdk, gpu_mode="cpu")
+    assert config.gpu.ratio == 0.0 and config.gpu.disabled_gpus is None
+    assert result["gpu_confirmed"] is False
+    assert gpu_place.UNCONFIRMED_HINTS[gpu_place.MAP_NO_GPU_LIST] in result["gpu_note"]
 
 
 @pytest.mark.parametrize("args, message", [

@@ -286,7 +286,7 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
         # Store handle for later unload
         _sdk_handles[instance_id] = handle
 
-        extra = {} if plan.confirmed else {"gpu_note": gpu_place.UNCONFIRMED_HINT}
+        extra = {"gpu_note": plan.note} if plan.note else {}
         return json.dumps({
             **extra,
             "loaded": True,
