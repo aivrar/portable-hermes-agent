@@ -8,6 +8,10 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki"><img src="https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/hero.gif" alt="Portable Hermes Agent" width="900"></a>
+</p>
+
 **Agente de IA portátil para Windows**: interfaz gráfica, 100 herramientas, modelos locales mediante LM Studio, voz, música, ComfyUI, flujos de trabajo y creación de herramientas. Sin instalación en el sistema, Docker ni permisos de administrador.
 
 Basado en [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (licencia MIT), con personalizaciones para usuarios no técnicos. Este repositorio es **la distribución portátil de aivrar**, no el instalador del proyecto original.

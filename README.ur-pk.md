@@ -8,6 +8,10 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki"><img src="https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/hero.gif" alt="Portable Hermes Agent" width="900"></a>
+</p>
+
 **Windows کے لیے پورٹیبل AI ایجنٹ** — گرافیکل انٹرفیس، 100 ٹولز، LM Studio کے ذریعے مقامی ماڈلز، آواز، موسیقی، ComfyUI، ورک فلو اور اپنے ٹول بنانے کی سہولت۔ سسٹم میں Python یا Node.js نصب کرنے، Docker یا منتظم کے اختیارات کی ضرورت نہیں۔
 
 یہ منصوبہ [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT لائسنس) پر مبنی ہے، لیکن یہ **aivrar کی الگ پورٹیبل تقسیم** ہے۔ اسے اسی ریپوزٹری کے ریلیز صفحے سے حاصل کریں؛ اصل Hermes Agent کی تنصیب کی ہدایات اس پورٹیبل پیکیج کے لیے نہیں ہیں۔

@@ -6,6 +6,10 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki"><img src="https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/hero.gif" alt="Portable Hermes Agent" width="900"></a>
+</p>
+
 # 便攜版 Hermes Agent (Portable Hermes Agent)
 
 **專為 Windows 設計的免安裝便攜 AI Agent 桌面版** — 內建 100 種工具、圖形化介面 (GUI)、LM Studio 本地模型、TTS 語音合成、音樂創作、ComfyUI 繪圖、自動化工作流、動態工具製作等。無需安裝、無需 Docker、無需系統管理員權限。
