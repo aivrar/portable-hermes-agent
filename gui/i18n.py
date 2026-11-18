@@ -45,6 +45,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "Skills Browser",
         "menu.extensions": "Extensions",
         "menu.toggle_sidebar": "Toggle Sidebar",
+        "menu.show_thinking": "Show Thinking",
         "menu.about": "About",
 
         # Sidebar
@@ -345,6 +346,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "Auto (LM Studio decides)",
         "lmstudio.gpu_cpu": "CPU (model in RAM)",
         "lmstudio.gpu_split": "All GPUs (largest first)",
+        "lmstudio.fit_hint": "This model may not fit on this card with this context. Loading can take several minutes.",
+        "lmstudio.fit_hint_split": "Try '{split}'.",
         "lmstudio.gpu_unconfirmed_title": "GPU not confirmed",
         "lmstudio.gpu_unconfirmed": "The model was loaded, but Hermes could not confirm that it is on {choice}: LM Studio's GPU list was not available, so the GPU numbering was estimated (largest card first). Check where the model is loaded in LM Studio, or compare the GPU memory use in nvidia-smi.",
         "lmstudio.gpu_cpu_unconfirmed": "The model was loaded, but Hermes could not confirm that it is on the CPU: no GPU could be listed (nvidia-smi and LM Studio's GPU list were both unavailable), so no GPU could be disabled. Check where the model is loaded in LM Studio, or compare the GPU memory use in nvidia-smi.",
@@ -415,7 +418,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "API keys saved: {names}\nNew tools are now available!",
         "status.step": "Step {count}",
         "status.streaming": "Streaming",
-        "status.reasoning_preview": "Thinking: {preview}",
+        "reply.waiting": "Waiting for the model... {clock}",
+        "reply.first_turn_note": "The first message takes longest: the model first reads Hermes's instructions.",
+        "reply.thinking": "Thinking... {clock}",
+        "reply.running_tool": "Running {tool}... {clock}",
+        "reply.thought_for": "Thought for {seconds} s",
+        "reply.waited_for": "Waited {seconds} s",
+        "reply.and_waited": "· waited {seconds} s",
         "skills.load_error": "Error: {error}",
         "about.core_version": "Hermes Agent core v{version}",
         "about.portable_credit": "Portable Windows distribution by aivrar",
@@ -467,6 +476,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "技能瀏覽器",
         "menu.extensions": "擴充套件",
         "menu.toggle_sidebar": "切換側邊欄",
+        "menu.show_thinking": "顯示思考過程",
         "menu.about": "關於",
 
         # Sidebar
@@ -767,6 +777,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "自動（由 LM Studio 決定）",
         "lmstudio.gpu_cpu": "CPU（模型在記憶體中）",
         "lmstudio.gpu_split": "所有 GPU（最大的優先）",
+        "lmstudio.fit_hint": "以這個上下文長度，此模型可能放不進這張顯示卡。載入可能需要好幾分鐘。",
+        "lmstudio.fit_hint_split": "試試「{split}」。",
         "lmstudio.gpu_unconfirmed_title": "GPU 未確認",
         "lmstudio.gpu_unconfirmed": "模型已載入，但 Hermes 無法確認它位於 {choice}：無法取得 LM Studio 的 GPU 清單，因此 GPU 編號是推估的（最大的顯示卡優先）。請在 LM Studio 中查看模型載入的位置，或在 nvidia-smi 中比較各 GPU 的記憶體用量。",
         "lmstudio.gpu_cpu_unconfirmed": "模型已載入，但 Hermes 無法確認它在 CPU 上：無法列出任何 GPU（nvidia-smi 與 LM Studio 的 GPU 清單都無法取得），因此無法停用任何 GPU。請在 LM Studio 中查看模型載入的位置，或在 nvidia-smi 中比較各 GPU 的記憶體用量。",
@@ -837,7 +849,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "已儲存 API 金鑰：{names}\n新工具現在可以使用了！",
         "status.step": "步驟 {count}",
         "status.streaming": "正在串流",
-        "status.reasoning_preview": "思考中：{preview}",
+        "reply.waiting": "正在等待模型... {clock}",
+        "reply.first_turn_note": "第一則訊息最久：模型要先讀取 Hermes 的指示。",
+        "reply.thinking": "思考中... {clock}",
+        "reply.running_tool": "正在執行 {tool}... {clock}",
+        "reply.thought_for": "思考了 {seconds} 秒",
+        "reply.waited_for": "等待了 {seconds} 秒",
+        "reply.and_waited": "· 等待了 {seconds} 秒",
         "skills.load_error": "錯誤：{error}",
         "about.core_version": "Hermes Agent 核心 v{version}",
         "about.portable_credit": "由 aivrar 製作的 Windows 便攜版",
@@ -889,6 +907,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "技能浏览器",
         "menu.extensions": "扩展插件",
         "menu.toggle_sidebar": "切换侧边栏",
+        "menu.show_thinking": "显示思考过程",
         "menu.about": "关于",
 
         # Sidebar
@@ -1189,6 +1208,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "自动（由 LM Studio 决定）",
         "lmstudio.gpu_cpu": "CPU（模型在内存中）",
         "lmstudio.gpu_split": "所有 GPU（最大的优先）",
+        "lmstudio.fit_hint": "在这个上下文长度下，此模型可能放不进这张显卡。加载可能需要好几分钟。",
+        "lmstudio.fit_hint_split": "试试“{split}”。",
         "lmstudio.gpu_unconfirmed_title": "GPU 未确认",
         "lmstudio.gpu_unconfirmed": "模型已加载，但 Hermes 无法确认它位于 {choice}：无法获取 LM Studio 的 GPU 列表，因此 GPU 编号是估计的（最大的显卡优先）。请在 LM Studio 中查看模型加载的位置，或在 nvidia-smi 中比较各 GPU 的显存占用。",
         "lmstudio.gpu_cpu_unconfirmed": "模型已加载，但 Hermes 无法确认它在 CPU 上：无法列出任何 GPU（nvidia-smi 和 LM Studio 的 GPU 列表都无法获取），因此无法禁用任何 GPU。请在 LM Studio 中查看模型加载的位置，或在 nvidia-smi 中比较各 GPU 的显存占用。",
@@ -1259,7 +1280,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "已保存 API 密钥：{names}\n新工具现已可用！",
         "status.step": "步骤 {count}",
         "status.streaming": "正在流式输出",
-        "status.reasoning_preview": "思考中：{preview}",
+        "reply.waiting": "正在等待模型... {clock}",
+        "reply.first_turn_note": "第一条消息最慢：模型要先读取 Hermes 的指令。",
+        "reply.thinking": "思考中... {clock}",
+        "reply.running_tool": "正在运行 {tool}... {clock}",
+        "reply.thought_for": "思考了 {seconds} 秒",
+        "reply.waited_for": "等待了 {seconds} 秒",
+        "reply.and_waited": "· 等待了 {seconds} 秒",
         "skills.load_error": "错误：{error}",
         "about.core_version": "Hermes Agent 核心 v{version}",
         "about.portable_credit": "由 aivrar 制作的 Windows 便携版",
@@ -1311,6 +1338,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "Explorador de Habilidades",
         "menu.extensions": "Extensiones",
         "menu.toggle_sidebar": "Alternar Barra Lateral",
+        "menu.show_thinking": "Mostrar Razonamiento",
         "menu.about": "Acerca de",
 
         # Sidebar
@@ -1611,6 +1639,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "Automático (decide LM Studio)",
         "lmstudio.gpu_cpu": "CPU (modelo en RAM)",
         "lmstudio.gpu_split": "Todas las GPU (la mayor primero)",
+        "lmstudio.fit_hint": "Puede que este modelo no quepa en esta tarjeta con este contexto. La carga puede tardar varios minutos.",
+        "lmstudio.fit_hint_split": "Pruebe '{split}'.",
         "lmstudio.gpu_unconfirmed_title": "GPU no confirmada",
         "lmstudio.gpu_unconfirmed": "El modelo se cargó, pero Hermes no pudo confirmar que esté en {choice}: la lista de GPU de LM Studio no estaba disponible, así que la numeración de las GPU es una estimación (la tarjeta más grande primero). Comprueba en LM Studio dónde está cargado el modelo, o compara el uso de memoria de las GPU en nvidia-smi.",
         "lmstudio.gpu_cpu_unconfirmed": "El modelo se cargó, pero Hermes no pudo confirmar que esté en la CPU: no se pudo listar ninguna GPU (nvidia-smi y la lista de GPU de LM Studio no estaban disponibles), así que no se pudo desactivar ninguna GPU. Comprueba en LM Studio dónde está cargado el modelo, o compara el uso de memoria de las GPU en nvidia-smi.",
@@ -1681,7 +1711,13 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "Claves API guardadas: {names}\n¡Ya están disponibles las nuevas herramientas!",
         "status.step": "Paso {count}",
         "status.streaming": "Generando respuesta...",
-        "status.reasoning_preview": "Pensando: {preview}",
+        "reply.waiting": "Esperando al modelo... {clock}",
+        "reply.first_turn_note": "El primer mensaje tarda más: el modelo lee primero las instrucciones de Hermes.",
+        "reply.thinking": "Pensando... {clock}",
+        "reply.running_tool": "Ejecutando {tool}... {clock}",
+        "reply.thought_for": "Pensó durante {seconds} s",
+        "reply.waited_for": "Esperó {seconds} s",
+        "reply.and_waited": "· esperó {seconds} s",
         "skills.load_error": "Error: {error}",
         "about.core_version": "Núcleo de Hermes Agent v{version}",
         "about.portable_credit": "Distribución portátil para Windows de aivrar",
@@ -1796,6 +1832,37 @@ def save_language(lang_code: str) -> bool:
         return True
     except Exception as e:
         logger.warning("Failed to save language preference: %s", e)
+        return False
+
+
+def load_gui_setting(key: str, default):
+    """Another GUI preference from gui_config.json (*default* when unset or unreadable)."""
+    try:
+        import json
+        with open(_get_config_path(), "r", encoding="utf-8") as f:
+            value = json.load(f).get(key, default)
+        return value if isinstance(value, type(default)) else default
+    except Exception:
+        return default
+
+
+def save_gui_setting(key: str, value) -> bool:
+    """Store a GUI preference in gui_config.json, keeping the other entries."""
+    try:
+        import json
+        cfg_path = _get_config_path()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        data[key] = value
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.warning("Failed to save GUI setting %s: %s", key, e)
         return False
 
 

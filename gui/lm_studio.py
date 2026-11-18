@@ -16,7 +16,7 @@ from tkinter import ttk, messagebox
 from pathlib import Path
 from typing import List, Dict, Optional
 
-from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
+from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF, S
 from gui.i18n import t, register_listener, unregister_listener
 from hermes_constants import get_hermes_home
 from portable_hermes import lmstudio_gpu as gpu_place
@@ -131,6 +131,22 @@ def gpu_choice_label(placement: str, gpus=()) -> str:
 def gpu_choices(gpus) -> List[tuple]:
     """``[(placement, label), ...]`` for a GPU combobox, in display order."""
     return [(p, gpu_choice_label(p, gpus)) for p in gpu_place.placements_for(gpus)]
+
+
+def gpu_fit_note(placement, gpus, size_bytes, context_length) -> str:
+    """A note for next to the GPU box when one chosen GPU may be too small
+    for the model and context ("" otherwise; it never blocks a load)."""
+    try:
+        kind, index = gpu_place.parse_placement(placement)
+    except ValueError:
+        return ""
+    gpu = next((g for g in gpus if g.index == index), None) if kind == "gpu" else None
+    if gpu is None or not gpu_place.may_not_fit(size_bytes, context_length, gpu):
+        return ""
+    note = t("lmstudio.fit_hint")
+    if len(gpus) >= 2:
+        note += " " + t("lmstudio.fit_hint_split", split=t("lmstudio.gpu_split"))
+    return note
 
 
 def gpu_unconfirmed_note(plan, choice_label: str) -> Optional[str]:
@@ -315,6 +331,7 @@ class LMStudioClient:
                     "display_name": (getattr(info, "display_name", None)
                                      or self._extract_display_name(m)),
                     "context_length": getattr(info, "max_context_length", None),
+                    "size_bytes": getattr(info, "size_bytes", None),
                 })
             return rows
         except Exception:
@@ -330,6 +347,21 @@ class LMStudioClient:
                      "display_name": self._extract_display_name(m)} for m in models]
         except Exception:
             return []
+
+    def model_sizes(self) -> Dict[str, int]:
+        """``{model key: file size in bytes}`` from /api/v1/models ({} when
+        unavailable)."""
+        if not HAS_HTTPX:
+            return {}
+        try:
+            r = httpx.get(self._server_root() + "/api/v1/models",
+                          headers=self._auth_headers(), timeout=5)
+            models = r.json().get("models", []) if r.status_code == 200 else []
+            return {m["key"]: m["size_bytes"] for m in models
+                    if isinstance(m, dict) and isinstance(m.get("key"), str)
+                    and isinstance(m.get("size_bytes"), int)}
+        except Exception:
+            return {}
 
     def list_models_api(self) -> List[Dict]:
         """List models via OpenAI-compatible API."""
@@ -397,8 +429,14 @@ class LMStudioClient:
                             "context_length": context_length,
                             "quantization": quantization,
                             "state": state,
+                            "size_bytes": m.get("size_bytes"),
                         })
                     if result:
+                        if not any(r["size_bytes"] for r in result):
+                            # /api/v0 lists no file sizes; /api/v1 does.
+                            sizes = self.model_sizes()
+                            for r in result:
+                                r["size_bytes"] = sizes.get(r["id"])
                         return _one_row_per_model(result)
             except Exception:
                 continue
@@ -646,6 +684,7 @@ class LMStudioPanel(tk.Toplevel):
     def _on_gpu_chosen(self, _event=None):
         """The user picked a GPU entry: remember it (by placement, not label)."""
         self._gpu_user_choice = self._selected_gpu_placement()
+        self._update_fit_hint()
 
     def _set_gpus(self, gpus):
         """Detection finished (possibly after the user already chose an entry,
@@ -653,6 +692,22 @@ class LMStudioPanel(tk.Toplevel):
         self.gpus = list(gpus)
         chosen = getattr(self, "_gpu_user_choice", None)
         self._show_gpu_choices(chosen or gpu_place.default_placement(self.gpus))
+        self._update_fit_hint()
+
+    def _update_fit_hint(self):
+        """Show or hide the "may not fit on this card" note for the selected
+        model, GPU and context."""
+        if not hasattr(self, "fit_hint_lbl"):
+            return
+        sel = self.model_list.curselection()
+        model = self.models[sel[0]] if sel and sel[0] < len(self.models) else {}
+        note = gpu_fit_note(self._selected_gpu_placement(), self.gpus,
+                            model.get("size_bytes"), self.ctx_var.get())
+        self.fit_hint_lbl.configure(text=note)
+        if note:
+            self.fit_hint_lbl.pack(fill="x", after=self.gpu_combo.master)
+        else:
+            self.fit_hint_lbl.pack_forget()
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -774,6 +829,10 @@ class LMStudioPanel(tk.Toplevel):
         self._show_gpu_choices(gpu_place.default_placement(self.gpus))
         self.gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
         self.gpu_combo.pack(side="left", fill="x", expand=True)
+        # "May not fit on this card" note (shown only when it applies)
+        self.fit_hint_lbl = tk.Label(ctrl, text="", font=FONTS["small"], fg=C["warning"],
+                                     bg=C["bg_main"], anchor="w", justify="left",
+                                     wraplength=S(460))
 
         # Context length slider
         from gui.theme import S as _S
@@ -903,6 +962,7 @@ class LMStudioPanel(tk.Toplevel):
                             "display_name": d.get("display_name") or key or d["path"],
                             "context_length": d.get("context_length"),
                             "state": "not-loaded",
+                            "size_bytes": d.get("size_bytes"),
                         })
                 except Exception:
                     pass
@@ -947,6 +1007,7 @@ class LMStudioPanel(tk.Toplevel):
                 self.model_list.selection_set(row)
                 self.model_list.see(row)
                 break
+        self._update_fit_hint()
 
     def _on_model_select(self, event):
         sel = self.model_list.curselection()
@@ -964,6 +1025,7 @@ class LMStudioPanel(tk.Toplevel):
                 safe = max(MINIMUM_CONTEXT_LENGTH, (max_ctx // 512) * 512)
                 self.ctx_var.set(safe)
                 self.ctx_label.configure(text=f"{safe:,}")
+        self._update_fit_hint()
 
     def _on_ctx_change(self, val):
         v = int(float(val))
@@ -971,6 +1033,7 @@ class LMStudioPanel(tk.Toplevel):
         v = max(MINIMUM_CONTEXT_LENGTH, (v // 512) * 512)
         self.ctx_var.set(v)
         self.ctx_label.configure(text=f"{v:,}")
+        self._update_fit_hint()
 
     def _refuse_during_reply(self) -> bool:
         """True (and says why) while a chat reply is running."""

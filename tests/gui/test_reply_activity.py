@@ -1,0 +1,181 @@
+"""The activity line of a reply bubble: what it says while waiting, thinking
+and running a tool, and what it keeps once the answer starts."""
+from __future__ import annotations
+
+import pytest
+
+from gui import i18n
+from gui.reply_activity import ReplyActivity, clock
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture(autouse=True)
+def english(monkeypatch):
+    monkeypatch.setattr(i18n, "_current_language", "en")    # no listeners notified
+    yield
+
+
+def _activity(**kw):
+    now = FakeClock()
+    return ReplyActivity(now=now, **kw), now
+
+
+def test_clock_format():
+    assert [clock(s) for s in (0, 9.9, 42, 65, 3723)] == ["0:00", "0:09", "0:42", "1:05", "1:02:03"]
+
+
+def test_waiting_ticks_and_the_first_turn_says_why():
+    activity, now = _activity()
+    now.now += 42
+    assert activity.header() == "Waiting for the model... 0:42"
+    first, now = _activity(first_turn=True)
+    now.now += 7.9
+    assert first.header() == "Waiting for the model... 0:07"     # a fast first reply: no note
+    now.now += 0.1
+    assert first.header().endswith("  The first message takes longest: "
+                                   "the model first reads Hermes's instructions.")
+    now.now += 97
+    assert first.header() == ("Waiting for the model... 1:45  The first message takes longest: "
+                              "the model first reads Hermes's instructions.")
+    first.add_thinking("x")
+    assert "first message" not in first.header()                  # only while waiting
+
+
+def test_thinking_shows_the_latest_text_on_one_line():
+    activity, now = _activity()
+    activity.add_thinking("The user asks about the GPU.\n")
+    activity.add_thinking("I should call gpu_info and then compare the cards' free memory.")
+    now.now += 38
+    header = activity.header()
+    assert header.startswith("Thinking... 0:38  …")
+    preview = header.split("  ", 1)[1]
+    assert len(preview) == 60 and "\n" not in preview
+    assert preview.endswith("compare the cards' free memory.")
+    assert activity.expandable
+
+
+def test_a_short_thought_is_shown_whole():
+    activity, _ = _activity()
+    activity.add_thinking("Hmm.")
+    assert activity.header() == "Thinking... 0:00  Hmm."
+
+
+def test_a_running_tool_then_the_next_model_call():
+    activity, now = _activity(tool="gpu_info")
+    now.now += 3
+    assert activity.header() == "Running gpu_info... 0:03"
+    activity.model_called()
+    now.now += 2
+    assert activity.header() == "Waiting for the model... 0:02"     # its own clock
+
+
+def test_the_first_model_call_does_not_reset_the_wait():
+    activity, now = _activity()
+    now.now += 10
+    activity.model_called()                     # step 1 of the turn
+    assert activity.header() == "Waiting for the model... 0:10"
+
+
+def test_waiting_and_thinking_are_timed_separately():
+    """The real case: a 58k-token prompt waited 55 s, then thought 4 s."""
+    activity, now = _activity()
+    now.now += 55
+    activity.add_thinking("Two lines.")
+    now.now += 3
+    assert activity.header() == "Thinking... 0:03  Two lines."   # since thinking started
+    now.now += 1.2
+    activity.answer_started()
+    assert activity.header() == "Thought for 4 s · waited 55 s"
+
+    short_wait, now = _activity()
+    now.now += 9.4                               # under 10 s: the wait is not mentioned
+    short_wait.add_thinking("x")
+    now.now += 4
+    short_wait.answer_started()
+    assert short_wait.header() == "Thought for 4 s"
+
+    tool_then_think, now = _activity(tool="gpu_info")
+    now.now += 30                                # the tool's time is not a wait
+    tool_then_think.model_called()
+    now.now += 12
+    tool_then_think.add_thinking("x")
+    now.now += 2
+    tool_then_think.finish()
+    assert tool_then_think.header() == "Thought for 2 s · waited 12 s"
+
+
+def test_once_the_answer_starts():
+    thought, now = _activity()
+    thought.add_thinking("plan")
+    now.now += 38.4
+    thought.answer_started()
+    now.now += 100                              # the line no longer ticks
+    assert thought.header() == "Thought for 38 s" and thought.expandable
+    thought.add_thinking("late")                # ignored once done
+    assert thought.thinking_text == "plan"
+
+    quick, now = _activity()
+    now.now += 2.4
+    quick.answer_started()
+    assert quick.header() is None               # a fast reply keeps no line
+
+    slow, now = _activity()
+    now.now += 42
+    slow.answer_started()
+    assert slow.header() == "Waited 42 s" and not slow.expandable
+
+
+def test_show_thinking_off_keeps_no_text_but_still_moves():
+    activity, now = _activity(keep_thinking=False)
+    activity.add_thinking("secret plan")
+    now.now += 5
+    assert activity.header() == "Thinking... 0:05"
+    assert activity.thinking_text == "" and not activity.expandable
+    activity.answer_started()
+    assert activity.header() == "Thought for 5 s"
+
+
+def test_a_long_thinking_stream_keeps_chunks_and_a_small_tail():
+    import time
+    activity, _ = _activity()
+    started = time.perf_counter()
+    for i in range(20000):
+        activity.add_thinking(f"step {i} considers the cards. ")
+        if i % 100 == 0:
+            activity.header()                    # the closed line, redrawn as it streams
+    assert time.perf_counter() - started < 5     # generous: about 0.1 s here
+    assert len(activity.thinking_parts) == 20000
+    assert len(activity._tail) <= 4 * 60         # the preview never looks at more
+    assert activity.preview().endswith("step 19999 considers the cards.")
+    assert activity.thinking_text.startswith("step 0 considers")
+
+
+def test_every_language_has_the_activity_strings():
+    keys = ("reply.waiting", "reply.first_turn_note", "reply.thinking", "reply.running_tool",
+            "reply.thought_for", "reply.waited_for", "reply.and_waited", "menu.show_thinking")
+    for code, _name in i18n.SUPPORTED_LANGUAGES:
+        i18n._current_language = code       # restored by the fixture's monkeypatch
+        for key in keys:
+            text = i18n.t(key, clock="0:01", tool="x", seconds=1)
+            assert text and text != key, (code, key)
+
+
+def test_gui_settings_are_kept_beside_the_language(monkeypatch, tmp_path):
+    monkeypatch.setattr(i18n, "_get_config_path", lambda: tmp_path / "gui_config.json")
+    (tmp_path / "gui_config.json").write_text('{"language": "es"}', encoding="utf-8")
+    assert i18n.load_gui_setting("thinking_open", False) is False
+    assert i18n.save_gui_setting("thinking_open", True)
+    assert i18n.load_gui_setting("thinking_open", False) is True
+    assert i18n.load_gui_setting("show_thinking", True) is True
+    import json
+    assert json.loads((tmp_path / "gui_config.json").read_text(encoding="utf-8")) == {
+        "language": "es", "thinking_open": True}
+    (tmp_path / "gui_config.json").write_text('{"thinking_open": "yes"}', encoding="utf-8")
+    assert i18n.load_gui_setting("thinking_open", False) is False     # wrong type: default

@@ -501,8 +501,37 @@ def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
 
     assert shown == "Hello world\nline two"
     assert height == 2
-    # The raw stream stays available to the caller unchanged.
-    assert raw == "".join(chunks)
+    assert raw == shown                  # get_text (copy) returns what is displayed
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_trims_only_its_outer_whitespace():
+    """Only leading blank lines and trailing whitespace go; everything
+    between shows exactly, CRLF as LF, however the text is split."""
+    import tkinter as tk
+    from gui import app
+
+    text = "\r\n \n  first\r\n\r\n\tmid  \r\n \n\n  last line\t \r\n\r\n  "
+    expected = "  first\n\n\tmid  \n \n\n  last line"
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        splits = [[text], list(text)] + [[text[:c], text[c:]] for c in range(len(text) + 1)]
+        for chunks in splits:
+            bubble = app.StreamingBubble(root)
+            for chunk in chunks:
+                bubble.append_text(chunk)
+            streamed = bubble._body.get("1.0", "end-1c")
+            assert "\r" not in streamed and streamed.rstrip() == expected, chunks
+            bubble.finalize()
+            assert bubble._body.get("1.0", "end-1c") == expected, chunks
+            assert bubble.get_text() == expected
+            bubble.destroy()
+    finally:
+        root.destroy()
 
 
 @pytest.mark.needs_core
@@ -511,6 +540,251 @@ def test_gui_streamed_reply_keeps_first_line_indentation():
     # Indentation split over chunks, after whitespace-only chunks.
     assert _streamed((" \n", "\n  ", "  print(1)"))[0] == "    print(1)"
     assert _streamed(("  ", "x"))[0] == "  x"
+
+
+def _tagged(body, tag):
+    ranges = body.tag_ranges(tag)
+    return [body.get(ranges[i], ranges[i + 1]) for i in range(0, len(ranges), 2)]
+
+
+# Replies whose markers stream in awkward places (25a/25b review corpus).
+MARKDOWN_CORPUS = [
+    "Search **/*.py and **/*.txt", "2*3*4", "2**10 = 1024 and 3**2 = 9",
+    "C:\\Users\\*\\*.txt", "a ** b ** c", "**", "****", "***x***", "**bold**",
+    "**bold** and **more**", "`code with ** inside`", "an unmatched ` backtick",
+    "`a` and `b`", "**RTX 3060** (GPU 0)", "Run:\n```python\nx = 2**3  # **no**\n```\nDone **ok**.",
+    "***\n*x**", "Your **RTX 3060** has `12288` MiB and **bold",
+    "line one **a\nb** two `c\nd` three",
+    "**/*.py,**/*.txt", "f(*args, **kwargs) and **more**", "![**x**](http://a/**/b.png)",
+    "````md\n```\n**literal**\n```\n````\n**bold** after", "~~~\n**literal**\n~~~\n`code`",
+]
+
+
+def _styled_chars(body):
+    """[(char, tags)] the bubble shows."""
+    from gui.inline_markdown import BOLD, CODE
+    text = body.get("1.0", "end-1c")
+    return [(ch, tuple(t for t in (BOLD, CODE) if t in body.tag_names(f"1.0+{i}c")))
+            for i, ch in enumerate(text)]
+
+
+def _expected_chars(text):
+    from gui.inline_markdown import spans
+    return [(ch, tags) for piece, tags in spans(text) for ch in piece]
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_shows_exactly_the_whole_reply_styling_for_any_split():
+    import random
+    import tkinter as tk
+    from gui import app
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    rng = random.Random(25)
+    try:
+        for text in MARKDOWN_CORPUS:
+            splits = [[text], list(text)]
+            splits += [[text[:c], text[c:]] for c in range(len(text) + 1)]
+            for _ in range(20):
+                cuts = sorted(rng.sample(range(len(text) + 1), min(len(text) + 1, rng.randint(1, 6))))
+                splits.append([text[a:b] for a, b in zip([0] + cuts, cuts + [len(text)])])
+            for chunks in splits:
+                bubble = app.StreamingBubble(root)
+                for chunk in chunks:
+                    bubble.append_text(chunk)
+                bubble.finalize()
+                assert _styled_chars(bubble._body) == _expected_chars(text), (text, chunks)
+                assert bubble.get_text() == text
+                bubble.destroy()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_long_streams_cost_about_linear_time():
+    import time
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    # Mapped (off-screen) at a real size: a withdrawn window's text widgets
+    # are 1 pixel wide, and Tk then wraps every word onto its own line.
+    root.geometry("900x700+-3000+-3000")
+    root.update()
+
+    def stream(n, newline_every):
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        root.update()
+        started = time.perf_counter()
+        for i in range(n):
+            bubble.add_thinking("think " if i % 15 else "think\n")
+            if i % 100 == 0:
+                bubble.refresh_activity()        # what the 100 ms batching does
+        for i in range(n):
+            bubble.append_text("word\n" if i % newline_every == newline_every - 1 else "word ")
+        bubble.finalize()
+        seconds = time.perf_counter() - started
+        assert len(bubble.get_text()) == 5 * n - 1      # the final space is trimmed
+        assert bubble._activity_view._text.get("1.0", "end-1c") == "".join(
+            "think " if i % 15 else "think\n" for i in range(n))
+        bubble.destroy()
+        return seconds
+
+    try:
+        for newline_every in (20, 10 ** 9):      # short lines; one ever-growing line
+            small, large = stream(5000, newline_every), stream(20000, newline_every)
+            assert large < 20, newline_every     # about 1.5 s here
+            # 4x the chunks: linear work takes ~4x, quadratic ~16x.
+            assert large < 10 * max(small, 0.05), (newline_every, small, large)
+
+        def final_redraw(lines):                 # a long plain multi-line reply
+            bubble = app.StreamingBubble(root)
+            bubble.pack(fill="x")
+            for start in range(0, lines, 1000):  # few chunks: the redraw dominates
+                bubble.append_text("a plain line of reply text\n" * min(1000, lines - start))
+            started = time.perf_counter()
+            bubble.finalize()
+            seconds = time.perf_counter() - started
+            assert bubble.get_text().count("\n") == lines - 1
+            bubble.destroy()
+            return seconds
+
+        small, large = final_redraw(20000), final_redraw(80000)
+        assert large < 20
+        assert large < 10 * max(small, 0.05), (small, large)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_finalized_reply_is_exactly_as_tall_as_its_text():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.geometry("1100x700+-3000+-3000")        # mapped off-screen, a real width
+    root.update()
+    paragraph = ("The answer streams in long paragraphs that wrap over several "
+                 "display lines in a wide window, like the one in the report. ") * 3
+    long_reply = "\n\n".join([paragraph] * 6)    # about 2,300 characters
+    stopped = long_reply[:1700]                  # Stop mid-answer: the same finalize
+
+    def shown_lines(body):
+        lines = body.count("1.0", "end", "update", "displaylines")
+        return lines[0] if isinstance(lines, tuple) else lines
+
+    try:
+        for text in ("Short answer.", long_reply, stopped):
+            bubble = app.StreamingBubble(root, ReplyActivity(), True)
+            bubble.pack(fill="x")
+            root.update()
+            for i in range(0, len(text), 7):
+                bubble.append_text(text[i:i + 7])
+            bubble.finalize()
+            root.update()
+            body = bubble._body
+            assert int(body.cget("height")) == shown_lines(body), text[:20]
+            if text is not long_reply:
+                bubble.destroy()
+                continue
+            assert shown_lines(body) > 6                       # it wraps
+            for size in ("600x700", "1400x700"):               # the user resizes
+                root.geometry(size + "+-3000+-3000")
+                root.update()
+                assert int(body.cget("height")) == shown_lines(body), size
+            bubble.destroy()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("keep_thinking", [True, False])
+def test_gui_destroying_a_bubble_cancels_its_pending_redraws(keep_thinking):
+    import time
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    errors = []
+    root.report_callback_exception = lambda *exc: errors.append(exc)
+    try:
+        def pending():
+            return set(root.tk.splitlist(root.tk.call("after", "info")))
+
+        bubble = app.StreamingBubble(root, ReplyActivity(keep_thinking=keep_thinking))
+        bubble.add_thinking("Let me check")             # waiting -> thinking: one redraw
+        owned = {bubble._refresh_id, bubble._blink_id}
+        assert None not in owned and owned <= pending()
+
+        bubble.refresh_activity()
+        bubble.add_thinking(" the cards")
+        # Off: nothing new to show (the clock moves the line); on: the text.
+        assert (bubble._refresh_id is not None) is keep_thinking
+
+        bubble.destroy()                                  # e.g. Stop within 100 ms
+        assert not (owned | {bubble._refresh_id}) & pending()
+        time.sleep(0.6)
+        root.update()
+        assert errors == []
+        bubble.refresh_activity()                         # a late call on a dead bubble
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubbles_show_bold_and_code_with_tags():
+    import tkinter as tk
+    from gui import app
+    from gui.inline_markdown import BOLD, CODE
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        stream = app.StreamingBubble(root)
+        for chunk in ("Your *", "*RTX 3060*", "* has `", "12288` MiB", " and **bold"):
+            stream.append_text(chunk)
+        # while streaming, the line is styled as far as it is known
+        assert _tagged(stream._body, BOLD) == ["RTX 3060"]
+        stream.finalize()                         # never closed: shown as typed
+        assert stream._body.get("1.0", "end-1c") == "Your RTX 3060 has 12288 MiB and **bold"
+        assert _tagged(stream._body, BOLD) == ["RTX 3060"]
+        assert _tagged(stream._body, CODE) == ["12288"]
+        assert stream.get_text().startswith("Your **RTX 3060**")      # the raw reply is kept
+
+        ai = app.MessageBubble(root, "Use **Split** or `gpu:1`.", "ai")
+        body = next(w for w in ai.winfo_children()[0].winfo_children()[0].winfo_children()
+                    if isinstance(w, tk.Text))
+        assert body.get("1.0", "end-1c") == "Use Split or gpu:1."
+        assert _tagged(body, BOLD) == ["Split"] and _tagged(body, CODE) == ["gpu:1"]
+
+        user = app.MessageBubble(root, "I typed **this**", "user")
+        body = next(w for w in user.winfo_children()[0].winfo_children()[0].winfo_children()
+                    if isinstance(w, tk.Text))
+        assert body.get("1.0", "end-1c") == "I typed **this**"       # only replies are styled
+    finally:
+        root.destroy()
 
 
 @pytest.mark.needs_core
@@ -1590,22 +1864,34 @@ def test_gui_header_shows_the_session_title_once_it_has_one():
     sessions = [{"id": "s0", "title": "Other chat"}, {"id": "s1", "title": None, "preview": "hi"}]
     gui.sidebar._sessions_data = sessions
 
-    gui._on_complete({})                                   # no title yet
+    gui._on_worker_done()                                  # no title yet
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
 
     sessions[1]["title"] = "General assistance capabilities"
-    gui._on_complete({})
+    gui._on_worker_done()
     gui.chat_title.configure.assert_called_with(text="General assistance capabilities")
 
     # A model or settings change rebuilds the agent with a new session id;
     # until that session has a title, the header says New Chat again.
     bridge.session_id = "s2"
     sessions.insert(0, {"id": "s2", "title": None, "preview": "next"})
-    gui._on_complete({})
+    gui._on_worker_done()
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
     assert gui._chat_title_text is None
 
     gui._new_chat()
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+
+    # An untitled stored session, resumed: a worker's end refreshing the
+    # header later keeps "Resumed Session" while that session is shown.
+    sessions.insert(0, {"id": "s3", "title": None, "preview": "stored"})
+    gui._show_session_title("s3", "resumed")
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
+    bridge.session_id = "s3"
+    gui._on_worker_done()
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
+    bridge.session_id = "s4"                               # rebuilt agent: a new session
+    gui._on_worker_done()
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
 
     gui._show_session_title("s0", "resumed")               # resuming a stored session
@@ -1720,6 +2006,759 @@ def _chat_keeping_bubbles(gui, app):
     gui._add_msg = add
     gui.msg_frame.winfo_children.side_effect = lambda: list(bubbles)
     return bubbles
+
+
+class _FakeRoot:
+    """Tk's after/after_cancel, run by hand."""
+
+    def __init__(self):
+        self.pending, self.next_id = {}, 0
+
+    def after(self, ms, fn):
+        self.next_id += 1
+        self.pending[self.next_id] = (ms, fn)
+        return self.next_id
+
+    def after_cancel(self, after_id):
+        self.pending.pop(after_id, None)
+
+    def clock_ticks(self):
+        return [i for i, (ms, fn) in self.pending.items() if ms == 1000]
+
+    def run(self, after_id):
+        self.pending.pop(after_id)[1]()
+
+    def destroy(self):
+        pass
+
+
+class _FakeReplyBubble:
+    """StreamingBubble without Tk: the activity is real."""
+
+    made = []
+
+    def __init__(self, parent, activity=None, thinking_open=False, on_thinking_toggle=None):
+        self.activity, self.thinking_open = activity, thinking_open
+        self.on_thinking_toggle = on_thinking_toggle
+        self.refreshes, self.finalized, self.destroyed, self.text = 0, False, False, ""
+        _FakeReplyBubble.made.append(self)
+
+    def pack(self, **kw):
+        pass
+
+    def refresh_activity(self):
+        self.refreshes += 1
+
+    def add_thinking(self, text):
+        self.activity.add_thinking(text)
+
+    def append_text(self, text):
+        self.text += text
+        self.activity.answer_started()
+
+    def get_text(self):
+        return self.text
+
+    def has_content(self):
+        return bool(self.text.strip()) or self.activity.expandable
+
+    def finalize(self):
+        self.activity.finish()
+        self.finalized = True
+
+    def destroy(self):
+        self.destroyed = True
+
+    def winfo_exists(self):
+        return not self.destroyed
+
+
+def _replying_gui(monkeypatch, *, local=True, history=()):
+    """A HermesGUI that has just sent "hi" (fake Tk root and bubbles)."""
+    from unittest.mock import Mock
+    from gui import app
+
+    _FakeReplyBubble.made = []
+    monkeypatch.setattr(app, "StreamingBubble", _FakeReplyBubble)
+    monkeypatch.setattr(app, "ToolCallWidget", Mock())
+    bridge = Mock(is_running=False, conversation_history=list(history))
+    bridge.get_token_usage.return_value = {}
+    bridge._is_local_model.return_value = local
+    gui = _gui_with_bridge(bridge)
+    gui.__dict__.update(root=_FakeRoot(), _stream_bubble=None, _has_streamed=False,
+                        _turn_clock_id=None, _show_thinking=True, _thinking_open=False,
+                        _attached_images=[], _update_attach_preview=Mock(),
+                        msg_canvas=Mock())
+    gui.input_text.get.return_value = "hi"
+    gui._send()
+    bridge.is_running = True
+    return gui
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("exit_path", ["reply done", "error", "Stop", "New Chat", "window close"])
+def test_gui_reply_clock_ticks_and_stops_on_every_exit_path(monkeypatch, exit_path):
+    gui = _replying_gui(monkeypatch)
+    bubble, = _FakeReplyBubble.made
+    tick, = gui.root.clock_ticks()
+    gui.root.run(tick)                                 # one second later
+    assert bubble.refreshes == 1 and len(gui.root.clock_ticks()) == 1
+
+    if exit_path == "reply done":
+        gui.bridge.is_running = False
+        gui._on_complete({})
+    elif exit_path == "error":
+        gui._on_error("boom")
+    elif exit_path == "Stop":
+        gui._interrupt()
+    elif exit_path == "New Chat":
+        gui.bridge.is_running = False
+        gui.bridge.new_session.return_value = True
+        gui._new_chat()
+    else:
+        gui.bridge.is_running = False
+        from gui import app
+        monkeypatch.setattr(app, "unregister_listener", lambda fn: None)
+        gui._on_close()
+
+    assert gui.root.clock_ticks() == [] and gui._turn_clock_id is None
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("exit_path", ["reply done", "error", "Stop"])
+def test_gui_status_bar_clock_runs_with_the_reply(monkeypatch, exit_path):
+    from types import SimpleNamespace
+    from gui import app
+
+    now = [500.0]
+    monkeypatch.setattr(app, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    gui = _replying_gui(monkeypatch)
+    assert gui.status_bar.set_activity.call_count == 1          # from the start, with its clock
+    gui._on_stream_delta("The answer")                          # the line is done now
+
+    now[0] += 65.4                                              # the turn's clock is shown
+    gui.root.run(gui.root.clock_ticks()[0])
+    assert abs(gui.status_bar.set_elapsed.call_args.args[0] - 65.4) < 1e-6
+
+    {"reply done": lambda: gui._on_complete({}), "error": lambda: gui._on_error("boom"),
+     "Stop": gui._interrupt}[exit_path]()
+    assert gui.status_bar.set_elapsed.call_args.args == (None,)
+
+
+@pytest.mark.needs_core
+def test_gui_status_bar_says_what_the_reply_line_says(monkeypatch):
+    from gui import i18n
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    gui = _replying_gui(monkeypatch)
+    bar = gui.status_bar
+
+    def agree(text, tool=False):
+        bubble = _FakeReplyBubble.made[-1]
+        args, kwargs = bar.set_activity.call_args
+        assert args[0] == text and kwargs == {"tool": tool}
+        assert bubble.activity.header().startswith(text)        # the same state
+        assert abs(args[1] - bubble.activity._seconds()) < 1     # and the same clock
+
+    agree("Waiting for the model...")
+    gui._on_thinking("(¬‿¬) pondering...")                       # the core's spinner phrase
+    gui._on_thinking("")
+    bar.set_thinking.assert_not_called()
+    bar.set_ready.assert_not_called()
+    agree("Waiting for the model...")
+    gui._on_reasoning("Need the GPU list.")
+    agree("Thinking...")                                          # no thinking tail
+    gui._on_tool_call("gpu_info", "{}")
+    agree("Running gpu_info...", tool=True)
+    gui._on_step(2, ["gpu_info"])
+    agree("Waiting for the model...")
+    gui.root.run(gui.root.clock_ticks()[0])
+    agree("Waiting for the model...")
+
+
+def _bridged_gui(monkeypatch):
+    """A HermesGUI wired (as in __init__) to a real AgentBridge whose turns
+    run on real worker threads; Tk's after() queue is run by hand."""
+    from unittest.mock import Mock
+    from gui import app
+    from gui.agent_bridge import AgentBridge
+
+    _FakeReplyBubble.made = []
+    monkeypatch.setattr(app, "StreamingBubble", _FakeReplyBubble)
+    monkeypatch.setattr(app, "ToolCallWidget", Mock())
+    bridge = object.__new__(AgentBridge)
+    gui = _gui_with_bridge(bridge)
+    gui.__dict__.update(root=_FakeRoot(), _stream_bubble=None, _has_streamed=False,
+                        _turn_clock_id=None, _show_thinking=True, _thinking_open=False,
+                        _attached_images=[], _update_attach_preview=Mock(),
+                        msg_canvas=Mock())
+    bridge.__dict__.update(gui._bridge_callbacks(), root=gui.root, conversation_history=[],
+                           session_id=None, get_token_usage=lambda: {})
+    gui.input_text.get.return_value = "hi"
+    return gui, bridge
+
+
+def _deliver_posted(root):
+    """Run what the worker posted (after(0, ...)), in order."""
+    while True:
+        posted = sorted(i for i, (ms, _fn) in root.pending.items() if ms == 0)
+        if not posted:
+            return
+        root.run(posted[0])
+
+
+def _late_callbacks(bridge):
+    """Everything a worker can post for its turn."""
+    bridge._on_thinking("(¬‿¬) pondering...")
+    bridge._on_reasoning("late thoughts")
+    bridge._on_tool_progress("tool.started", "gpu_info", None, {})
+    bridge._on_step(3, ["gpu_info"])
+    bridge._on_stream_delta(" late token")
+    bridge._on_stream_delta(None)
+    bridge._post(bridge.on_response, "A late full answer")
+    bridge._post(bridge.on_error, "Error: late")
+    bridge._post(bridge.on_complete, {})
+
+
+@pytest.mark.needs_core
+def test_gui_stop_then_late_callbacks_of_the_stopped_turn_change_nothing(monkeypatch):
+    import threading
+    from gui import app
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    started, go = threading.Event(), threading.Event()
+
+    def stopped_turn(message, image_paths):       # the core, on the worker thread
+        bridge._on_stream_delta("Partial")
+        started.set()
+        go.wait(10)                               # still running when Stop is pressed
+        _late_callbacks(bridge)
+
+    bridge._run_agent_turn = stopped_turn
+    gui._send()
+    assert started.wait(10)
+    _deliver_posted(gui.root)
+    bubble, = _FakeReplyBubble.made
+    assert bubble.text == "Partial"
+
+    gui._interrupt()
+    assert bubble.finalized                       # the partial answer stays as it is
+    gui._send()                                   # refused: the stopped worker still runs
+    assert len(_FakeReplyBubble.made) == 1 and bridge.is_running
+    bar = gui.status_bar
+    bar.set_ready.assert_called()
+    bar.reset_mock()
+    gui._add_msg.reset_mock()
+
+    go.set()
+    bridge._agent_thread.join(10)
+    assert not bridge.is_running                  # the bridge's own state: reset by its worker
+    _deliver_posted(gui.root)
+
+    assert bar.method_calls == []                 # still Ready: no Thinking, no error
+    gui._add_msg.assert_not_called()              # no late answer or error bubble
+    app.ToolCallWidget.assert_not_called()
+    assert len(_FakeReplyBubble.made) == 1 and bubble.text == "Partial"
+    gui.sidebar.refresh_sessions.assert_called_once()   # the worker's end still refreshes
+    gui._send()                                   # and the next message can be sent
+    assert len(_FakeReplyBubble.made) == 2 and gui._current_turn == 2
+    bridge._agent_thread.join(10)
+
+
+@pytest.mark.needs_core
+def test_gui_an_old_turns_end_delivered_after_a_new_send_leaves_the_new_turn_alone(monkeypatch):
+    import threading
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    go = threading.Event()
+
+    def first_turn(message, image_paths):
+        bridge._on_stream_delta("First")
+        go.wait(10)
+        _late_callbacks(bridge)
+
+    bridge._run_agent_turn = first_turn
+    gui._send()
+    gui._interrupt()
+    go.set()
+    bridge._agent_thread.join(10)                 # its end is posted, not yet delivered
+
+    second_go = threading.Event()
+
+    def second_turn(message, image_paths):
+        second_go.wait(10)
+        bridge._on_stream_delta("Second answer")
+        bridge._on_stream_delta(None)
+        bridge._post(bridge.on_response, "Second answer")
+        bridge._post(bridge.on_complete, {})
+
+    bridge._run_agent_turn = second_turn
+    gui._send()                                   # the new turn starts first
+    new = _FakeReplyBubble.made[-1]
+    clock = gui._turn_clock_id
+    gui._add_msg.reset_mock()                     # the user's messages and the Stop notice
+    _deliver_posted(gui.root)                   # then the old turn's callbacks arrive
+
+    assert gui._stream_bubble is new and not new.finalized and not new.destroyed
+    assert gui._turn_clock_id == clock and gui._current_turn == 2
+    assert new.text == "" and gui.root.clock_ticks() == [clock]
+    gui._add_msg.assert_not_called()
+
+    second_go.set()
+    bridge._agent_thread.join(10)
+    _deliver_posted(gui.root)                     # the new turn completes normally
+    assert new.text == "Second answer" and new.finalized
+    assert gui._turn_clock_id is None and gui._stream_bubble is None
+    gui.status_bar.set_ready.assert_called()
+
+
+@pytest.mark.needs_core
+def test_gui_loading_a_session_before_a_turns_end_arrives_leaves_send_working(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from gui import app
+
+    gui, bridge = _bridged_gui(monkeypatch)
+
+    def finished_turn(message, image_paths):
+        bridge._on_stream_delta("Answer")
+        bridge._post(bridge.on_response, "Answer")
+        bridge._post(bridge.on_complete, {})
+
+    bridge._run_agent_turn = finished_turn
+    gui._send()
+    bridge._agent_thread.join(10)                 # done; its end is still queued in Tk
+    old, = _FakeReplyBubble.made
+
+    @contextmanager
+    def store():
+        yield SimpleNamespace(conversation=lambda sid: [{"role": "user", "content": "old"}])
+
+    monkeypatch.setattr(app, "open_store", store)
+    bridge.resume_session = lambda sid, messages: True
+    gui.sidebar._sessions_data = []
+    gui.msg_frame.winfo_children.return_value = [old]   # what the chat area holds
+    gui._on_session_select("stored")
+    assert old.destroyed and gui._stream_bubble is None
+    _deliver_posted(gui.root)                     # the old end: dropped
+
+    bridge._run_agent_turn = lambda message, image_paths: None
+    gui._send()                                   # starts normally
+    assert len(_FakeReplyBubble.made) == 2 and bridge._turn == 2
+    assert not old.finalized
+    bridge._agent_thread.join(10)
+
+    # A leftover reference to a destroyed bubble is not finalized either.
+    gui._stream_bubble = gone = _FakeReplyBubble(None)
+    gone.destroyed = True
+    gui._cleanup_stream_bubble()
+    assert not gone.finalized and gui._stream_bubble is None
+
+
+@pytest.mark.needs_core
+def test_gui_a_worker_that_cannot_start_ends_its_turn(monkeypatch):
+    import threading
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    bridge._error_text = lambda error: f"Error: {error}"
+    start, fails = threading.Thread.start, [RuntimeError("can't start new thread")]
+
+    def start_once_failing(thread):
+        if fails:
+            raise fails.pop()
+        return start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_once_failing)
+    gui._send()
+    assert not bridge.is_running                  # Send and session changes are not blocked
+    _deliver_posted(gui.root)
+    gui._add_msg.assert_any_call("Error: can't start new thread", "error")
+    gui.status_bar.set_error.assert_called_once()
+    gui.sidebar.refresh_sessions.assert_called_once()   # the worker-done signal
+    assert gui._current_turn is None and gui._turn_clock_id is None
+
+    bridge._run_agent_turn = lambda message, image_paths: None
+    gui._send()                                   # the next Send starts a worker
+    bridge._agent_thread.join(10)
+    assert bridge._turn == 2 and len(_FakeReplyBubble.made) == 2
+
+
+@pytest.mark.needs_core
+def test_gui_an_error_of_the_current_turn_is_still_shown(monkeypatch):
+    gui, bridge = _bridged_gui(monkeypatch)
+
+    def failing_turn(message, image_paths):
+        raise RuntimeError("provider offline")
+
+    bridge._run_agent_turn = failing_turn
+    bridge._error_text = lambda error: f"Error: {error}"
+    gui._send()
+    bridge._agent_thread.join(10)
+    _deliver_posted(gui.root)
+
+    gui._add_msg.assert_any_call("Error: provider offline", "error")
+    gui.status_bar.set_error.assert_called_once()
+    assert gui._current_turn is None and gui._turn_clock_id is None
+
+
+@pytest.mark.needs_core
+def test_gui_inline_image_is_loaded_in_the_worker_and_shown_on_the_tk_thread(monkeypatch):
+    import io
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from gui import app, theme
+
+    if not app.HAS_PIL:
+        pytest.skip("requires Pillow")
+    png = io.BytesIO()
+    app.Image.new("RGB", (800, 200), "red").save(png, "PNG")
+    monkeypatch.setattr(app.httpx, "get", lambda *a, **k: SimpleNamespace(
+        content=png.getvalue(), raise_for_status=lambda: None))
+    made_on = []
+    monkeypatch.setattr(app.ImageTk, "PhotoImage",
+                        lambda img: made_on.append((threading.current_thread(), img.size)))
+    monkeypatch.setattr(app.tk, "Label", Mock())
+    monkeypatch.setattr(theme, "Tooltip", Mock())
+    posted = []
+    frame = SimpleNamespace(after=lambda ms, fn: posted.append(fn))
+    bubble = object.__new__(app.MessageBubble)
+    bubble._images = []
+
+    worker = threading.Thread(target=bubble._load_image,
+                              args=(frame, Mock(), "http://x/a.png", "alt", "#000"))
+    worker.start()
+    worker.join()
+    assert made_on == [] and len(posted) == 1          # nothing Tk made in the worker
+    posted[0]()                                         # what Tk runs on its own thread
+    assert made_on == [(threading.current_thread(), (400, 100))]   # resized in the worker
+    assert len(bubble._images) == 1
+
+
+def test_status_bar_clock_text():
+    from types import SimpleNamespace
+    from gui import app
+
+    shown = {}
+    bar = SimpleNamespace(clock_lbl=SimpleNamespace(configure=lambda **kw: shown.update(kw)))
+    app.StatusBar.set_elapsed(bar, 65.4)
+    assert shown["text"] == "1:05"
+    app.StatusBar.set_elapsed(bar, None)
+    assert shown["text"] == ""
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubble_follows_waiting_thinking_tool_and_answer(monkeypatch):
+    from gui import i18n
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    gui = _replying_gui(monkeypatch, local=True, history=())
+    first, = _FakeReplyBubble.made
+    assert first.activity.first_turn and first.activity.state == "waiting"
+
+    gui._on_reasoning("Need the GPU list.")
+    assert first.activity.state == "thinking"
+    assert "Need the GPU list." in first.activity.header()
+
+    gui._on_tool_call("gpu_info", "{}")               # thinking kept, a new segment runs the tool
+    assert first.finalized and not first.destroyed
+    second = _FakeReplyBubble.made[-1]
+    assert second.activity.header().startswith("Running gpu_info...")
+    gui._on_step(2, ["gpu_info"])                      # the model is called again
+    assert second.activity.state == "waiting" and not second.activity.first_turn
+    gui._on_stream_delta("Your RTX 3060")
+    assert second.activity.state == "done"
+
+
+@pytest.mark.needs_core
+def test_gui_the_first_turn_of_a_session_gets_the_note_for_any_provider(monkeypatch):
+    _replying_gui(monkeypatch, local=True, history=[{"role": "user", "content": "x"}])
+    assert not _FakeReplyBubble.made[-1].activity.first_turn     # a later turn
+    for local in (True, False):                                   # local or cloud
+        _replying_gui(monkeypatch, local=local, history=())
+        assert _FakeReplyBubble.made[-1].activity.first_turn
+
+
+@pytest.mark.needs_core
+def test_gui_thinking_choices_are_remembered(monkeypatch):
+    saved = {}
+    from gui import app
+    monkeypatch.setattr(app, "save_gui_setting", lambda k, v: saved.__setitem__(k, v))
+    gui = _replying_gui(monkeypatch)
+    gui._build_menu_items = lambda: None
+
+    _FakeReplyBubble.made[-1].on_thinking_toggle(True)   # the user opens the tab
+    assert saved == {"thinking_open": True} and gui._thinking_open is True
+    gui._toggle_show_thinking()
+    assert saved["show_thinking"] is False
+
+    gui.bridge.is_running = False
+    gui._on_complete({})
+    gui._send()                                          # the next reply uses both
+    bubble = _FakeReplyBubble.made[-1]
+    assert bubble.thinking_open is True and bubble.activity.keep_thinking is False
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubble_activity_line_in_real_tk(monkeypatch):
+    import tkinter as tk
+    from gui import app, i18n
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    try:
+        toggles = []
+        bubble = app.StreamingBubble(root, ReplyActivity(), False, toggles.append)
+        bubble.pack()
+        view = bubble._activity_view
+        assert view._label.cget("text").startswith("Waiting for the model... 0:0")
+        for word in ["Let me ", "check ", "the ", "cards."] * 50:   # many tokens, one refresh
+            bubble.add_thinking(word)
+        assert bubble._refresh_id is not None
+        bubble.refresh_activity()
+        assert view._label.cget("text").startswith("▸ Thinking... 0:0")
+        assert view._text is None                         # closed: no thinking pane
+        view.toggle()
+        assert toggles == [True] and view._text.get("1.0", "end-1c").endswith("the cards.")
+        bubble.add_thinking(" More.")
+        bubble.refresh_activity()
+        assert view._text.get("1.0", "end-1c").endswith("cards. More.")
+        bubble.append_text("Answer")
+        assert view._label.cget("text").startswith("▾ Thought for ")
+        bubble.finalize()
+        assert bubble._body.get("1.0", "end-1c") == "Answer"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_fit_note_follows_model_gpu_and_context(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from gui import app, i18n
+    from portable_hermes import lmstudio_gpu as gpu_place
+
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    bar = object.__new__(app.Sidebar)
+    shown = {}
+    label = Mock()
+    label.configure.side_effect = lambda **kw: shown.update(kw)
+    label.pack.side_effect = lambda **kw: shown.update(packed=True)
+    label.pack_forget.side_effect = lambda: shown.update(packed=False)
+    ctx = Mock(get=lambda: 65536)
+    bar.__dict__.update(
+        _fit_hint_lbl=label, _ctx_var=ctx, _gpu_combo=SimpleNamespace(master="gpu row"),
+        _gpus=[gpu_place.NvidiaGpu(0, "RTX 3060", 12288), gpu_place.NvidiaGpu(1, "RTX 3090", 24576)],
+        _gpu_label_to_placement={"3090": "gpu:1", "split": "split"},
+        _gpu_var=Mock(get=lambda: "3090"),
+        _model_sizes={"qwen3.8-27b": 16285824272}, model_var=Mock(get=lambda: "qwen3.8-27b"))
+
+    bar._save_local_settings()                       # what every local control calls
+    assert shown["packed"] and shown["text"].startswith("This model may not fit")
+    label.pack.assert_called_with(fill="x", after="gpu row")
+
+    bar._gpu_var.get = lambda: "split"
+    bar._save_local_settings()
+    assert shown == {"text": "", "packed": False}
+
+    bar._gpu_var.get = lambda: "3090"
+    ctx.get = lambda: "not a number"                 # typed text in the Ctx box
+    bar._save_local_settings()
+    assert shown["packed"] is False
+
+
+@pytest.mark.needs_core
+def test_gui_a_reply_without_a_line_keeps_no_activity_widget(monkeypatch):
+    import tkinter as tk
+    from gui import app, i18n
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    monkeypatch.setattr(i18n, "_current_language", "en")
+
+    def views(widget):
+        found = [widget] if isinstance(widget, app.ReplyActivityView) else []
+        for child in widget.winfo_children():
+            found += views(child)
+        return found
+
+    try:
+        quick = app.StreamingBubble(root, ReplyActivity())
+        quick.pack(fill="x")
+        assert len(views(quick)) == 1                     # "Waiting for the model... 0:00"
+        quick.append_text("Hi.")                          # within 3 s, no thinking
+        quick.finalize()
+        quick.refresh_activity()                          # a late clock tick
+        assert views(quick) == [] and quick._activity_view is None
+
+        empty = app.StreamingBubble(root, ReplyActivity(tool="gpu_info"))
+        view = empty._activity_view
+        assert not empty.has_content()
+        empty.destroy()                                   # what the GUI does with it
+        assert not view.winfo_exists()
+
+        now = [0.0]
+        slow = app.StreamingBubble(root, ReplyActivity(now=lambda: now[0]))
+        now[0] = 42
+        slow.append_text("Hi.")
+        slow.finalize()
+        kept, = views(slow)
+        assert kept._label.cget("text") == "Waited 42 s"
+    finally:
+        root.destroy()
+
+
+def _run_queued_scrolls(gui):
+    """Run the delayed scrolls now (the 10 ms after() calls)."""
+    for after_id in [i for i, (ms, _fn) in gui.root.pending.items() if ms == 10]:
+        gui.root.run(after_id)
+
+
+@pytest.mark.needs_core
+def test_gui_a_queued_scroll_rechecks_that_the_user_still_follows(monkeypatch):
+    gui = _replying_gui(monkeypatch)
+    canvas = gui.msg_canvas
+    _run_queued_scrolls(gui)
+    canvas.yview.return_value = (0.7, 1.0)
+
+    def queued():
+        return [ms for ms, _fn in gui.root.pending.values() if ms == 10]
+
+    def moved_on_run():
+        canvas.yview_moveto.reset_mock()
+        _run_queued_scrolls(gui)
+        return canvas.yview_moveto.call_args_list == [((1.0,),)]
+
+    for token in ("a", "b", "c"):
+        gui._on_stream_delta(token)
+    assert queued() == [10]                            # one pending scroll, not one per token
+    assert moved_on_run()
+
+    gui._on_stream_delta("d")                          # queued while following...
+    canvas.yview.return_value = (0.2, 0.6)             # ...then the user scrolls up
+    gui._note_user_scroll()
+    assert not moved_on_run()                          # it does not pull them down
+
+    from unittest.mock import Mock
+    from gui import app
+    monkeypatch.setattr(app, "MessageBubble", Mock())
+    add_msg = app.HermesGUI._add_msg                   # the fixture stubs gui._add_msg
+    add_msg(gui, "Wait for this reply to finish first.", "system")   # a refusal notice
+    assert not moved_on_run()
+    add_msg(gui, "my next question", "user")           # their own message always shows
+    assert moved_on_run() and gui._follow_reply
+
+
+@pytest.mark.needs_core
+def test_gui_a_running_reply_stays_in_view_unless_the_user_scrolled_up(monkeypatch):
+    gui = _replying_gui(monkeypatch)
+    canvas = gui.msg_canvas
+    canvas.yview.return_value = (0.7, 1.0)
+
+    def followed():
+        canvas.yview_moveto.reset_mock()
+        gui._on_msg_frame_resized()                  # the pane or the answer grew
+        return canvas.yview_moveto.call_args_list == [((1.0,),)]
+
+    def scrolls_queued():
+        return [ms for ms, _fn in gui.root.pending.values() if ms == 10]
+
+    assert followed()
+    canvas.yview.return_value = (0.2, 0.6)           # the user scrolls up to read
+    gui._note_user_scroll()
+    assert not followed()
+    _run_queued_scrolls(gui)
+    gui._on_stream_delta("more answer")
+    gui._on_tool_call("gpu_info", "{}")
+    assert scrolls_queued() == []                     # not pulled back down
+    canvas.yview.return_value = (0.6, 1.0)           # back at the bottom: follow again
+    gui._note_user_scroll()
+    assert followed()
+    gui._on_stream_delta("more")
+    assert scrolls_queued()
+
+    canvas.yview.return_value = (0.2, 0.6)
+    gui._note_user_scroll()
+    gui.bridge.is_running = False
+    gui._on_complete({})
+    assert gui._stream_bubble is None and not followed()   # no reply: nothing to follow
+    gui._send()                                      # a new message: follow its reply
+    assert followed()
+
+
+@pytest.mark.needs_core
+def test_gui_open_thinking_pane_shows_its_newest_line_then_lets_the_user_scroll_back():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.geometry("900x700+-3000+-3000")
+    root.update()
+    try:
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        for i in range(40):
+            bubble.add_thinking(f"thinking line {i}\n")
+            if i % 5 == 4:
+                bubble.refresh_activity()
+                root.update()
+                text = bubble._activity_view._text
+                assert text.yview()[1] == 1.0          # the newest line is in view
+        assert int(text.cget("height")) == 12          # the pane's maximum height
+        bubble.append_text("The answer.")
+        bubble.finalize()
+        text.yview_moveto(0.0)                         # the user scrolls back afterwards
+        bubble.refresh_activity()                      # a later clock tick
+        root.update()
+        assert text.yview()[0] == 0.0
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_open_thinking_pane_is_clearly_secondary_to_the_answer():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+    from gui.theme import C, FONTS, S
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        bubble.add_thinking("Two lines.")
+        bubble.refresh_activity()
+        bubble.append_text("The answer.")
+        view = bubble._activity_view
+        from tkinter import font as tkfont
+        actual = tkfont.Font(root=root, font=view._label.cget("font")).actual()
+        assert actual == tkfont.Font(root=root, font=FONTS["body"]).actual()   # normal size
+        text, pane = view._text, view._pane
+        assert text.cget("fg") == C["text_disabled"] != bubble._body.cget("fg")
+        assert int(text.cget("padx")) == S(8)                            # indented
+        bar = pane.winfo_children()[0]
+        assert bar.cget("bg") == C["border_dark"] and int(bar.cget("width")) == S(2)
+        assert pane.pack_info()["side"] == "top" and bar.pack_info()["side"] == "left"
+        pady = pane.pack_info()["pady"]
+        below = int(pady[1]) if isinstance(pady, tuple) else int(str(pady).split()[-1])
+        assert below == S(8)                                             # space before the answer
+    finally:
+        root.destroy()
 
 
 @pytest.mark.needs_core

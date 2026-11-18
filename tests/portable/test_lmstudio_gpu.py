@@ -247,3 +247,19 @@ def test_sdk_sends_the_planned_split_and_cpu_settings(owner):
 
     pinned = sent(g.plan("gpu:1", nvidia, survey))
     assert pinned["load.gpuSplitConfig"]["disabledGpus"] == [1]
+
+
+def test_fit_estimate_against_loads_measured_on_the_owners_pc():
+    """file size x 1.1 + 0.1 MiB per context token, against 90 % of the card."""
+    card12, card24 = g.NvidiaGpu(0, "RTX 3060", 12288), g.NvidiaGpu(1, "RTX 3090", 24576)
+    qwen27, deepseek8 = 16285824272, 6725898304          # Q4_K_S 27B, Q6_K 8B file sizes
+    assert round(g.estimated_load_mib(qwen27, 65536)) == 23638       # measured 22.6 GB
+    assert round(g.estimated_load_mib(deepseek8, 65536)) == 13609    # measured 11.6 GB
+    assert g.may_not_fit(qwen27, 65536, card24)         # measured: load > 5 min
+    assert g.may_not_fit(deepseek8, 65536, card12)      # measured: load > 5 min
+    assert not g.may_not_fit(deepseek8, 65536, card24)  # measured: fast
+    assert not g.may_not_fit(qwen27, 16384, card24)
+    for size, ctx in ((None, 65536), (0, 65536), ("x", 65536), (qwen27, None), (qwen27, 0)):
+        assert g.estimated_load_mib(size, ctx) is None
+        assert not g.may_not_fit(size, ctx, card24)
+    assert not g.may_not_fit(qwen27, 65536, g.NvidiaGpu(2, "unknown", 0))
