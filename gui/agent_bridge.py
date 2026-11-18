@@ -836,7 +836,9 @@ You are running on **{os_name} {os_release}**.
         # End old session in database
         if self._session_db and self.session_id:
             try:
-                self._session_db.end_session(self.session_id, reason="new_chat")
+                # Positional: the parameter is ``end_reason`` (not ``reason``)
+                # in the current core and in the last-known-good one.
+                self._session_db.end_session(self.session_id, "new_chat")
             except Exception:
                 pass
 

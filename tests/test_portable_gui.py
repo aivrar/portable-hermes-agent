@@ -532,3 +532,27 @@ def test_gui_sidebar_auto_load_keeps_model_id_when_instance_matches_or_load_fail
     failed._on_auto_load_complete("gemma", False, "boom", None)
     failed.on_model_change.assert_called_once_with("gemma")
     failed.on_auto_load.assert_called_once_with("gemma", False, "boom")
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_ends_the_previous_session_in_the_database():
+    from gui.agent_bridge import AgentBridge
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session(session_id="gui_old", source="gui", model="m")
+        bridge = object.__new__(AgentBridge)
+        bridge.agent = None
+        bridge.conversation_history = [{"role": "user", "content": "hi"}]
+        bridge.session_id = "gui_old"
+        bridge._session_db = db
+
+        bridge.new_session()
+
+        row = db.get_session("gui_old")
+        assert row["end_reason"] == "new_chat"
+        assert row["ended_at"]
+        assert bridge.session_id is None
+    finally:
+        db.close()
