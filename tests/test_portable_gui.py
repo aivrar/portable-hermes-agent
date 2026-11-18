@@ -2298,6 +2298,34 @@ def test_gui_loading_a_session_before_a_turns_end_arrives_leaves_send_working(mo
 
 
 @pytest.mark.needs_core
+def test_gui_a_worker_that_cannot_start_ends_its_turn(monkeypatch):
+    import threading
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    bridge._error_text = lambda error: f"Error: {error}"
+    start, fails = threading.Thread.start, [RuntimeError("can't start new thread")]
+
+    def start_once_failing(thread):
+        if fails:
+            raise fails.pop()
+        return start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_once_failing)
+    gui._send()
+    assert not bridge.is_running                  # Send and session changes are not blocked
+    _deliver_posted(gui.root)
+    gui._add_msg.assert_any_call("Error: can't start new thread", "error")
+    gui.status_bar.set_error.assert_called_once()
+    gui.sidebar.refresh_sessions.assert_called_once()   # the worker-done signal
+    assert gui._current_turn is None and gui._turn_clock_id is None
+
+    bridge._run_agent_turn = lambda message, image_paths: None
+    gui._send()                                   # the next Send starts a worker
+    bridge._agent_thread.join(10)
+    assert bridge._turn == 2 and len(_FakeReplyBubble.made) == 2
+
+
+@pytest.mark.needs_core
 def test_gui_an_error_of_the_current_turn_is_still_shown(monkeypatch):
     gui, bridge = _bridged_gui(monkeypatch)
 

@@ -625,10 +625,15 @@ You are running on **{os_name} {os_release}**.
         self.is_running = True
         self._interrupted = False
         self._turn += 1
-        self._agent_thread = threading.Thread(
-            target=self._run_agent, args=(message, image_paths), daemon=True
-        )
-        self._agent_thread.start()
+        try:
+            self._agent_thread = threading.Thread(
+                target=self._run_agent, args=(message, image_paths), daemon=True
+            )
+            self._agent_thread.start()
+        except Exception as e:      # no worker: end the turn here, as a worker would
+            self._post(self.on_error, self._error_text(e))
+            self._end_turn()
+            self._post(self.on_worker_done, any_turn=True)
         return self._turn
 
     @staticmethod
