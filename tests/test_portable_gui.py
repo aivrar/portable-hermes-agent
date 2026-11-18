@@ -501,8 +501,37 @@ def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
 
     assert shown == "Hello world\nline two"
     assert height == 2
-    # The raw stream stays available to the caller unchanged.
-    assert raw == "".join(chunks)
+    assert raw == shown                  # get_text (copy) returns what is displayed
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_trims_only_its_outer_whitespace():
+    """Only leading blank lines and trailing whitespace go; everything
+    between shows exactly, CRLF as LF, however the text is split."""
+    import tkinter as tk
+    from gui import app
+
+    text = "\r\n \n  first\r\n\r\n\tmid  \r\n \n\n  last line\t \r\n\r\n  "
+    expected = "  first\n\n\tmid  \n \n\n  last line"
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        splits = [[text], list(text)] + [[text[:c], text[c:]] for c in range(len(text) + 1)]
+        for chunks in splits:
+            bubble = app.StreamingBubble(root)
+            for chunk in chunks:
+                bubble.append_text(chunk)
+            streamed = bubble._body.get("1.0", "end-1c")
+            assert "\r" not in streamed and streamed.rstrip() == expected, chunks
+            bubble.finalize()
+            assert bubble._body.get("1.0", "end-1c") == expected, chunks
+            assert bubble.get_text() == expected
+            bubble.destroy()
+    finally:
+        root.destroy()
 
 
 @pytest.mark.needs_core
@@ -604,7 +633,7 @@ def test_gui_long_streams_cost_about_linear_time():
             bubble.append_text("word\n" if i % newline_every == newline_every - 1 else "word ")
         bubble.finalize()
         seconds = time.perf_counter() - started
-        assert len(bubble.get_text()) == 5 * n
+        assert len(bubble.get_text()) == 5 * n - 1      # the final space is trimmed
         assert bubble._activity_view._text.get("1.0", "end-1c") == "".join(
             "think " if i % 15 else "think\n" for i in range(n))
         bubble.destroy()

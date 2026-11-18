@@ -355,8 +355,8 @@ class StreamingBubble(tk.Frame):
         super().__init__(parent, bg=C["bg_main"])
         # Text arrives in many small chunks: kept in lists and joined only
         # when the whole text is needed, never grown per token.
-        self._received = []   # every chunk, as received
-        self._leading = ""    # whitespace held before the first visible character
+        self._cr = ""         # a chunk's final \r, held: it may be half a CRLF
+        self._leading = []    # whitespace chunks held before the first visible character
         self._shown = []      # the chunks given to the body, markers included
         self._line = []       # the chunks of its last, unfinished line
         self._line_len = 0
@@ -416,17 +416,23 @@ class StreamingBubble(tk.Frame):
         """Append a text delta to the streaming bubble."""
         if text is None:
             return
-        self._received.append(text)
+        # CRLF shows as LF, the same while streaming and once finalized.
+        text = self._cr + text
+        self._cr = "\r" if text.endswith("\r") else ""
+        text = text[:len(text) - len(self._cr)].replace("\r\n", "\n")
+        if not text:
+            return
         if self._leading is not None:
             # Models often open a reply (or a segment after a tool call) with
             # blank lines: hold whitespace until the first visible character,
             # then drop the blank lines but keep that line's own indentation.
-            self._leading += text
-            content = self._leading.lstrip()
-            if not content:
+            if text.isspace():
+                self._leading.append(text)
                 return
-            blank = self._leading[:len(self._leading) - len(content)]
-            text = self._leading[blank.rfind("\n") + 1:]
+            held = "".join(self._leading) + text          # joined once
+            content = held.lstrip()
+            blank = held[:len(held) - len(content)]
+            text = held[blank.rfind("\n") + 1:]
             self._leading = None
             if self.activity is not None:          # the answer starts
                 self.activity.answer_started()
@@ -531,10 +537,13 @@ class StreamingBubble(tk.Frame):
         self._body.configure(height=min(lines, 30))
 
     def get_text(self) -> str:
-        return "".join(self._received)
+        """The reply as finalize() displays it: CRLF as LF, without the
+        leading blank lines and the trailing whitespace; nothing else changed."""
+        return "".join(self._shown).rstrip()
 
     def finalize(self):
-        """Stop cursor blink, drop trailing blank lines, lock the text, remove cursor."""
+        """Stop the cursor blink, show the reply as get_text() returns it
+        (only its outer whitespace trimmed), lock the text."""
         if self.activity is not None:
             self.activity.finish()
             self.refresh_activity()
@@ -547,12 +556,7 @@ class StreamingBubble(tk.Frame):
         # One redraw of the whole reply: what stays is spans(full text),
         # whatever the preview showed while it streamed.
         self._body.delete("1.0", "end")
-        _insert_styled(self._body, spans("".join(self._shown)))
-        while True:  # char by char: safe whatever Tk's index unit for non-BMP text
-            last = self._body.get("end-2c", "end-1c")
-            if not last or not last.isspace():
-                break
-            self._body.delete("end-2c", "end-1c")
+        _insert_styled(self._body, spans(self.get_text()))
         self._tall = False
         self._fit_height()
         if self._leading is not None:
