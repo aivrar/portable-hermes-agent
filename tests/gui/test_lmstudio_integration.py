@@ -16,7 +16,7 @@ from gui import lm_studio as lm  # noqa: E402
 
 
 def test_context_selection_obeys_core_floor():
-    panel = SimpleNamespace(ctx_var=Mock(), ctx_label=Mock())
+    panel = SimpleNamespace(ctx_var=Mock(), ctx_label=Mock(), _update_fit_hint=Mock())
     lm.LMStudioPanel._on_ctx_change(panel, "8192")
     panel.ctx_var.set.assert_called_once_with(lm.MINIMUM_CONTEXT_LENGTH)
     assert lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
@@ -110,11 +110,77 @@ def test_real_http_auth_fallback_and_metadata(endpoint, envelope):
         assert models[0]["state"] == "loaded"
         assert all(auth == "Bearer test-token" for _, auth in requests)
         assert requests[0][0] == "/api/v0/models"
-        assert requests[-1][0] == endpoint
+        paths = [path for path, _ in requests]
+        # The list stops at the endpoint that answered; only the file-size
+        # lookup (these rows have no sizes) may follow it.
+        assert paths[paths.index(endpoint) + 1:] in ([], ["/api/v1/models"])
     finally:
         server.shutdown()
         server.server_close()
         worker.join(timeout=5)
+
+
+def test_model_rows_get_file_sizes_from_the_v1_list():
+    """/api/v0/models (tried first) has no sizes; /api/v1/models does
+    (as LM Studio answered on the owner's PC)."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            body = {"/api/v0/models": {"data": [
+                        {"id": "qwen3.8-27b", "max_context_length": 262144, "state": "not-loaded"},
+                        {"id": "unsized", "state": "not-loaded"}]},
+                    "/api/v1/models": {"models": [
+                        {"key": "qwen3.8-27b", "size_bytes": 16285824272,
+                         "quantization": {"name": "Q4_K_S"}},
+                        {"key": "unsized", "size_bytes": None}]}}.get(self.path)
+            self.send_response(200 if body else 404)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body or {}).encode())
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        client = lm.LMStudioClient(f"http://127.0.0.1:{server.server_port}/v1", "")
+        rows = {r["id"]: r for r in client.list_models_api()}
+        assert rows["qwen3.8-27b"]["size_bytes"] == 16285824272
+        assert rows["unsized"]["size_bytes"] is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_fit_note_only_for_one_chosen_card_that_may_be_too_small(monkeypatch):
+    from gui import i18n
+    from portable_hermes import lmstudio_gpu as gpu_place
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    card12 = gpu_place.NvidiaGpu(0, "RTX 3060", 12288)
+    card24 = gpu_place.NvidiaGpu(1, "RTX 3090", 24576)
+    both = [card12, card24]
+    qwen27, deepseek8 = 16285824272, 6725898304          # file sizes, owner's PC
+
+    note = lm.gpu_fit_note("gpu:1", both, qwen27, 65536)
+    assert note == ("This model may not fit on this card with this context. Loading can take "
+                    "several minutes. Try 'All GPUs (largest first)'.")
+    assert lm.gpu_fit_note("gpu:0", both, deepseek8, 65536)
+    assert lm.gpu_fit_note("gpu:1", both, deepseek8, 65536) == ""     # fits on the 24 GB card
+    assert lm.gpu_fit_note("split", both, qwen27, 65536) == ""
+    assert lm.gpu_fit_note("auto", both, qwen27, 65536) == ""
+    assert lm.gpu_fit_note("cpu", both, qwen27, 65536) == ""
+    assert lm.gpu_fit_note("gpu:1", both, None, 65536) == ""          # size unknown
+    assert lm.gpu_fit_note("gpu:5", both, qwen27, 65536) == ""        # card not listed
+    # One GPU: the note, without suggesting a choice that is not offered.
+    alone = lm.gpu_fit_note("gpu:0", [card12], deepseek8, 65536)
+    assert alone and "All GPUs" not in alone
+    assert lm.gpu_fit_note("gpu:0", [card12], deepseek8, 16384) == ""  # clearly fits
+    for code, _name in i18n.SUPPORTED_LANGUAGES:
+        i18n._current_language = code
+        assert "{" not in lm.gpu_fit_note("gpu:1", both, qwen27, 65536)
 
 
 def test_sdk_uses_selected_host_and_documented_token_argument(monkeypatch):
@@ -301,7 +367,7 @@ class FakeListbox:
 
 
 def _listed_panel(ids, selected_id):
-    panel = SimpleNamespace(model_list=FakeListbox(), models=[])
+    panel = SimpleNamespace(model_list=FakeListbox(), models=[], _update_fit_hint=Mock())
     lm.LMStudioPanel._display_models(panel, [{"id": i} for i in ids])
     panel.model_list.selection_set(ids.index(selected_id))
     return panel

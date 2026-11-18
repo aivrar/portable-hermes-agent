@@ -33,7 +33,8 @@ from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
 from portable_hermes.session_store import open_store
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
-from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
+from gui.lm_studio import (LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH,
+                           gpu_fit_note)
 from gui.permissions_panel import PermissionsPanel
 from gui.permissions import load_permissions, get_permissions_summary
 from gui.i18n import (
@@ -537,6 +538,7 @@ class Sidebar(tk.Frame):
 
         # Unified model list: cloud + local
         self._lm_studio_models: List[tuple] = []  # [(id, name, note), ...]
+        self._model_sizes: Dict[str, int] = {}    # LM Studio model id -> file size
         self._all_models: List[tuple] = list(self.MODELS)
         self._model_states: Dict[str, str] = {}  # model_id -> "loaded"/"not-loaded"
 
@@ -650,6 +652,7 @@ class Sidebar(tk.Frame):
         display_values = [self._display_name(m) for m in self._all_models]
         self.model_combo["values"] = display_values
         self._select_model_in_combo(current)
+        self._update_fit_hint()
 
     def _build_local_settings(self, parent):
         """Build the compact local model settings panel."""
@@ -675,6 +678,10 @@ class Sidebar(tk.Frame):
                                         font=FONTS["small"], state="readonly", width=22)
         self._gpu_combo.pack(side="left", fill="x", expand=True)
         self._gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
+        # "May not fit on this card" note (shown only when it applies)
+        self._fit_hint_lbl = tk.Label(parent, text="", font=FONTS["small"], fg=C["warning"],
+                                      bg=C["bg_sidebar"], anchor="w", justify="left",
+                                      wraplength=S(220))
 
         # Detect GPUs in background
         def _detect_gpus():
@@ -699,7 +706,8 @@ class Sidebar(tk.Frame):
         self._ctx_var = tk.IntVar(value=DEFAULT_CONTEXT_LENGTH)
         ctx_spin = ttk.Spinbox(ctx_row, from_=MINIMUM_CONTEXT_LENGTH,
                                to=max(131072, DEFAULT_CONTEXT_LENGTH), increment=4096,
-                               textvariable=self._ctx_var, font=FONTS["small"], width=8)
+                               textvariable=self._ctx_var, font=FONTS["small"], width=8,
+                               command=self._save_local_settings)
         ctx_spin.pack(side="left")
         ctx_spin.bind("<FocusOut>", lambda e: self._save_local_settings())
         ctx_spin.bind("<Return>", lambda e: self._save_local_settings())
@@ -788,8 +796,26 @@ class Sidebar(tk.Frame):
         self._gpu_var.set(choices[placements.index(selected)][1])
 
     def _save_local_settings(self):
-        """Settings are held in UI widgets — nothing to persist."""
-        pass
+        """Settings are held in UI widgets — nothing to persist; a change may
+        change the "may not fit" note."""
+        self._update_fit_hint()
+
+    def _update_fit_hint(self):
+        """Show or hide the note under the GPU box for the chosen model, GPU
+        and context (never blocks a load)."""
+        if not hasattr(self, "_fit_hint_lbl"):
+            return
+        try:
+            ctx = int(self._ctx_var.get())
+        except (tk.TclError, ValueError):
+            ctx = 0
+        note = gpu_fit_note(self._get_gpu_placement(), self._gpus,
+                            self._model_sizes.get(self.model_var.get()), ctx)
+        self._fit_hint_lbl.configure(text=note)
+        if note:
+            self._fit_hint_lbl.pack(fill="x", after=self._gpu_combo.master)
+        else:
+            self._fit_hint_lbl.pack_forget()
 
     def _get_gpu_placement(self) -> str:
         """Placement of the GPU combobox entry: auto, cpu, split or gpu:<n>."""
@@ -859,6 +885,7 @@ class Sidebar(tk.Frame):
         def _probe():
             local_models = []
             states = {}
+            sizes = {}
             try:
                 from gui.lm_studio import LMStudioPanel, LMStudioClient
                 url = LMStudioPanel._resolve_base_url()
@@ -869,6 +896,7 @@ class Sidebar(tk.Frame):
                         if mid:
                             state = m.get("state", "unknown")
                             states[mid] = state
+                            sizes[mid] = m.get("size_bytes")
                             short = mid.split("/")[-1] if "/" in mid else mid
                             tag = "\u2713 " if state == "loaded" else ""
                             local_models.append((mid, f"{tag}{short}", "LM Studio"))
@@ -876,6 +904,7 @@ class Sidebar(tk.Frame):
                 pass
             self._lm_studio_models = local_models
             self._model_states = states
+            self._model_sizes = sizes
             self._all_models = list(self.MODELS) + local_models
             # Register local model IDs with the bridge for routing
             if self.on_local_models and local_models:
@@ -911,6 +940,7 @@ class Sidebar(tk.Frame):
 
             # Show/hide local settings panel
             self._show_local_settings(is_local)
+            self._update_fit_hint()
 
             if is_local and self._auto_load_var.get():
                 # Always load via SDK to ensure correct GPU placement,

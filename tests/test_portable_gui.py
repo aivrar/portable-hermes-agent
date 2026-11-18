@@ -1955,6 +1955,42 @@ def test_gui_reply_bubble_activity_line_in_real_tk(monkeypatch):
 
 
 @pytest.mark.needs_core
+def test_gui_sidebar_fit_note_follows_model_gpu_and_context(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from gui import app, i18n
+    from portable_hermes import lmstudio_gpu as gpu_place
+
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    bar = object.__new__(app.Sidebar)
+    shown = {}
+    label = Mock()
+    label.configure.side_effect = lambda **kw: shown.update(kw)
+    label.pack.side_effect = lambda **kw: shown.update(packed=True)
+    label.pack_forget.side_effect = lambda: shown.update(packed=False)
+    ctx = Mock(get=lambda: 65536)
+    bar.__dict__.update(
+        _fit_hint_lbl=label, _ctx_var=ctx, _gpu_combo=SimpleNamespace(master="gpu row"),
+        _gpus=[gpu_place.NvidiaGpu(0, "RTX 3060", 12288), gpu_place.NvidiaGpu(1, "RTX 3090", 24576)],
+        _gpu_label_to_placement={"3090": "gpu:1", "split": "split"},
+        _gpu_var=Mock(get=lambda: "3090"),
+        _model_sizes={"qwen3.8-27b": 16285824272}, model_var=Mock(get=lambda: "qwen3.8-27b"))
+
+    bar._save_local_settings()                       # what every local control calls
+    assert shown["packed"] and shown["text"].startswith("This model may not fit")
+    label.pack.assert_called_with(fill="x", after="gpu row")
+
+    bar._gpu_var.get = lambda: "split"
+    bar._save_local_settings()
+    assert shown == {"text": "", "packed": False}
+
+    bar._gpu_var.get = lambda: "3090"
+    ctx.get = lambda: "not a number"                 # typed text in the Ctx box
+    bar._save_local_settings()
+    assert shown["packed"] is False
+
+
+@pytest.mark.needs_core
 def test_gui_a_refusal_in_a_row_is_not_repeated_in_the_chat():
     import threading
     from unittest.mock import Mock

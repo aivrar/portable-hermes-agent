@@ -521,7 +521,10 @@ class TestLMStudioConfigAndClient(unittest.TestCase):
             self.assertEqual(models[0]["context_length"], 32768)
             self.assertEqual(models[0]["quantization"], "Q4_K_M")
             self.assertEqual(models[0]["state"], "loaded")
-            mock_get.assert_called_once()
+            # The list from /api/v0, then file sizes (v0 lists none) from /api/v1.
+            self.assertEqual([c.args[0] for c in mock_get.call_args_list],
+                             ["http://localhost:1234/api/v0/models",
+                              "http://localhost:1234/api/v1/models"])
             # Verify auth header was passed
             call_kwargs = mock_get.call_args[1]
             self.assertEqual(call_kwargs["headers"].get("Authorization"), "Bearer test-key")

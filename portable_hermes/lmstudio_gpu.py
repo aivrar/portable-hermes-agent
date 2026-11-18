@@ -188,6 +188,43 @@ def default_placement(gpus: Sequence[NvidiaGpu]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Will it fit? (a crude estimate, for a hint only)
+# ---------------------------------------------------------------------------
+
+#: The model's weights take about their file size plus 10 % on the GPU.
+WEIGHTS_FACTOR = 1.1
+#: The context (KV cache and work buffers) takes about 0.1 MiB per token
+#: (6.4 GiB for 65536). Real costs depend on the model; measured on the
+#: owner's PC at 65536 tokens: qwen3.8-27b Q4_K_S (15.2 GiB file) 22.6 GB,
+#: deepseek-r1-qwen3-8b Q6_K (6.3 GiB file) 11.6 GB.
+CONTEXT_MIB_PER_TOKEN = 0.1
+#: A card is "comfortable" up to 90 % of its memory (the desktop and LM
+#: Studio's runtime use some; above it, loads were measured to take minutes).
+COMFORTABLE_SHARE = 0.9
+
+
+def estimated_load_mib(size_bytes, context_length) -> Optional[float]:
+    """GPU memory a model with *context_length* tokens may need, in MiB
+    (None when its file size is unknown)."""
+    try:
+        size, ctx = int(size_bytes), int(context_length)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0 or ctx <= 0:
+        return None
+    return size / (1024 * 1024) * WEIGHTS_FACTOR + ctx * CONTEXT_MIB_PER_TOKEN
+
+
+def may_not_fit(size_bytes, context_length, gpu: NvidiaGpu) -> bool:
+    """True when the estimate exceeds the comfortable share of *gpu*'s memory
+    (False when anything is unknown: no hint without numbers)."""
+    needed = estimated_load_mib(size_bytes, context_length)
+    if needed is None or not gpu.memory_mib:
+        return False
+    return needed > gpu.memory_mib * COMFORTABLE_SHARE
+
+
+# ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
 
