@@ -76,6 +76,34 @@ def test_the_first_model_call_does_not_reset_the_wait():
     assert activity.header() == "Waiting for the model... 0:10"
 
 
+def test_waiting_and_thinking_are_timed_separately():
+    """The real case: a 58k-token prompt waited 55 s, then thought 4 s."""
+    activity, now = _activity()
+    now.now += 55
+    activity.add_thinking("Two lines.")
+    now.now += 3
+    assert activity.header() == "Thinking... 0:03  Two lines."   # since thinking started
+    now.now += 1.2
+    activity.answer_started()
+    assert activity.header() == "Thought for 4 s · waited 55 s"
+
+    short_wait, now = _activity()
+    now.now += 9.4                               # under 10 s: the wait is not mentioned
+    short_wait.add_thinking("x")
+    now.now += 4
+    short_wait.answer_started()
+    assert short_wait.header() == "Thought for 4 s"
+
+    tool_then_think, now = _activity(tool="gpu_info")
+    now.now += 30                                # the tool's time is not a wait
+    tool_then_think.model_called()
+    now.now += 12
+    tool_then_think.add_thinking("x")
+    now.now += 2
+    tool_then_think.finish()
+    assert tool_then_think.header() == "Thought for 2 s · waited 12 s"
+
+
 def test_once_the_answer_starts():
     thought, now = _activity()
     thought.add_thinking("plan")
@@ -124,7 +152,7 @@ def test_a_long_thinking_stream_keeps_chunks_and_a_small_tail():
 
 def test_every_language_has_the_activity_strings():
     keys = ("reply.waiting", "reply.first_turn_note", "reply.thinking", "reply.running_tool",
-            "reply.thought_for", "reply.waited_for", "menu.show_thinking")
+            "reply.thought_for", "reply.waited_for", "reply.and_waited", "menu.show_thinking")
     for code, _name in i18n.SUPPORTED_LANGUAGES:
         i18n._current_language = code       # restored by the fixture's monkeypatch
         for key in keys:

@@ -15,6 +15,8 @@ from gui.i18n import t
 
 #: A reply whose text starts this fast, with no thinking, keeps no line.
 QUIET_SECONDS = 3
+#: "Thought for 4 s" adds "· waited 55 s" when the wait before thinking was this long.
+LONG_WAIT_SECONDS = 10
 #: How much of the latest thinking text the closed line shows.
 PREVIEW_CHARS = 60
 
@@ -40,7 +42,11 @@ class ReplyActivity:
         self.thinking_parts = []     # thinking chunks, kept only with keep_thinking
         self._tail = ""              # the latest thinking text, for the preview
         self.thought = False         # thinking arrived (kept or not)
-        self.seconds = None          # the segment's duration once done
+        self.thinking_started = None  # when the first thinking chunk arrived
+        # Once done: the wait before the first thinking chunk (or before the
+        # answer, without thinking), and how long the model thought.
+        self.waited = None
+        self.thinking_seconds = None
 
     def model_called(self) -> None:
         """The core calls the model again (after a tool ran)."""
@@ -50,6 +56,8 @@ class ReplyActivity:
     def add_thinking(self, text: str) -> None:
         if self.state == "done" or not text:
             return
+        if self.thinking_started is None:
+            self.thinking_started = self._now()
         self.state, self.thought = "thinking", True
         if self.keep_thinking:     # chunks in a list: no growing string per token
             self.thinking_parts.append(text)
@@ -63,7 +71,12 @@ class ReplyActivity:
     def answer_started(self) -> None:
         """The answer text starts (or the segment ends without one)."""
         if self.state != "done":
-            self.seconds = self._now() - self.phase_started
+            now = self._now()
+            if self.thinking_started is None:
+                self.waited = now - self.phase_started
+            else:
+                self.waited = self.thinking_started - self.phase_started
+                self.thinking_seconds = now - self.thinking_started
             self.state = "done"
 
     finish = answer_started
@@ -83,13 +96,16 @@ class ReplyActivity:
         if self.state == "waiting":
             text = t("reply.waiting", clock=elapsed)
             return text + "  " + t("reply.first_turn_note") if self.first_local_turn else text
-        if self.state == "thinking":
+        if self.state == "thinking":       # its clock: since thinking started
             preview = self.preview()
-            text = t("reply.thinking", clock=elapsed)
+            text = t("reply.thinking", clock=clock(self._now() - self.thinking_started))
             return f"{text}  {preview}" if preview else text
         if self.state == "tool":
             return t("reply.running_tool", tool=self.tool, clock=elapsed)
-        seconds = round(self.seconds or 0)
+        waited = round(self.waited or 0)
         if self.thought:
-            return t("reply.thought_for", seconds=seconds)
-        return t("reply.waited_for", seconds=seconds) if seconds >= QUIET_SECONDS else None
+            text = t("reply.thought_for", seconds=round(self.thinking_seconds or 0))
+            if waited >= LONG_WAIT_SECONDS:
+                text += " " + t("reply.and_waited", seconds=waited)
+            return text
+        return t("reply.waited_for", seconds=waited) if waited >= QUIET_SECONDS else None
