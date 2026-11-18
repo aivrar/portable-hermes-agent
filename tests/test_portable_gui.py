@@ -2205,6 +2205,51 @@ def test_gui_sidebar_fit_note_follows_model_gpu_and_context(monkeypatch):
 
 
 @pytest.mark.needs_core
+def test_gui_a_reply_without_a_line_keeps_no_activity_widget(monkeypatch):
+    import tkinter as tk
+    from gui import app, i18n
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    monkeypatch.setattr(i18n, "_current_language", "en")
+
+    def views(widget):
+        found = [widget] if isinstance(widget, app.ReplyActivityView) else []
+        for child in widget.winfo_children():
+            found += views(child)
+        return found
+
+    try:
+        quick = app.StreamingBubble(root, ReplyActivity())
+        quick.pack(fill="x")
+        assert len(views(quick)) == 1                     # "Waiting for the model... 0:00"
+        quick.append_text("Hi.")                          # within 3 s, no thinking
+        quick.finalize()
+        quick.refresh_activity()                          # a late clock tick
+        assert views(quick) == [] and quick._activity_view is None
+
+        empty = app.StreamingBubble(root, ReplyActivity(tool="gpu_info"))
+        view = empty._activity_view
+        assert not empty.has_content()
+        empty.destroy()                                   # what the GUI does with it
+        assert not view.winfo_exists()
+
+        now = [0.0]
+        slow = app.StreamingBubble(root, ReplyActivity(now=lambda: now[0]))
+        now[0] = 42
+        slow.append_text("Hi.")
+        slow.finalize()
+        kept, = views(slow)
+        assert kept._label.cget("text") == "Waited 42 s"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 def test_gui_open_thinking_pane_is_clearly_secondary_to_the_answer():
     import tkinter as tk
     from gui import app

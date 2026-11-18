@@ -500,7 +500,14 @@ class StreamingBubble(tk.Frame):
         except tk.TclError:
             return
         try:
-            if self.activity.header() is not None and not self._activity_view.winfo_ismapped():
+            header = self.activity.header()
+            if header is None and self.activity.state == "done":
+                # A finished segment that keeps no line (a quick answer):
+                # drop the view rather than leave it unmapped with a stale text.
+                self._activity_view.destroy()
+                self._activity_view = None
+                return
+            if header is not None and not self._activity_view.winfo_manager():
                 self._activity_view.pack(fill="x", before=self._body)
             self._activity_view.refresh()
         except tk.TclError:
