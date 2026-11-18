@@ -5,8 +5,9 @@ Run with the product interpreter::
     python -m portable_hermes.verify --root <tree> [--json] [--no-gui]
 
 The caller (the core/wrapper updaters) runs this with a scrubbed environment
-(no API keys), a throw-away ``HERMES_HOME`` and ``PORTABLE_HERMES_NO_HOOK=1``
-so the tree under test, not the live install, provides every module.
+(no API keys), a throw-away Hermes home in ``PORTABLE_VERIFY_HOME`` (which it
+removes after this process exits) and ``PORTABLE_HERMES_NO_HOOK=1`` so the
+tree under test, not the live install, provides every module.
 
 Each check reports a precise reason. Exit status 0 means every check passed.
 A check can also pass with a visible warning (for example when a private
@@ -479,17 +480,22 @@ def main(argv=None) -> int:
     parser.add_argument("--no-gui", action="store_true")
     args = parser.parse_args(argv)
     # Tool modules print to stdout while importing; keep the JSON channel clean.
-    # Only the folder made here is ever removed (never one decided by name,
-    # never an inherited HERMES_HOME).
-    made = tempfile.mkdtemp(prefix="portable-verify-home-")
+    # The installer makes the home, passes it in VERIFY_HOME_ENV and removes it once
+    # this process has exited (also after a timeout). Run directly, this
+    # process makes its own. Only a folder made here is ever removed here
+    # (never one decided by name, never an inherited HERMES_HOME).
+    from portable_hermes.common import VERIFY_HOME_ENV
+    given = os.environ.get(VERIFY_HOME_ENV)
+    made = None if given else tempfile.mkdtemp(prefix="portable-verify-home-")
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        result = verify(Path(args.root), home=Path(made), gui=not args.no_gui)
+        result = verify(Path(args.root), home=Path(given or made), gui=not args.no_gui)
     finally:
         sys.stdout = real_stdout
-        import shutil
-        shutil.rmtree(made, ignore_errors=True)
+        if made:
+            import shutil
+            shutil.rmtree(made, ignore_errors=True)
     if args.json:
         print("PORTABLE_VERIFY_RESULT " + json.dumps(result))
     else:

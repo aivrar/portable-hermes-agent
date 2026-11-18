@@ -977,6 +977,9 @@ def clean_python_env(extra: dict | None = None) -> dict:
 #: directory nor PYTHONPATH can be relied on to find the package.
 BOOT = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
         "from portable_hermes.__main__ import main; sys.exit(main(sys.argv[1:]))")
+#: The throw-away Hermes home the installer makes for a verify process (and
+#: removes after it exits); verify uses it instead of making its own.
+VERIFY_HOME_ENV = "PORTABLE_VERIFY_HOME"
 VERIFY_BOOT = ("import sys; sys.path.insert(0, sys.argv.pop(1)); "
                "from portable_hermes.verify import main; sys.exit(main(sys.argv[1:]))")
 

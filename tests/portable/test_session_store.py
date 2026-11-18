@@ -354,6 +354,67 @@ def test_verify_command_removes_only_the_home_it_made(monkeypatch, tmp_path):
     assert (inherited / "state.db").read_bytes() == b"the user's sessions"
 
 
+def test_verify_command_uses_the_home_its_installer_made_and_makes_none(monkeypatch, tmp_path):
+    import tempfile
+    given = tmp_path / "from-the-installer"
+    given.mkdir()
+    monkeypatch.setenv("PORTABLE_VERIFY_HOME", str(given))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user-home"))
+    seen = []
+    verify = _main_with_fake_verify(monkeypatch, seen)
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda *a, **kw: pytest.fail("made a home"))
+
+    assert verify.main(["--root", str(tmp_path), "--json"]) == 0
+    assert seen == [given] and (given / "state.db").is_file()   # the installer removes it
+
+
+def _installer_verify(monkeypatch, tmp_path, run):
+    """CoreLifecycle._default_verify with subprocess.run replaced by *run*;
+    its temp folders go under tmp_path."""
+    import subprocess
+    import tempfile
+    from portable_hermes import core
+    made = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def mkdtemp(*a, **kw):
+        made.append(Path(real_mkdtemp(*a, **dict(kw, dir=str(tmp_path)))))
+        return str(made[-1])
+
+    monkeypatch.setattr(tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(subprocess, "run", run)
+    result = core.CoreLifecycle(tmp_path, quiet=True)._default_verify(tmp_path)
+    return result, made
+
+
+def test_installer_gives_verify_one_home_and_removes_it_afterwards(monkeypatch, tmp_path):
+    import subprocess
+    seen = {}
+
+    def run(cmd, **kw):
+        env = kw["env"]
+        seen.update(home=env["PORTABLE_VERIFY_HOME"], hermes=env["HERMES_HOME"],
+                    existed=Path(env["PORTABLE_VERIFY_HOME"]).is_dir())
+        return subprocess.CompletedProcess(cmd, 0, 'PORTABLE_VERIFY_RESULT {"ok": true}\n', "")
+
+    result, made = _installer_verify(monkeypatch, tmp_path, run)
+    assert result == {"ok": True}
+    assert [str(p) for p in made] == [seen["home"]] == [seen["hermes"]] and seen["existed"]
+    assert not made[0].exists()
+
+
+def test_installer_removes_the_verify_home_after_a_timeout(monkeypatch, tmp_path):
+    import subprocess
+
+    def run(cmd, **kw):
+        (Path(kw["env"]["PORTABLE_VERIFY_HOME"]) / "state.db").write_bytes(b"x")
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])     # run() has killed and waited
+
+    result, made = _installer_verify(monkeypatch, tmp_path, run)
+    assert not result["ok"] and "failed to run" in result["reason"]
+    assert len(made) == 1 and not made[0].exists()
+
+
 def test_verify_command_touches_nothing_when_it_cannot_make_a_home(monkeypatch, tmp_path):
     import tempfile
     inherited = tmp_path / "portable-verify-home-mine"

@@ -566,9 +566,9 @@ class CoreLifecycle:
             return 1, f"could not run pip: {exc}"
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
-    def _verify_env(self) -> dict:
-        home = tempfile.mkdtemp(prefix="portable-verify-home-")
-        extra = {"HERMES_HOME": home, "PORTABLE_HERMES_NO_HOOK": "1"}
+    def _verify_env(self, home: str) -> dict:
+        extra = {"HERMES_HOME": home, common.VERIFY_HOME_ENV: home,
+                 "PORTABLE_HERMES_NO_HOOK": "1"}
         tcl = self.root / "python_embedded" / "tcl"
         if tcl.is_dir():
             for name, prefix in (("TCL_LIBRARY", "tcl8"), ("TK_LIBRARY", "tk8")):
@@ -578,17 +578,21 @@ class CoreLifecycle:
         return common.clean_python_env(extra)
 
     def _default_verify(self, tree: Path, gui: bool = True) -> dict:
-        env = self._verify_env()
+        # The one throw-away home of the verify process, which makes none of
+        # its own. Removed once the process has exited (subprocess.run kills
+        # and waits on a timeout); a leftover in the system temp is harmless.
+        home = tempfile.mkdtemp(prefix="portable-verify-home-")
         cmd = [self.python, "-X", "utf8", "-c", common.VERIFY_BOOT, str(tree),
                "--root", str(tree), "--json"] + ([] if gui else ["--no-gui"])
         common.flush_output()
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace", timeout=900, cwd=str(tree), env=env)
+                                  errors="replace", timeout=900, cwd=str(tree),
+                                  env=self._verify_env(home))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "reason": f"verification process failed to run: {exc}"}
         finally:
-            shutil.rmtree(env["HERMES_HOME"], ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)
         for line in reversed((proc.stdout or "").splitlines()):
             if line.startswith("PORTABLE_VERIFY_RESULT "):
                 try:
