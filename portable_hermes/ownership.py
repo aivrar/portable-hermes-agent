@@ -161,6 +161,7 @@ REQUIRED_RELEASE_FILES = frozenset({
     "portable_hermes/bridge.py",
     "portable_hermes/common.py",
     "portable_hermes/core.py",
+    "portable_hermes/lmstudio_gpu.py",
     "portable_hermes/ownership.py",
     "portable_hermes/recovery.py",
     "portable_hermes/runtime.py",

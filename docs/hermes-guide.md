@@ -360,7 +360,7 @@ Open via **View > LM Studio (Local Models)** in the menu bar. The panel shows:
 - **Endpoint field** — the LM Studio server address (default `http://localhost:1234`), with a Connect button to change it
 - **Status indicator** — green dot = LM Studio is running and connected
 - **Model browser** — list of all downloaded models with display names
-- **GPU selector** — choose which GPU to load the model on
+- **GPU selector** — choose one GPU (numbered as `nvidia-smi` shows them), "All GPUs (largest first)" to spread a model that does not fit on one card, "CPU only", or "Auto" to let LM Studio decide
 - **Context length slider** — minimum 32,768 tokens (Hermes needs ~26K for its tool definitions)
 - **Load Model / Cancel Load** — load a model onto your GPU, or cancel a load in progress
 - **Unload** — free GPU memory

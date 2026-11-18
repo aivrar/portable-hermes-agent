@@ -492,6 +492,80 @@ def test_gui_sidebar_auto_load_calls_load_model_and_reports_instance_id(monkeypa
     target.load_new_instance.assert_called_once()
 
 
+@pytest.mark.needs_core
+def test_gui_sidebar_auto_load_uses_the_selected_gpu_placement(monkeypatch):
+    import logging
+    from unittest.mock import Mock
+    from gui import app
+    from gui import lm_studio as lm
+
+    calls = []
+
+    class FakeClient:
+        last_loaded_identifier = "deepseek"
+
+        def __init__(self, base_url):
+            pass
+
+        def connect_sdk(self):
+            return True
+
+        def load_model(self, model_id, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(lm, "LMStudioClient", FakeClient)
+    monkeypatch.setattr(lm.LMStudioPanel, "_resolve_base_url",
+                        staticmethod(lambda: "http://127.0.0.1:9/v1"))
+    settings = {"gpu_placement": "split", "gpu_index": None,
+                "context_length": 65536, "flash_attention": True}
+
+    assert app._auto_load_local_model("deepseek", settings, logging.getLogger("t"))[0]
+
+    assert calls[0]["gpu_placement"] == "split" and calls[0]["gpu_index"] is None
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_gpu_choices_keep_the_selection_and_translate(monkeypatch):
+    from unittest.mock import MagicMock
+    from gui import app
+    from gui import i18n
+    from portable_hermes import lmstudio_gpu as gpu_place
+
+    gpus = [gpu_place.NvidiaGpu(0, "RTX 3060", 12288), gpu_place.NvidiaGpu(1, "RTX 3090", 24576)]
+
+    class Var:
+        value = ""
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    sidebar = object.__new__(app.Sidebar)
+    sidebar.__dict__.update(_gpu_var=Var(), _gpus=[], _gpu_label_to_placement={},
+                            _gpu_combo=MagicMock(), _save_local_settings=lambda: None)
+
+    sidebar._populate_gpus(gpus)
+    assert sidebar._get_gpu_placement() == "gpu:0"          # default: first GPU
+    label_of = {p: label for label, p in sidebar._gpu_label_to_placement.items()}
+    sidebar._gpu_var.set(label_of["split"])                  # user picks "All GPUs"
+    assert sidebar._get_gpu_placement() == "split"
+    assert sidebar._get_gpu_index() is None
+
+    old = i18n.get_language()
+    try:
+        i18n.set_language("es", persist=False)
+        sidebar._show_gpu_choices(sidebar._get_gpu_placement())   # language switch
+        assert sidebar._gpu_var.get() == i18n.TRANSLATIONS["es"]["lmstudio.gpu_split"]
+        assert sidebar._get_gpu_placement() == "split"
+    finally:
+        i18n.set_language(old, persist=False)
+
+    sidebar._populate_gpus(gpus[:1])                        # split no longer offered
+    assert sidebar._get_gpu_placement() == "gpu:0" and sidebar._get_gpu_index() == 0
+
+
 def _auto_load_sidebar(app, local_ids):
     from unittest.mock import Mock
 

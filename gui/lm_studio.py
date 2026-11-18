@@ -19,6 +19,7 @@ from typing import List, Dict, Optional
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
 from gui.i18n import t, register_listener, unregister_listener
 from hermes_constants import get_hermes_home
+from portable_hermes import lmstudio_gpu as gpu_place
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
 DEFAULT_CONTEXT_LENGTH = max(65536, MINIMUM_CONTEXT_LENGTH)
@@ -99,23 +100,38 @@ def _write_lmstudio_config(*, base_url: Optional[str] = None, api_key: Optional[
 # GPU Detection
 # ============================================================================
 
-def get_available_gpus() -> List[str]:
-    """Detect GPUs via nvidia-smi."""
-    gpus = ["CPU"]
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        for line in result.stdout.strip().splitlines():
-            parts = line.split(", ")
-            if len(parts) >= 3:
-                idx, name, mem = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                gpus.append(f"GPU {idx}: {name} ({mem} MiB)")
-    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        pass
+def detect_gpus() -> List["gpu_place.NvidiaGpu"]:
+    """NVIDIA GPUs in nvidia-smi order (empty without nvidia-smi).
+
+    Also warms LM Studio's hardware survey, which maps these to LM Studio's
+    own GPU numbering at load time; call it off the Tk thread."""
+    gpus = gpu_place.list_nvidia_gpus()
+    if gpus:
+        gpu_place.lmstudio_gpu_survey()
     return gpus
+
+
+def gpu_choice_label(placement: str, gpus=()) -> str:
+    """Display text for one GPU placement choice (translated where it is words)."""
+    kind, index = gpu_place.parse_placement(placement)
+    if kind == "gpu":
+        for gpu in gpus:
+            if gpu.index == index:
+                return f"GPU {gpu.index}: {gpu.name} ({gpu.memory_mib} MiB)"
+        return f"GPU {index}"
+    return t({gpu_place.AUTO: "lmstudio.gpu_auto",
+              gpu_place.CPU: "lmstudio.gpu_cpu",
+              gpu_place.SPLIT: "lmstudio.gpu_split"}[kind])
+
+
+def gpu_choices(gpus) -> List[tuple]:
+    """``[(placement, label), ...]`` for a GPU combobox, in display order."""
+    return [(p, gpu_choice_label(p, gpus)) for p in gpu_place.placements_for(gpus)]
+
+
+def get_available_gpus() -> List[str]:
+    """Display labels of the GPU choices (kept for older callers)."""
+    return [label for _placement, label in gpu_choices(detect_gpus())]
 
 
 #: Selection preference for LMStudioPanel._display_models: the row marked
@@ -143,6 +159,7 @@ class LMStudioClient:
     def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: Optional[str] = None):
         self.base_url = base_url.strip().rstrip("/")
         self.last_loaded_identifier: Optional[str] = None  # set by load_model()
+        self.last_gpu_plan = None  # GpuPlan used by the last load_model()
         cfg = _read_lmstudio_config()
         saved_url = cfg.get("base_url", "http://localhost:1234/v1").rstrip("/").removesuffix("/v1")
         saved_key = cfg.get("api_key") if saved_url == self._server_root() else None
@@ -371,14 +388,27 @@ class LMStudioClient:
             return set()
 
     def load_model(self, model_key: str, gpu_index: Optional[int] = None,
-                   context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True) -> bool:
+                   context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True,
+                   gpu_placement: Optional[str] = None) -> bool:
         """Load a model via SDK with GPU and context control.
+
+        *gpu_placement* is ``auto``, ``cpu``, ``split`` or ``gpu:<nvidia-smi
+        index>`` (see portable_hermes.lmstudio_gpu); when it is not given,
+        *gpu_index* means ``gpu:<index>`` and None means ``auto``.
 
         Finds the model object from downloaded models by matching model_key,
         then calls load_new_instance() on it directly.
         """
         if not self._sdk_client:
             raise RuntimeError("LM Studio SDK is not connected; reconnect before loading a model.")
+        placement = gpu_placement or gpu_place.placement_from_index(gpu_index)
+        try:
+            # Resolve the placement before unloading anything, so an unknown
+            # GPU leaves the current model loaded.
+            plan = gpu_place.plan(placement)
+        except ValueError as e:
+            raise RuntimeError(f"Failed to load model: {e}")
+        self.last_gpu_plan = plan
         try:
             # Unload all existing instances to ensure clean GPU placement.
             try:
@@ -391,30 +421,20 @@ class LMStudioClient:
             except Exception:
                 pass
 
-            gpu_config = None
-            if gpu_index is not None:
-                gpus = get_available_gpus()
-                num_gpus = len([g for g in gpus if g.startswith("GPU")])
-                # nvidia-smi and CUDA have reversed GPU ordering:
-                #   nvidia-smi GPU 0 (3060) = CUDA device 1
-                #   nvidia-smi GPU 1 (3090) = CUDA device 0
-                # LM Studio uses CUDA ordering, so remap.
-                lms_index = (num_gpus - 1) - gpu_index
-                disabled = [i for i in range(num_gpus) if i != lms_index]
-                gpu_config = GpuSetting(
-                    main_gpu=lms_index,
-                    disabled_gpus=disabled if disabled else None,
-                    ratio=1.0,
-                )
-
+            # nvidia-smi and LM Studio number GPUs differently; the plan holds
+            # LM Studio's indices (mapping in portable_hermes.lmstudio_gpu).
+            gpu_config = GpuSetting(**plan.gpu) if plan.gpu else None
             config = LlmLoadModelConfig(
                 gpu=gpu_config,
                 context_length=context_length,
                 flash_attention=flash_attention,
+                **plan.load,
             )
 
             import logging
             _log = logging.getLogger("hermes.lmstudio")
+            _log.info("GPU placement %s -> %r (LM Studio GPU %r, mapping %s)",
+                      plan.placement, plan.gpu, plan.lmstudio_gpu, plan.mapping)
 
             # Find the actual SDK model object by matching model_key or path
             downloaded = list(self._sdk_client.llm.list_downloaded())
@@ -440,7 +460,7 @@ class LMStudioClient:
             before = self._loaded_identifiers()
             if target is not None:
                 # Use the SDK model object's own load method
-                _log.info("Loading via SDK model object, ctx=%d gpu=%r", context_length, gpu_index)
+                _log.info("Loading via SDK model object, ctx=%d gpu=%s", context_length, plan.placement)
                 handle = target.load_new_instance(config=config, ttl=86400)
             else:
                 # Fallback: try string-based load
@@ -512,7 +532,8 @@ class LMStudioPanel(tk.Toplevel):
         base_url = self._resolve_base_url()
         api_key = self._resolve_api_key()
         self.client = LMStudioClient(base_url=base_url, api_key=api_key)
-        self.gpus = ["CPU"]
+        self.gpus = []  # NvidiaGpu entries; choices come from gpu_choices()
+        self._gpu_label_to_placement = {}
         self.models = []
         self._ui_results = queue.SimpleQueue()
         self._closed = False
@@ -522,7 +543,7 @@ class LMStudioPanel(tk.Toplevel):
         self._ui_poll_id = self.after(50, self._drain_ui_results)
         self.after(100, self._connect)
         def discover_gpus():
-            gpus = get_available_gpus()
+            gpus = detect_gpus()
             self._post_ui("_set_gpus", gpus)
         threading.Thread(target=discover_gpus, daemon=True).start()
 
@@ -565,11 +586,24 @@ class LMStudioPanel(tk.Toplevel):
             self._cancel_btn.configure(text=t("lmstudio.cancel_load"))
         self._set_status(self._status_key, **self._status_kwargs)
         self._display_models(self.models)
+        self._show_gpu_choices(self._selected_gpu_placement())
+
+    def _selected_gpu_placement(self) -> str:
+        """Placement of the GPU combobox entry (auto when unknown)."""
+        return self._gpu_label_to_placement.get(self.gpu_var.get(), gpu_place.AUTO)
+
+    def _show_gpu_choices(self, selected: str):
+        choices = gpu_choices(self.gpus)
+        self._gpu_label_to_placement = {label: p for p, label in choices}
+        placements = [p for p, _label in choices]
+        if selected not in placements:
+            selected = gpu_place.default_placement(self.gpus)
+        self.gpu_combo.configure(values=[label for _p, label in choices])
+        self.gpu_combo.current(placements.index(selected))
 
     def _set_gpus(self, gpus):
-        self.gpus = gpus
-        self.gpu_combo.configure(values=gpus)
-        self.gpu_combo.current(1 if len(gpus) > 1 else 0)
+        self.gpus = list(gpus)
+        self._show_gpu_choices(gpu_place.default_placement(self.gpus))
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -684,14 +718,11 @@ class LMStudioPanel(tk.Toplevel):
         self._localized_widgets.append((gpu_label, "lmstudio.gpu"))
         self.gpu_var = tk.StringVar()
         self.gpu_combo = ttk.Combobox(gpu_row, textvariable=self.gpu_var,
-                                      values=self.gpus, font=FONTS["body"],
-                                      state="readonly")
+                                      font=FONTS["body"], state="readonly")
         # Style the dropdown list to match the parent font
         self.option_add("*TCombobox*Listbox.font", FONTS["body"])
-        if len(self.gpus) > 1:
-            self.gpu_combo.current(1)  # Default to first GPU
-        else:
-            self.gpu_combo.current(0)
+        # Auto until GPU detection finishes; then the first GPU (_set_gpus).
+        self._show_gpu_choices(gpu_place.default_placement(self.gpus))
         self.gpu_combo.pack(side="left", fill="x", expand=True)
 
         # Context length slider
@@ -908,14 +939,9 @@ class LMStudioPanel(tk.Toplevel):
         ctx = int(self.ctx_var.get())
         ctx = max(MINIMUM_CONTEXT_LENGTH, (ctx // 512) * 512)
 
-        # Parse GPU selection
-        gpu_str = self.gpu_var.get()
-        gpu_index = None
-        if gpu_str.startswith("GPU"):
-            try:
-                gpu_index = int(gpu_str.split(":")[0].replace("GPU ", ""))
-            except ValueError:
-                pass
+        # GPU selection (labels are translated, so map back to the placement)
+        gpu_label = self.gpu_var.get()
+        placement = getattr(self, "_gpu_label_to_placement", {}).get(gpu_label, gpu_place.AUTO)
 
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         self._set_status("lmstudio.loading_model", model=short)
@@ -934,9 +960,9 @@ class LMStudioPanel(tk.Toplevel):
                 # Log to file for debugging
                 import logging
                 _log = logging.getLogger("hermes.lmstudio")
-                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%r",
-                             model_path, model_id, ctx, gpu_index)
-                self.client.load_model(model_path, gpu_index=gpu_index,
+                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%s",
+                             model_path, model_id, ctx, placement)
+                self.client.load_model(model_path, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
                     self._post_ui("_on_load_success", model_id,
@@ -946,7 +972,7 @@ class LMStudioPanel(tk.Toplevel):
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
                     err = t("lmstudio.load_error_details", model=model_path, context=ctx,
-                            gpu=gpu_index, error=e)
+                            gpu=gpu_label, error=e)
                     self._post_ui("_on_load_error", err)
 
         threading.Thread(target=_do, daemon=True).start()

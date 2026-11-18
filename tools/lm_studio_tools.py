@@ -15,7 +15,6 @@ Key lessons from AgentNate:
 
 import json
 import logging
-import shutil
 import time
 
 from tools.registry import registry
@@ -101,19 +100,30 @@ def _get_sdk_client():
     return _sdk_client
 
 
-def _get_gpu_count() -> int:
-    """Detect number of NVIDIA GPUs."""
-    if not shutil.which("nvidia-smi"):
-        return 0
-    try:
-        import subprocess
-        r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=5,
-        )
-        return len(r.stdout.strip().splitlines()) if r.returncode == 0 else 0
-    except Exception:
-        return 0
+_GPU_MODES = ("auto", "cpu", "split")
+
+
+def _gpu_placement_for(args: dict):
+    """``(placement, error)`` from the tool's gpu_index / gpu_mode arguments.
+
+    gpu_index (nvidia-smi index, as lm_studio_status lists GPUs) pins the model
+    to that GPU; gpu_mode is auto (LM Studio decides), cpu or split (every GPU,
+    largest first). Neither given: auto, as before."""
+    gpu_index = args.get("gpu_index")
+    mode = str(args.get("gpu_mode") or "").strip().lower()
+    if mode and mode not in _GPU_MODES:
+        return None, f"gpu_mode must be one of {', '.join(_GPU_MODES)}"
+    if gpu_index is not None:
+        if mode and mode != "auto":
+            return None, "give either gpu_index or gpu_mode, not both"
+        try:
+            gpu_index = int(gpu_index)
+        except (TypeError, ValueError):
+            return None, f"gpu_index must be an integer, got {gpu_index!r}"
+        if gpu_index < 0:
+            return None, f"gpu_index must be 0 or more, got {gpu_index}"
+        return f"gpu:{gpu_index}", None
+    return mode or "auto", None
 
 
 # ---------------------------------------------------------------------------
@@ -223,8 +233,10 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
     if not model_path:
         return json.dumps({"error": "model_path is required"})
 
-    gpu_index = args.get("gpu_index")
     context_length = int(args.get("context_length", 4096))
+    placement, problem = _gpu_placement_for(args)
+    if problem:
+        return json.dumps({"error": problem})
 
     if not _HAS_SDK:
         return json.dumps({"error": "lmstudio SDK not installed (pip install lmstudio)"})
@@ -232,32 +244,27 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
     try:
         client = _get_sdk_client()
 
-        # Build GPU config for single-GPU loading (matches AgentNate exactly)
-        gpu_config = None
-        if gpu_index is not None:
-            gpu_index = int(gpu_index)
-            num_gpus = _get_gpu_count()
-
-            if num_gpus == 0:
-                logger.warning("No GPUs detected, ignoring gpu_index=%d", gpu_index)
-            elif gpu_index >= num_gpus:
-                return json.dumps({
-                    "error": f"GPU {gpu_index} requested but only {num_gpus} GPU(s) available (0-{num_gpus-1})"
-                })
-            else:
-                # Disable all other GPUs to force single-GPU loading
-                disabled_gpus = [i for i in range(num_gpus) if i != gpu_index]
-                gpu_config = GpuSetting(
-                    main_gpu=gpu_index,
-                    disabled_gpus=disabled_gpus,
-                    ratio=1.0,
-                )
-                logger.info("GPU config: main_gpu=%d, disabled=%s", gpu_index, disabled_gpus)
+        # Same placement rules and nvidia-smi -> LM Studio GPU mapping as the
+        # GUI's LM Studio panel and sidebar auto-load.
+        from portable_hermes import lmstudio_gpu as gpu_place
+        needs_gpus = placement not in (gpu_place.AUTO, gpu_place.CPU)
+        nvidia = gpu_place.list_nvidia_gpus() if needs_gpus else []
+        if placement.startswith("gpu:") and not nvidia:
+            logger.warning("No GPUs detected, ignoring gpu_index (%s)", placement)
+            placement = gpu_place.AUTO
+        try:
+            plan = gpu_place.plan(placement, nvidia=nvidia)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+        gpu_config = GpuSetting(**plan.gpu) if plan.gpu else None
+        logger.info("GPU placement %s -> %r (LM Studio GPU %r, mapping %s)",
+                    plan.placement, plan.gpu, plan.lmstudio_gpu, plan.mapping)
 
         # Build load config
         load_config = LlmLoadModelConfig(
             gpu=gpu_config,
             context_length=context_length,
+            **plan.load,
         )
 
         # No instance identifier: LM Studio names the instance after the model
@@ -283,7 +290,10 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
             "model": model_path,
             "identifier": instance_id,
             "context_length": context_length,
-            "gpu_index": gpu_index,
+            "gpu_index": int(plan.placement[4:]) if plan.placement.startswith("gpu:") else None,
+            "gpu_placement": plan.placement,
+            "lmstudio_gpu": plan.lmstudio_gpu,
+            "gpu_mapping": plan.mapping,
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -840,10 +850,10 @@ LOAD_SCHEMA = {
     "name": "lm_studio_load",
     "description": (
         "Load a model into LM Studio. Specify the model path (from lm_studio_models), "
-        "optional GPU index for multi-GPU systems, and context length. "
-        "Check gpu_info first to see available VRAM. "
-        "Uses the LM Studio SDK with proper GPU isolation (disables other GPUs "
-        "to prevent model splitting)."
+        "where to place it, and context length. Placement: gpu_index pins the model "
+        "to one GPU (other GPUs disabled); gpu_mode 'split' spreads it across all "
+        "GPUs, filling the largest first; 'cpu' keeps it off the GPUs; 'auto' (the "
+        "default) lets LM Studio decide. lm_studio_status lists the GPUs with free VRAM."
     ),
     "parameters": {
         "type": "object",
@@ -854,7 +864,19 @@ LOAD_SCHEMA = {
             },
             "gpu_index": {
                 "type": "integer",
-                "description": "GPU index to load the model on (0-based). Disables other GPUs to prevent splitting.",
+                "description": (
+                    "GPU to load the model on, by the index lm_studio_status and "
+                    "nvidia-smi show (0-based). Disables the other GPUs. "
+                    "Do not combine with gpu_mode."
+                ),
+            },
+            "gpu_mode": {
+                "type": "string",
+                "enum": list(_GPU_MODES),
+                "description": (
+                    "Placement when no gpu_index is given: 'auto' (LM Studio decides, "
+                    "default), 'cpu' (no GPU offload), 'split' (all GPUs, largest first)."
+                ),
             },
             "context_length": {
                 "type": "integer",

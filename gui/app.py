@@ -373,7 +373,8 @@ def _auto_load_local_model(model_id, settings, log):
         log.debug("auto-load SDK connected, calling load_model...")
         client.load_model(
             model_id,
-            gpu_index=settings["gpu_index"],
+            gpu_index=settings.get("gpu_index"),
+            gpu_placement=settings.get("gpu_placement"),
             context_length=settings["context_length"],
             flash_attention=settings.get("flash_attention", True),
         )
@@ -564,6 +565,8 @@ class Sidebar(tk.Frame):
                                          fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
         self._local_gpu_label.pack(side="left")
         self._gpu_var = tk.StringVar(value="")
+        self._gpus = []  # NvidiaGpu entries from gui.lm_studio.detect_gpus()
+        self._gpu_label_to_placement = {}
         self._gpu_combo = ttk.Combobox(gpu_row, textvariable=self._gpu_var,
                                         font=FONTS["small"], state="readonly", width=22)
         self._gpu_combo.pack(side="left", fill="x", expand=True)
@@ -572,10 +575,10 @@ class Sidebar(tk.Frame):
         # Detect GPUs in background
         def _detect_gpus():
             try:
-                from gui.lm_studio import get_available_gpus
-                gpus = get_available_gpus()
+                from gui.lm_studio import detect_gpus
+                gpus = detect_gpus()
             except Exception:
-                gpus = ["CPU"]
+                gpus = []
             try:
                 self.after(0, lambda: self._populate_gpus(gpus))
             except Exception:
@@ -652,36 +655,48 @@ class Sidebar(tk.Frame):
 
     def _populate_gpus(self, gpus):
         """Populate GPU combobox (called on main thread)."""
-        self._gpu_combo["values"] = gpus
-        saved = self._gpu_var.get()
-        if saved and saved in gpus:
-            self._gpu_combo.set(saved)
-        elif len(gpus) > 1:
-            # Default to first real GPU
-            self._gpu_combo.current(1)
-            self._gpu_var.set(gpus[1])
-        elif gpus:
-            self._gpu_combo.current(0)
+        selected = self._get_gpu_placement() if self._gpu_var.get() else None
+        self._gpus = list(gpus)
+        self._show_gpu_choices(selected)
         # Persist the selection so bridge can read it
         self._save_local_settings()
+
+    def _show_gpu_choices(self, selected=None):
+        """Fill the GPU combobox, keeping *selected* if it is still offered
+        (else the first GPU, else Auto)."""
+        from gui.lm_studio import gpu_choices
+        from portable_hermes import lmstudio_gpu as gpu_place
+        choices = gpu_choices(self._gpus)
+        self._gpu_label_to_placement = {label: p for p, label in choices}
+        placements = [p for p, _label in choices]
+        if selected not in placements:
+            selected = gpu_place.default_placement(self._gpus)
+        self._gpu_combo["values"] = [label for _p, label in choices]
+        self._gpu_combo.current(placements.index(selected))
+        self._gpu_var.set(choices[placements.index(selected)][1])
 
     def _save_local_settings(self):
         """Settings are held in UI widgets — nothing to persist."""
         pass
 
+    def _get_gpu_placement(self) -> str:
+        """Placement of the GPU combobox entry: auto, cpu, split or gpu:<n>."""
+        return self._gpu_label_to_placement.get(self._gpu_var.get(), "auto")
+
     def _get_gpu_index(self) -> Optional[int]:
-        """Parse GPU index from the GPU combobox selection."""
-        val = self._gpu_var.get()
-        if val and val.startswith("GPU "):
+        """nvidia-smi index when a single GPU is selected, else None."""
+        placement = self._get_gpu_placement()
+        if placement.startswith("gpu:"):
             try:
-                return int(val.split(":")[0].replace("GPU ", ""))
-            except (ValueError, IndexError):
+                return int(placement[4:])
+            except ValueError:
                 pass
         return None
 
     def get_local_settings(self) -> dict:
         """Return current local model settings."""
         return {
+            "gpu_placement": self._get_gpu_placement(),
             "gpu_index": self._get_gpu_index(),
             "context_length": self._ctx_var.get(),
             "temperature": self._temp_var.get(),
@@ -796,7 +811,7 @@ class Sidebar(tk.Frame):
                 _dbg.setLevel(_log.DEBUG)
 
             _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
-                       model_id, settings["gpu_index"], settings["context_length"])
+                       model_id, settings.get("gpu_placement"), settings["context_length"])
             success, error_msg, loaded_id = _auto_load_local_model(model_id, settings, _dbg)
 
             # Back to main thread
@@ -1037,6 +1052,7 @@ class Sidebar(tk.Frame):
             ):
                 widget.configure(text=t(key))
             self._update_combobox_values()
+            self._show_gpu_choices(self._get_gpu_placement())
         if hasattr(self, "session_frame"):
             self._render_sessions()
         if self._load_status_data:

@@ -362,3 +362,108 @@ def test_load_without_handle_identifier_uses_the_newly_listed_instance():
     assert client.load_model(VARIANT, context_length=65536)
 
     assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"
+
+
+# --- GPU placement (shared helper: portable_hermes.lmstudio_gpu) -------------
+
+OWNER_NVIDIA = [  # nvidia-smi order on the owner's PC
+    lm.gpu_place.NvidiaGpu(0, "NVIDIA GeForce RTX 3060", 12288, "80c24f57"),
+    lm.gpu_place.NvidiaGpu(1, "NVIDIA GeForce RTX 3090", 24576, "36feccef"),
+]
+OWNER_SURVEY = [  # LM Studio's own order (CUDA, fastest first)
+    lm.gpu_place.LmStudioGpu(0, "NVIDIA GeForce RTX 3090", 24575, "36feccef"),
+    lm.gpu_place.LmStudioGpu(1, "NVIDIA GeForce RTX 3060", 12287, "80c24f57"),
+]
+
+
+@pytest.fixture
+def owner_gpus(monkeypatch):
+    monkeypatch.setattr(lm.gpu_place, "list_nvidia_gpus", lambda timeout=10: list(OWNER_NVIDIA))
+    monkeypatch.setattr(lm.gpu_place, "lmstudio_gpu_survey", lambda *a, **k: list(OWNER_SURVEY))
+
+
+def _loaded_gpu_setting(placement=None, gpu_index=None):
+    target = Mock(model_key="gemma-4-e4b-it", path="p/gemma", display_name="Gemma")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    client.load_model("gemma-4-e4b-it", gpu_index=gpu_index, gpu_placement=placement,
+                      context_length=65536)
+    return target.load_new_instance.call_args.kwargs["config"]
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_split_favours_the_largest_gpu_in_lm_studio_numbering(owner_gpus):
+    config = _loaded_gpu_setting("split")
+    assert config.gpu.split_strategy == "favorMainGpu"
+    assert config.gpu.main_gpu == 0          # LM Studio's 0 is the 3090
+    assert list(config.gpu.disabled_gpus) == []
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_single_gpu_maps_the_nvidia_smi_index(owner_gpus):
+    config = _loaded_gpu_setting(gpu_index=0)    # older callers: nvidia-smi 0 = 3060
+    assert config.gpu.main_gpu == 1 and list(config.gpu.disabled_gpus) == [0]
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_cpu_only_and_auto(owner_gpus):
+    cpu = _loaded_gpu_setting("cpu")
+    assert cpu.gpu.ratio == 0.0 and cpu.offload_kv_cache_to_gpu is False
+    assert _loaded_gpu_setting("auto").gpu is None
+    assert _loaded_gpu_setting().gpu is None
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_on_a_missing_gpu_fails_before_unloading_anything(owner_gpus):
+    loaded = Mock(identifier="current")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded()
+    client._sdk_client.llm.list_loaded.return_value = [loaded]
+
+    with pytest.raises(RuntimeError, match="GPU 7 not found"):
+        client.load_model("gemma-4-e4b-it", gpu_placement="gpu:7", context_length=65536)
+
+    loaded.unload.assert_not_called()
+    client._sdk_client.llm.load_new_instance.assert_not_called()
+
+
+def test_gpu_choices_are_labelled_in_every_language():
+    from gui import i18n
+    old = i18n.get_language()
+    try:
+        for code in i18n.LANGUAGE_CODES:
+            i18n.set_language(code, persist=False)
+            choices = dict(lm.gpu_choices(OWNER_NVIDIA))
+            assert list(choices) == ["auto", "cpu", "split", "gpu:0", "gpu:1"]
+            for key in ("auto", "cpu", "split"):
+                assert choices[key] == i18n.TRANSLATIONS[code][f"lmstudio.gpu_{key}"]
+            assert choices["gpu:1"] == "GPU 1: NVIDIA GeForce RTX 3090 (24576 MiB)"
+    finally:
+        i18n.set_language(old, persist=False)
+
+
+def test_panel_loads_with_the_placement_behind_the_chosen_label(monkeypatch):
+    class InlineThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(lm.threading, "Thread", InlineThread)
+    choices = lm.gpu_choices(OWNER_NVIDIA)
+    split_label = dict(choices)["split"]
+    panel = SimpleNamespace(
+        model_list=Mock(curselection=lambda: (0,)),
+        models=[{"id": "gemma-4-e4b-it"}],
+        ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
+        gpu_var=Mock(get=lambda: split_label),
+        _gpu_label_to_placement={label: p for p, label in choices},
+        _set_status=Mock(), status_dot=Mock(), _cancel_load=Mock(),
+        client=Mock(last_loaded_identifier="gemma-4-e4b-it"), _post_ui=Mock(),
+        load_btn=Mock(), unload_btn=Mock())
+    monkeypatch.setattr(lm.ttk, "Button", Mock())
+
+    lm.LMStudioPanel._load_model(panel)
+
+    assert panel.client.load_model.call_args.kwargs["gpu_placement"] == "split"
