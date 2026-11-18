@@ -2250,6 +2250,76 @@ def test_gui_a_reply_without_a_line_keeps_no_activity_widget(monkeypatch):
 
 
 @pytest.mark.needs_core
+def test_gui_a_running_reply_stays_in_view_unless_the_user_scrolled_up(monkeypatch):
+    gui = _replying_gui(monkeypatch)
+    canvas = gui.msg_canvas
+    canvas.yview.return_value = (0.7, 1.0)
+
+    def followed():
+        canvas.yview_moveto.reset_mock()
+        gui._on_msg_frame_resized()                  # the pane or the answer grew
+        return canvas.yview_moveto.call_args_list == [((1.0,),)]
+
+    def scrolls_queued():
+        return [ms for ms, _fn in gui.root.pending.values() if ms == 10]
+
+    assert followed()
+    canvas.yview.return_value = (0.2, 0.6)           # the user scrolls up to read
+    gui._note_user_scroll()
+    assert not followed()
+    gui.root.pending.clear()
+    gui._on_stream_delta("more answer")
+    gui._on_tool_call("gpu_info", "{}")
+    assert scrolls_queued() == []                     # not pulled back down
+    canvas.yview.return_value = (0.6, 1.0)           # back at the bottom: follow again
+    gui._note_user_scroll()
+    assert followed()
+    gui._on_stream_delta("more")
+    assert scrolls_queued()
+
+    canvas.yview.return_value = (0.2, 0.6)
+    gui._note_user_scroll()
+    gui.bridge.is_running = False
+    gui._on_complete({})
+    assert gui._stream_bubble is None and not followed()   # no reply: nothing to follow
+    gui._send()                                      # a new message: follow its reply
+    assert followed()
+
+
+@pytest.mark.needs_core
+def test_gui_open_thinking_pane_shows_its_newest_line_then_lets_the_user_scroll_back():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.geometry("900x700+-3000+-3000")
+    root.update()
+    try:
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        for i in range(40):
+            bubble.add_thinking(f"thinking line {i}\n")
+            if i % 5 == 4:
+                bubble.refresh_activity()
+                root.update()
+                text = bubble._activity_view._text
+                assert text.yview()[1] == 1.0          # the newest line is in view
+        assert int(text.cget("height")) == 12          # the pane's maximum height
+        bubble.append_text("The answer.")
+        bubble.finalize()
+        text.yview_moveto(0.0)                         # the user scrolls back afterwards
+        bubble.refresh_activity()                      # a later clock tick
+        root.update()
+        assert text.yview()[0] == 0.0
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 def test_gui_open_thinking_pane_is_clearly_secondary_to_the_answer():
     import tkinter as tk
     from gui import app

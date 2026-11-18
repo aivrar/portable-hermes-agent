@@ -1726,6 +1726,7 @@ class HermesGUI:
     _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
     _chat_title_text = None      # the session's title once it has one
     _turn_clock_id = None        # the running reply's per-second clock (Tk after id)
+    _follow_reply = True         # keep the running reply's bottom in view
 
     def __init__(self):
         self.root = tk.Tk()
@@ -1968,7 +1969,7 @@ class HermesGUI:
 
         self.msg_canvas = tk.Canvas(msg_outer, bg=C["bg_main"],
                                     highlightthickness=0, borderwidth=0)
-        self.msg_sb = ttk.Scrollbar(msg_outer, orient="vertical", command=self.msg_canvas.yview)
+        self.msg_sb = ttk.Scrollbar(msg_outer, orient="vertical", command=self._scrollbar_moved)
         self.msg_canvas.configure(yscrollcommand=self.msg_sb.set)
 
         self.msg_sb.pack(side="right", fill="y")
@@ -1977,14 +1978,14 @@ class HermesGUI:
         self.msg_frame = tk.Frame(self.msg_canvas, bg=C["bg_main"])
         self._msg_win = self.msg_canvas.create_window((0, 0), window=self.msg_frame, anchor="nw")
 
-        self.msg_frame.bind("<Configure>", lambda e: self.msg_canvas.configure(
-            scrollregion=self.msg_canvas.bbox("all")))
+        self.msg_frame.bind("<Configure>", self._on_msg_frame_resized)
         self.msg_canvas.bind("<Configure>", lambda e: self.msg_canvas.itemconfig(
             self._msg_win, width=e.width))
 
         # Mouse wheel
         def _mw(event):
             self.msg_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            self._note_user_scroll()
         self.msg_canvas.bind_all("<MouseWheel>", _mw, add="+")
 
         # Input area
@@ -2137,6 +2138,7 @@ class HermesGUI:
         # Streaming bubble — shows tokens as they arrive, below its activity line
         # A session's first turn (any provider) sends Hermes's instructions.
         self._new_reply_bubble(first_turn=not self.bridge.conversation_history)
+        self._follow_reply = True        # the user just sent: show the reply
         self._has_streamed = False
 
         self._start_turn_clock()
@@ -2153,6 +2155,23 @@ class HermesGUI:
         w = MessageBubble(self.msg_frame, text, msg_type=msg_type, tool_name=tool_name)
         w.pack(fill="x")
         self._scroll_bottom()
+
+    def _scrollbar_moved(self, *args):
+        self.msg_canvas.yview(*args)
+        self._note_user_scroll()
+
+    def _note_user_scroll(self):
+        """The user scrolled the chat: follow a running reply again only if
+        they left the view at the bottom (never fight a user who scrolled up)."""
+        self._follow_reply = self.msg_canvas.yview()[1] >= 0.999
+
+    def _on_msg_frame_resized(self, _event=None):
+        """The chat grew or shrank. While a reply runs (thinking pane, answer
+        or activity line growing) its bottom stays in view, unless the user
+        scrolled up."""
+        self.msg_canvas.configure(scrollregion=self.msg_canvas.bbox("all"))
+        if self._stream_bubble is not None and self._follow_reply:
+            self.msg_canvas.yview_moveto(1.0)
 
     def _scroll_bottom(self):
         def _do_scroll():
@@ -2238,7 +2257,8 @@ class HermesGUI:
         # shows the tool running until the model is called again.
         self._new_reply_bubble(tool=name)
         self._show_activity_status()
-        self._scroll_bottom()
+        if self._follow_reply:
+            self._scroll_bottom()
 
     def _on_stream_delta(self, text):
         """Append a token to the streaming bubble."""
@@ -2251,7 +2271,8 @@ class HermesGUI:
         if self._stream_bubble:
             self._has_streamed = True
             self._stream_bubble.append_text(text)
-            self._scroll_bottom()
+            if self._follow_reply:
+                self._scroll_bottom()
             self.status_bar.set_thinking_key("status.streaming")
 
     def _cleanup_stream_bubble(self):
