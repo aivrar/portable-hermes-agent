@@ -427,20 +427,45 @@ def _verify_error(result: dict, failed: str, not_run: str) -> UpdateError:
                        f"{result.get('reason')}", code="verify_not_run")
 
 
+def refused_by(core: str, exc: UpdateError) -> list:
+    """``[core]`` when *exc* means that core was checked and refused, else []
+    (*core*: "newest", "given" (--ref/--zip) or "last_known_good")."""
+    return [core] if exc.code in CORE_REFUSED_CODES else []
+
+
+_CHECKED = {
+    "newest": "The newest upstream Hermes core",
+    "given": "The Hermes core you asked for (a chosen branch, tag, commit or ZIP)",
+}
+
+
 def core_refused_note(result: dict, include: str = "the lines above") -> str | None:
-    """What to do when a core install or update ended without the new core
-    (ASCII: it is printed on a cp1252 console). None for other failures."""
-    if result.get("ok"):
-        if (result.get("fallback") or {}).get("code") not in CORE_REFUSED_CODES:
-            return None
-        outcome = "The last verified core was installed instead."
-    elif {result.get("code"), result.get("newest_code")} & CORE_REFUSED_CODES:
-        outcome = ("Your install keeps working on the core it had."
-                   if result.get("kept_existing_core") else "No working core was installed.")
-    else:
+    """What to do when a core install or update ended without the core it
+    tried, because a core was checked and refused (``result["refused"]``,
+    in the order tried). ASCII: it is printed on a cp1252 console. None when
+    no core was refused (network, disk, a running Hermes, ...)."""
+    refused = result.get("refused") or []
+    if not refused:
         return None
-    return ("The newest upstream Hermes core did not pass Portable Hermes's checks. "
-            f"{outcome} Please report it at {ISSUES_URL} (search first, then "
+    fallback_too = refused[-1] == "last_known_good"
+    first = refused[0] if refused[0] != "last_known_good" else None
+    if first and fallback_too:
+        what = (f"{_CHECKED[first]} did not pass Portable Hermes's checks, and neither did "
+                "the last verified core this Portable Hermes release falls back to. The "
+                "second is a Portable Hermes defect.")
+    elif fallback_too:
+        what = ("The newest upstream Hermes core could not be installed (see above), and "
+                "the last verified core this Portable Hermes release falls back to did not "
+                "pass Portable Hermes's checks. That is a Portable Hermes defect.")
+    else:
+        what = f"{_CHECKED[first]} did not pass Portable Hermes's checks."
+    if result.get("ok"):
+        outcome = "The last verified core was installed instead."
+    elif result.get("kept_existing_core"):
+        outcome = "Your install keeps working on the core it had."
+    else:
+        outcome = "No working core was installed."
+    return (f"{what} {outcome} Please report it at {ISSUES_URL} (search first, then "
             f"\"New issue\") and include {include}.")
 
 
@@ -1022,6 +1047,7 @@ class CoreLifecycle:
         of git, and the files git tracks are wrapper paths, which the core
         installer never writes."""
         existing = "unknown"
+        tried = "given" if ref or zip_path else "newest"
         try:
             with common.InstallLock(self.root):
                 recovered = common.recover(self.root)
@@ -1034,12 +1060,14 @@ class CoreLifecycle:
                     # Fall back only when there is no working core to keep, the
                     # caller did not ask for a specific source and the problem
                     # is not this folder's Python (a runtime upgrade fixes that).
-                    if (existing != "none" or ref or zip_path or not allow_fallback
+                    lkg = None
+                    if not (existing != "none" or ref or zip_path or not allow_fallback
                             or primary.code == "runtime_too_old"):
-                        return self._failure(primary, existing)
-                    lkg = self.last_known_good()
+                        lkg = self.last_known_good()
                     if lkg is None:
-                        return self._failure(primary, existing)
+                        failure = self._failure(primary, existing)
+                        failure["refused"] = refused_by(tried, primary)
+                        return failure
                     self.say(f"Newest core failed ({primary.reason}).")
                     self.say(f"Falling back to last-known-good {lkg['commit'][:12]} ...")
                     try:
@@ -1052,10 +1080,12 @@ class CoreLifecycle:
                         failure = self._failure(second, existing)
                         failure["reason"] = (f"newest core failed: {primary.reason}; "
                                              f"last-known-good failed: {second.reason}")
-                        failure["newest_code"] = primary.code
+                        failure["refused"] = (refused_by(tried, primary)
+                                              + refused_by("last_known_good", second))
                         return failure
                     result["fallback"] = {"reason": primary.reason, "code": primary.code,
                                           "commit": lkg["commit"]}
+                    result["refused"] = refused_by(tried, primary)
                     result["message"] += " (last-known-good fallback)"
                 if recovered:
                     result["recovered"] = recovered
