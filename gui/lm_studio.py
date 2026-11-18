@@ -444,8 +444,11 @@ class LMStudioClient:
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {e}")
         _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
-        target = next((m for m in downloaded if model_key in (
-            getattr(m, "model_key", ""), getattr(m, "path", ""), getattr(m, "display_name", ""))), None)
+        # An exact key first: variants of one model ("name@q4_k_m", "name@q6_k")
+        # can share a display name, so the first match on any field could be
+        # another quantisation.
+        target = next((m for field in ("model_key", "path", "display_name") for m in downloaded
+                       if getattr(m, field, "") == model_key), None)
         # Hermes cannot chat with a window below the core's minimum: raise a
         # smaller request to it, and refuse a model that cannot go that far,
         # before anything is unloaded.
@@ -1004,8 +1007,8 @@ class LMStudioPanel(tk.Toplevel):
 
         idx = sel[0]
         model = self.models[idx]
-        # Use 'path' for SDK loading (full model path), 'id' for display/chat
-        model_path = model.get("path", model["id"])
+        # The row's key ("name@q6_k" for one variant) is what is loaded: the
+        # REST path can be shared by several variants of one model.
         model_id = model["id"]
         supported_context = model.get("context_length")
         if supported_context and supported_context < MINIMUM_CONTEXT_LENGTH:
@@ -1040,9 +1043,8 @@ class LMStudioPanel(tk.Toplevel):
                 # Log to file for debugging
                 import logging
                 _log = logging.getLogger("hermes.lmstudio")
-                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%s",
-                             model_path, model_id, ctx, placement)
-                self.client.load_model(model_path, gpu_placement=placement,
+                _log.warning("PANEL LOAD: model_id=%r ctx=%d gpu=%s", model_id, ctx, placement)
+                self.client.load_model(model_id, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
                     plan = getattr(self.client, "last_gpu_plan", None)
@@ -1057,7 +1059,7 @@ class LMStudioPanel(tk.Toplevel):
                     # Unload to stop JIT retry loops - here, so the model work
                     # (and the app's "busy") ends only after it.
                     self._unload_all()
-                    err = t("lmstudio.load_error_details", model=model_path, context=ctx,
+                    err = t("lmstudio.load_error_details", model=model_id, context=ctx,
                             gpu=gpu_label, error=e)
                     self._post_ui("_on_load_error", err, model_id)
 

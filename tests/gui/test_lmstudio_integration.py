@@ -723,7 +723,9 @@ def _refreshed_panel(monkeypatch):
     2026-11-18: three quantisations of one model in the REST list, every LLM
     again in the SDK's downloaded list (by key and file path), plus one
     model only the SDK lists."""
-    rest = [{"id": f"{DEEPSEEK}@{q.lower()}", "path": f"{DEEPSEEK}@{q.lower()}",
+    # One REST path for all three variants (a REST list may report the
+    # model's folder); only the id tells them apart.
+    rest = [{"id": f"{DEEPSEEK}@{q.lower()}", "path": "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF",
              "display_name": DEEPSEEK, "context_length": 131072, "quantization": q,
              "state": "not-loaded"} for q in ("Q4_K_M", "Q6_K", "Q8_0")]
     rest.append({"id": "lfm3-omni-2b", "path": "lfm3-omni-2b", "display_name": "lfm3-omni-2b",
@@ -780,6 +782,27 @@ def test_load_acts_on_the_selected_variant(monkeypatch):
 
     assert _all_done(tracked)
     assert client.load_model.call_args.args[0] == f"{DEEPSEEK}@q6_k"
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_client_loads_the_variant_named_by_its_key():
+    """Variants share a display name (and may share a folder): the key picks
+    the SDK object, so its own window limit and load are used."""
+    variants = [_sdk_model(f"{DEEPSEEK}@{q.lower()}", DEEPSEEK_FILE.format(q),
+                           "DeepSeek R1 0528 Qwen3 8B", ctx)
+                for q, ctx in (("Q4_K_M", 131072), ("Q6_K", 70000), ("Q8_0", 131072))]
+    for v in variants:
+        v.load_new_instance = Mock(return_value=Mock(identifier=v.model_key))
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(*variants)
+
+    client.load_model(f"{DEEPSEEK}@q6_k", context_length=131072)
+
+    q4, q6, q8 = variants
+    q4.load_new_instance.assert_not_called()
+    q8.load_new_instance.assert_not_called()
+    assert q6.load_new_instance.call_args.kwargs["config"].context_length == 70000   # its own limit
+    assert client.last_loaded_identifier == f"{DEEPSEEK}@q6_k"
 
 
 def test_panel_load_and_unload_are_refused_during_a_reply(monkeypatch):
