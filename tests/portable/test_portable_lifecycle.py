@@ -204,12 +204,18 @@ class FakeVerify:
         tree = Path(tree).resolve()
         self.calls.append(tree)
         if self.fail_when_file and (tree / self.fail_when_file).exists():
-            return {"ok": False, "reason": f"core_imports: {self.fail_when_file} is broken"}
+            return _failed_check("core_imports", f"{self.fail_when_file} is broken")
         if tree == self.root and self.fail_live:
-            return {"ok": False, "reason": "cli_selection: lm_studio_status not selected"}
+            return _failed_check("cli_selection", "lm_studio_status not selected")
         if tree != self.root and self.fail_staged:
-            return {"ok": False, "reason": "portable_tools_registered: missing run_python"}
+            return _failed_check("portable_tools_registered", "missing run_python")
         return {"ok": True, "checks": [{"name": "core_imports", "ok": True, "detail": ""}]}
+
+
+def _failed_check(name, detail):
+    """What verify returns when its checks ran and *name* failed."""
+    return {"ok": False, "reason": f"{name}: {detail}",
+            "checks": [{"name": name, "ok": False, "detail": detail}]}
 
 
 @pytest.fixture()
@@ -700,10 +706,35 @@ def test_update_of_existing_core_never_falls_back(root, tmp_path, monkeypatch):
     assert "keeps working on the core it had" in core.core_refused_note(result)
 
 
+@pytest.mark.parametrize("live", [False, True])
+def test_a_verification_that_could_not_run_is_not_called_a_refused_core(
+        root, tmp_path, monkeypatch, live):
+    """A verify process that could not start, timed out or gave no result
+    says so; the user is not asked to report the core."""
+    life, _, verify = lifecycle(root)
+    assert life.install(zip_path=str(core_zip(tmp_path, CORE_V1, SHA1, "v1.zip")))["ok"]
+    not_run = {"ok": False, "reason": "verification process failed to run: timed out after 900s"}
+    real = verify.__call__
+
+    def flaky(tree, gui=True):
+        if (Path(tree).resolve() == verify.root) == live:
+            return dict(not_run)
+        return real(tree, gui)
+
+    life._run_verify = flaky
+    result = life.install(zip_path=str(core_zip(tmp_path, CORE_V2, SHA2, "v2.zip")))
+    assert not result["ok"] and result["code"] == "verify_not_run"
+    assert "could not be verified" in result["reason"]
+    assert "(the check process did not finish)" in result["reason"]
+    assert ("rolled back" in result["reason"]) == live
+    assert "timed out after 900s" in result["reason"]
+    assert result["kept_existing_core"] and core.core_refused_note(result) is None
+
+
 # Which failures tell the user to report the core (the core itself did not pass
 # Portable Hermes's checks) and which do not (their side, or not the core).
 REPORTED = ["verify_failed", "not_a_core", "lock_unusable", "unsafe_archive"]
-NOT_REPORTED = ["network", "api", "timeout", "no_archive", "insecure_url", "bad_archive",
+NOT_REPORTED = ["verify_not_run", "network","api", "timeout", "no_archive", "insecure_url", "bad_archive",
                 "path_too_long", "save_failed", "locked", "swap_failed", "rollback_failed",
                 "journal_exists", "journal_damaged", "pip", "dependencies_failed",
                 "runtime_too_old", "python_incompatible", "internal", "usage",

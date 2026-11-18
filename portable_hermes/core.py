@@ -417,6 +417,16 @@ CORE_REFUSED_CODES = frozenset({"verify_failed", "not_a_core", "lock_unusable",
 ISSUES_URL = "https://github.com/aivrar/portable-hermes-agent/issues"
 
 
+def _verify_error(result: dict, failed: str, not_run: str) -> UpdateError:
+    """verify_failed when verify's checks ran and one failed (the core's
+    fault); verify_not_run when the verify process could not start, timed out
+    or gave no result (nothing was learnt about the core)."""
+    if any(not check.get("ok") for check in result.get("checks") or []):
+        return UpdateError(f"{failed}: {result.get('reason')}", code="verify_failed")
+    return UpdateError(f"{not_run} (the check process did not finish): "
+                       f"{result.get('reason')}", code="verify_not_run")
+
+
 def core_refused_note(result: dict, include: str = "the lines above") -> str | None:
     """What to do when a core install or update ended without the new core
     (ASCII: it is printed on a cp1252 console). None for other failures."""
@@ -887,8 +897,8 @@ class CoreLifecycle:
         self.say("Verifying the new core in a fresh process ...")
         result = self._run_verify(top)
         if not result.get("ok"):
-            raise UpdateError(f"verification of {(sha or 'the new core')[:12]} failed: "
-                              f"{result.get('reason')}", code="verify_failed")
+            raise _verify_error(result, f"verification of {(sha or 'the new core')[:12]} failed",
+                                "the new core could not be verified")
 
         # Plan the swap. A live file whose content is not what we recorded
         # installing (a user edit, or a file we never installed) is kept.
@@ -965,8 +975,9 @@ class CoreLifecycle:
         txn.apply()
         live_result = self._run_verify(self.root)
         if not live_result.get("ok"):
-            raise UpdateError("the installed core failed verification and was rolled back: "
-                              f"{live_result.get('reason')}", code="verify_failed")
+            raise _verify_error(live_result,
+                                "the installed core failed verification and was rolled back",
+                                "the installed core could not be verified and was rolled back")
         kept = txn.commit()
         # Committed: nothing below may fail the update.
         warnings = []
