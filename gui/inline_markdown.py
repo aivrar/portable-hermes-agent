@@ -3,8 +3,10 @@ text tags. Nothing more: no headings, lists, links or italics.
 
 The rules are conservative: anything doubtful is shown as typed.
 
-- Styling never crosses a line. A line starting with ``` opens or closes a
-  fenced block; the fence lines and everything inside stay literal.
+- Styling never crosses a line. A line starting with ``` or ~~~ (or a
+  longer run) opens a fenced block, which only a line holding a run of the
+  same character at least as long closes; the fence lines and everything
+  inside stay literal.
 - A run of backticks opens a code span only if the same run closes it later
   on the same line; inside a code span nothing is bold.
 - Only a run of exactly two asterisks can be bold, and the bold text holds
@@ -108,23 +110,44 @@ def _styled_segment(line: str, pieces: List[Piece]):
             _add(pieces, token, tuple(t for t, on in ((BOLD, bold), (CODE, code)) if on))
 
 
-def line_spans(line: str, fenced: bool = False) -> Tuple[List[Piece], bool]:
-    """One line's pieces, and whether a fenced block is open after it."""
+_FENCE = re.compile(r"\s*(`{3,}|~{3,})(.*)")
+
+
+def _opens_fence(line: str):
+    """(character, run length) when *line* opens a fenced block, else None.
+    A backtick fence's info text may not hold a backtick (```x``` is code)."""
+    match = _FENCE.fullmatch(line)
+    if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
+        return None
+    return match.group(1)[0], len(match.group(1))
+
+
+def _closes_fence(line: str, fence) -> bool:
+    """Only a run of the opening character, at least as long, and spaces."""
+    char, length = fence
+    run = line.strip()
+    return len(run) >= length and run == char * len(run)
+
+
+def line_spans(line: str, fence=None):
+    """One line's pieces, and the fenced block open after it: None, or the
+    opening fence's (character, run length)."""
     pieces: List[Piece] = []
-    if line.lstrip().startswith("```"):
+    if fence is not None:
         _add(pieces, line, ())
-        return pieces, not fenced
-    if fenced:
+        return pieces, None if _closes_fence(line, fence) else fence
+    opened = _opens_fence(line)
+    if opened is not None:
         _add(pieces, line, ())
-    else:
-        _styled_line(line, pieces)
-    return pieces, fenced
+        return pieces, opened
+    _styled_line(line, pieces)
+    return pieces, None
 
 
 def spans(text: str) -> List[Piece]:
     """A complete text's pieces."""
     pieces: List[Piece] = []
-    fenced = False
+    fenced = None
     for k, line in enumerate((text or "").split("\n")):
         if k:
             _add(pieces, "\n", ())

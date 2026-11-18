@@ -54,9 +54,19 @@ def test_fenced_blocks_stay_literal():
     assert spans("```\n**open fence**") == [("```\n**open fence**", ())]
 
 
+def test_only_a_long_enough_fence_closes_the_block():
+    inner = "````md\n```\n**literal**\n```\n````"
+    assert spans(inner + "\n**bold**") == [(inner + "\n", ()), ("bold", B)]
+    assert spans("```\n```` \n**bold**") == [("```\n```` \n", ()), ("bold", B)]
+    assert spans("```\n``` x\n**literal**") == [("```\n``` x\n**literal**", ())]
+    assert spans("~~~\n```\n**literal**\n~~~\n**bold**") == [
+        ("~~~\n```\n**literal**\n~~~\n", ()), ("bold", B)]
+    assert spans("```x``` **bold**") == [("x", K), (" ", ()), ("bold", B)]   # code, no fence
+
+
 def test_line_by_line_matches_the_whole_text():
     text = "a **b**\n```\n**c**\n```\n`d` e"
-    pieces, fenced = [], False
+    pieces, fenced = [], None
     for line in text.split("\n"):
         line_pieces, fenced = line_spans(line, fenced)
         pieces.append(line_pieces)

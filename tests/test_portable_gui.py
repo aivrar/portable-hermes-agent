@@ -527,6 +527,7 @@ MARKDOWN_CORPUS = [
     "***\n*x**", "Your **RTX 3060** has `12288` MiB and **bold",
     "line one **a\nb** two `c\nd` three",
     "**/*.py,**/*.txt", "f(*args, **kwargs) and **more**", "![**x**](http://a/**/b.png)",
+    "````md\n```\n**literal**\n```\n````\n**bold** after", "~~~\n**literal**\n~~~\n`code`",
 ]
 
 

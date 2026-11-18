@@ -360,7 +360,7 @@ class StreamingBubble(tk.Frame):
         self._shown = []      # the chunks given to the body, markers included
         self._line = []       # the chunks of its last, unfinished line
         self._line_len = 0
-        self._fenced = False  # a ``` block is open after the finished lines
+        self._fenced = None  # the fence open after the finished lines (line_spans)
         self._tall = False    # the body has reached its height limit
         self._bg = C["msg_ai"]
         self._refresh_id = None
