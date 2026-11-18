@@ -9,7 +9,6 @@ import json
 import subprocess
 import threading
 import queue
-import time
 import tempfile
 from urllib.parse import urlsplit
 import tkinter as tk
@@ -117,6 +116,16 @@ def get_available_gpus() -> List[str]:
     except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
         pass
     return gpus
+
+
+def _one_row_per_model(models: List[Dict]) -> List[Dict]:
+    """Keep one row per model id (first position), preferring a loaded row."""
+    rows: Dict[str, Dict] = {}
+    for m in models:
+        kept = rows.get(m["id"])
+        if kept is None or (m.get("state") == "loaded" and kept.get("state") != "loaded"):
+            rows[m["id"]] = m
+    return list(rows.values())
 
 
 # ============================================================================
@@ -340,7 +349,7 @@ class LMStudioClient:
                             "state": state,
                         })
                     if result:
-                        return result
+                        return _one_row_per_model(result)
             except Exception:
                 continue
         
@@ -406,19 +415,20 @@ class LMStudioClient:
                     _log.info("Found match: model_key=%r path=%r", mk, mp)
                     break
 
+            # No instance_identifier: LM Studio then names the instance after
+            # the model key (e.g. "gemma-4-e4b-it"; "key:2" only if another
+            # instance survived the unload above). That id is what the model
+            # list, the chat requests and every label show, so the user sees
+            # the real model name and the list shows it once, as loaded.
             if target is not None:
                 # Use the SDK model object's own load method
                 _log.info("Loading via SDK model object, ctx=%d gpu=%r", context_length, gpu_index)
-                target.load_new_instance(
-                    config=config, ttl=86400,
-                    instance_identifier=f"hermes-{int(time.time())}",
-                )
+                target.load_new_instance(config=config, ttl=86400)
             else:
                 # Fallback: try string-based load
                 _log.warning("No SDK model object found, trying string key: %r", model_key)
                 self._sdk_client.llm.load_new_instance(
-                    model_key, f"hermes-{int(time.time())}",
-                    config=config, ttl=86400,
+                    model_key, config=config, ttl=86400,
                 )
             return True
         except Exception as e:

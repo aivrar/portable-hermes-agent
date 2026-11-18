@@ -144,3 +144,46 @@ def test_connection_reads_tk_variables_only_on_ui_thread(monkeypatch):
     lm.LMStudioPanel._connect(panel)
     assert complete.wait(5)
     assert client.api_key == "test-key"
+
+
+def _sdk_with_downloaded(*downloaded):
+    llm = Mock()
+    llm.list_loaded.return_value = []
+    llm.list_downloaded.return_value = list(downloaded)
+    return SimpleNamespace(llm=llm)
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_panel_load_keeps_lm_studio_default_identifier_model_key(monkeypatch):
+    """No opaque "hermes-<time>" id: LM Studio names the instance after the model key."""
+    target = Mock(model_key="gemma-4-e4b-it", path="lmstudio-community/gemma-4-e4b-it",
+                  display_name="Gemma 4 E4B")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model("gemma-4-e4b-it", context_length=65536)
+
+    target.load_new_instance.assert_called_once()
+    assert "instance_identifier" not in target.load_new_instance.call_args.kwargs
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_panel_string_load_fallback_passes_no_identifier():
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded()
+
+    assert client.load_model("unlisted-model", context_length=65536)
+
+    call = client._sdk_client.llm.load_new_instance.call_args
+    assert call.args == ("unlisted-model",)
+    assert "instance_identifier" not in call.kwargs
+
+
+def test_model_list_shows_a_loaded_model_once():
+    rows = lm._one_row_per_model([
+        {"id": "qwen", "state": "not-loaded"},
+        {"id": "gemma-4-e4b-it", "state": "not-loaded"},
+        {"id": "gemma-4-e4b-it", "state": "loaded"},
+    ])
+    assert rows == [{"id": "qwen", "state": "not-loaded"},
+                    {"id": "gemma-4-e4b-it", "state": "loaded"}]
