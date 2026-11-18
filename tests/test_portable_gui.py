@@ -1423,6 +1423,30 @@ def test_gui_interrupt_while_the_turn_finishes_is_harmless():
 
 
 @pytest.mark.needs_core
+@pytest.mark.parametrize("lang", ["en", "zh-hant", "zh", "es"])
+def test_gui_use_for_chat_says_the_next_message_uses_the_model(lang):
+    """The agent is dropped, so the next message already uses the model: no New Chat."""
+    from unittest.mock import Mock
+    from gui import i18n
+
+    bridge = Mock(is_running=False)
+    bridge.set_local_mode.return_value = False
+    gui = _gui_with_bridge(bridge)
+    previous = i18n.get_language()
+    i18n.set_language(lang, persist=False)
+    try:
+        gui._on_lm_studio_ready("http://127.0.0.1:1234", "gemma-4-e4b-it")
+        new_chat = i18n.t("sidebar.new_chat")
+    finally:
+        i18n.set_language(previous, persist=False)
+
+    bridge.set_local_mode.assert_called_once_with("http://127.0.0.1:1234", "gemma-4-e4b-it")
+    text, kind = gui._add_msg.call_args.args
+    assert kind == "system" and "gemma-4-e4b-it" in text
+    assert new_chat not in text
+
+
+@pytest.mark.needs_core
 def test_gui_model_switch_is_refused_while_a_reply_runs():
     from unittest.mock import Mock
     from gui import app

@@ -2180,9 +2180,9 @@ class HermesGUI:
             self.status_bar.set_model(f"LM Studio: {short}")
             self.sidebar.set_model(model_id)
 
+        # The agent was dropped, so the next message builds one for this model.
         self._add_msg(t("chat.local_model_ready",
-                        model=model_id or t("chat.default_loaded_model"),
-                        new_chat=t("sidebar.new_chat")), "system")
+                        model=model_id or t("chat.default_loaded_model")), "system")
         self._note_dropped_resume(dropped)
 
     def _show_api_setup(self):
