@@ -1837,6 +1837,18 @@ def test_gui_header_shows_the_session_title_once_it_has_one():
     gui._new_chat()
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
 
+    # An untitled stored session, resumed: a worker's end refreshing the
+    # header later keeps "Resumed Session" while that session is shown.
+    sessions.insert(0, {"id": "s3", "title": None, "preview": "stored"})
+    gui._show_session_title("s3", "resumed")
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
+    bridge.session_id = "s3"
+    gui._on_worker_done()
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
+    bridge.session_id = "s4"                               # rebuilt agent: a new session
+    gui._on_worker_done()
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+
     gui._show_session_title("s0", "resumed")               # resuming a stored session
     gui.chat_title.configure.assert_called_with(text="Other chat")
     gui._show_session_title("s2", "resumed")               # one without a title

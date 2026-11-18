@@ -1727,6 +1727,7 @@ class StatusBar(tk.Frame):
 
 class HermesGUI:
     _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
+    _title_session = None        # the session id _show_session_title last showed
     _chat_title_text = None      # the session's title once it has one
     _turn_clock_id = None        # the running reply's per-second clock (Tk after id)
     _follow_reply = True         # keep the chat's bottom in view (the user did not scroll up)
@@ -2386,10 +2387,15 @@ class HermesGUI:
         key = "chat.resumed_session" if kind == "resumed" else "chat.new_chat_title"
         self.chat_title.configure(text=title or t(key))
 
-    def _show_session_title(self, session_id, kind="new"):
+    def _show_session_title(self, session_id, kind=None):
         """Header for *session_id*: its title, as the sidebar's session list
-        (just refreshed) has it, else the *kind* label ("New Chat" after a
-        reply: a rebuilt agent's new session has no title yet)."""
+        (just refreshed) has it, else the *kind* label. Without *kind*: the
+        header's kind while it shows the same session (a resumed untitled
+        session stays "Resumed Session"), else "New Chat" (a rebuilt
+        agent's new session has no title yet)."""
+        if kind is None:
+            kind = self._chat_title_kind if session_id == self._title_session else "new"
+        self._title_session = session_id
         title = next((s.get("title") for s in getattr(self.sidebar, "_sessions_data", None) or []
                       if session_id and s.get("id") == session_id), None)
         self._set_chat_title(kind, title)
