@@ -304,8 +304,19 @@ class LMStudioClient:
                          if not a.startswith("_") and not callable(getattr(m0, a, None))}
                 _log.info("SDK DownloadedModel attrs: %s", attrs)
                 _log.info("SDK DownloadedModel str: %s", str(m0))
-            return [{"path": self._extract_model_id(m),
-                     "display_name": self._extract_display_name(m)} for m in models]
+            rows = []
+            for m in models:
+                info = getattr(m, "info", None)
+                key = getattr(m, "model_key", None)
+                rows.append({
+                    "path": self._extract_model_id(m),
+                    # The key the REST list and load_model use for this model.
+                    "model_key": key if isinstance(key, str) and key else None,
+                    "display_name": (getattr(info, "display_name", None)
+                                     or self._extract_display_name(m)),
+                    "context_length": getattr(info, "max_context_length", None),
+                })
+            return rows
         except Exception:
             return []
 
@@ -375,6 +386,8 @@ class LMStudioClient:
                         
                         context_length = m.get("max_context_length") or m.get("context_length")
                         quantization = m.get("quantization") or "unknown"
+                        if isinstance(quantization, dict):     # /api/v1: {"name": "Q4_K_M", ...}
+                            quantization = quantization.get("name") or "unknown"
                         state = m.get("state") or "ready"
                         
                         result.append({
@@ -431,8 +444,11 @@ class LMStudioClient:
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {e}")
         _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
-        target = next((m for m in downloaded if model_key in (
-            getattr(m, "model_key", ""), getattr(m, "path", ""), getattr(m, "display_name", ""))), None)
+        # An exact key first: variants of one model ("name@q4_k_m", "name@q6_k")
+        # can share a display name, so the first match on any field could be
+        # another quantisation.
+        target = next((m for field in ("model_key", "path", "display_name") for m in downloaded
+                       if getattr(m, field, "") == model_key), None)
         # Hermes cannot chat with a window below the core's minimum: raise a
         # smaller request to it, and refuse a model that cannot go that far,
         # before anything is unloaded.
@@ -874,16 +890,20 @@ class LMStudioPanel(tk.Toplevel):
             if HAS_SDK and self.client._sdk_client:
                 try:
                     downloaded = self.client.list_downloaded_models()
-                    # Merge downloaded models not in API list
+                    # Add downloaded models the REST list lacks. The REST list
+                    # names models by key; the SDK by key and file path, so
+                    # match on both (on the path alone every model came twice).
                     api_ids = {m["id"] for m in models}
                     for d in downloaded:
-                        if d["path"] not in api_ids:
-                            models.append({
-                                "id": d["path"],
-                                "display_name": d.get("display_name", d["path"]),
-                                "context_length": None,
-                                "state": "not-loaded",
-                            })
+                        key = d.get("model_key")
+                        if d["path"] in api_ids or key in api_ids:
+                            continue
+                        models.append({
+                            "id": key or d["path"],
+                            "display_name": d.get("display_name") or key or d["path"],
+                            "context_length": d.get("context_length"),
+                            "state": "not-loaded",
+                        })
                 except Exception:
                     pass
             self._post_ui("_display_models", models, select_id, select_ids)
@@ -904,6 +924,9 @@ class LMStudioPanel(tk.Toplevel):
         for m in models:
             mid = m["id"]
             display = m.get("display_name") or mid
+            if "@" in mid:      # one of several variants of a model: say which
+                quant = m.get("quantization")
+                display += f" [{quant if quant and quant != 'unknown' else mid.split('@', 1)[1]}]"
             state = m.get("state", "")
             ctx = m.get("context_length")
             label = display
@@ -984,8 +1007,8 @@ class LMStudioPanel(tk.Toplevel):
 
         idx = sel[0]
         model = self.models[idx]
-        # Use 'path' for SDK loading (full model path), 'id' for display/chat
-        model_path = model.get("path", model["id"])
+        # The row's key ("name@q6_k" for one variant) is what is loaded: the
+        # REST path can be shared by several variants of one model.
         model_id = model["id"]
         supported_context = model.get("context_length")
         if supported_context and supported_context < MINIMUM_CONTEXT_LENGTH:
@@ -1020,9 +1043,8 @@ class LMStudioPanel(tk.Toplevel):
                 # Log to file for debugging
                 import logging
                 _log = logging.getLogger("hermes.lmstudio")
-                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%s",
-                             model_path, model_id, ctx, placement)
-                self.client.load_model(model_path, gpu_placement=placement,
+                _log.warning("PANEL LOAD: model_id=%r ctx=%d gpu=%s", model_id, ctx, placement)
+                self.client.load_model(model_id, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
                     plan = getattr(self.client, "last_gpu_plan", None)
@@ -1037,7 +1059,7 @@ class LMStudioPanel(tk.Toplevel):
                     # Unload to stop JIT retry loops - here, so the model work
                     # (and the app's "busy") ends only after it.
                     self._unload_all()
-                    err = t("lmstudio.load_error_details", model=model_path, context=ctx,
+                    err = t("lmstudio.load_error_details", model=model_id, context=ctx,
                             gpu=gpu_label, error=e)
                     self._post_ui("_on_load_error", err, model_id)
 

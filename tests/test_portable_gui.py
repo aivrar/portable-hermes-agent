@@ -1423,6 +1423,176 @@ def test_gui_interrupt_while_the_turn_finishes_is_harmless():
 
 
 @pytest.mark.needs_core
+@pytest.mark.parametrize("lang", ["en", "zh-hant", "zh", "es"])
+def test_gui_use_for_chat_says_the_next_message_uses_the_model(lang):
+    """The agent is dropped, so the next message already uses the model: no New Chat."""
+    from unittest.mock import Mock
+    from gui import i18n
+
+    bridge = Mock(is_running=False)
+    bridge.set_local_mode.return_value = False
+    gui = _gui_with_bridge(bridge)
+    previous = i18n.get_language()
+    i18n.set_language(lang, persist=False)
+    try:
+        gui._on_lm_studio_ready("http://127.0.0.1:1234", "gemma-4-e4b-it")
+        new_chat = i18n.t("sidebar.new_chat")
+    finally:
+        i18n.set_language(previous, persist=False)
+
+    bridge.set_local_mode.assert_called_once_with("http://127.0.0.1:1234", "gemma-4-e4b-it")
+    text, kind = gui._add_msg.call_args.args
+    assert kind == "system" and "gemma-4-e4b-it" in text
+    assert new_chat not in text
+
+
+@pytest.mark.needs_core
+def _bundled_skill(root, name):
+    skill = root / "demo" / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: A test skill.\n---\nDo it.\n", encoding="utf-8")
+
+
+def _skill_names(home):
+    return sorted(p.parent.name for p in (home / "skills").rglob("SKILL.md"))
+
+
+@pytest.mark.needs_core
+def test_gui_skills_sync_completes_a_partly_seeded_home(monkeypatch, tmp_path):
+    """The core's sync runs whatever the home holds: a home with one of the
+    bundled skills (an earlier sync stopped half way) gets the rest."""
+    from gui import agent_bridge, app
+
+    bundled = tmp_path / "bundled"
+    _bundled_skill(bundled, "first-skill")
+    home = tmp_path / "home"
+    _bundled_skill(home / "skills", "first-skill")
+    _bundled_skill(bundled, "second-skill")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled))
+    monkeypatch.setattr(agent_bridge, "_skills_synced", False)
+
+    assert agent_bridge.sync_bundled_skills_once() is True
+    assert _skill_names(home) == ["first-skill", "second-skill"]
+    names = [n for skills in app._discover_installed_skills(home / "skills").values()
+             for n, _d in skills]
+    assert "second-skill" in names                      # the Skills browser lists it
+
+
+@pytest.mark.needs_core
+def test_gui_skills_sync_runs_once_per_process_and_never_raises(monkeypatch):
+    import tools.skills_sync as skills_sync
+    from gui import agent_bridge
+
+    calls = []
+
+    def broken(**kw):
+        calls.append(kw)
+        raise OSError("disk full")
+    monkeypatch.setattr(skills_sync, "sync_skills", broken)
+    monkeypatch.setattr(agent_bridge, "_skills_synced", False)
+
+    assert agent_bridge.sync_bundled_skills_once() is False   # failed: logged, not raised
+    assert agent_bridge.sync_bundled_skills_once() is False   # not again in this process
+    assert calls == [{"quiet": True}]
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("may_sync", [True, False])
+def test_gui_skills_browser_syncs_only_when_no_reply_runs(monkeypatch, tmp_path, may_sync):
+    from unittest.mock import Mock
+    from gui import app
+
+    import queue
+    import threading
+
+    sync = Mock()
+    monkeypatch.setattr(app, "sync_bundled_skills_once", sync)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _bundled_skill(tmp_path / "skills", "listed-skill")
+    browser = object.__new__(app.SkillsBrowser)
+    shown, tk_calls = [], []
+    browser.__dict__.update(_may_sync=may_sync, _result=queue.SimpleQueue(),
+                            after=lambda _ms, fn: tk_calls.append(threading.current_thread()),
+                            _set=lambda text, **_kw: shown.append(text))
+
+    worker = threading.Thread(target=browser._load)
+    worker.start()
+    worker.join(30)
+    assert tk_calls == [] and shown == []               # the worker never touches Tk
+    browser._poll_result()                              # Tk thread shows the result
+
+    assert sync.call_count == (1 if may_sync else 0)
+    assert "listed-skill" in shown[-1]                  # during a reply: what is there
+
+
+@pytest.mark.needs_core
+def test_gui_skills_browser_shows_the_list_in_a_real_window(monkeypatch, tmp_path):
+    import time
+    import tkinter as tk
+    from gui import app
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _bundled_skill(tmp_path / "skills", "windowed-skill")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        browser = app.SkillsBrowser(root, may_sync=False)
+        deadline = time.time() + 10
+        while "windowed-skill" not in browser.text.get("1.0", "end") and time.time() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert "windowed-skill" in browser.text.get("1.0", "end")
+        assert browser._poll_id is None                 # polling stopped once shown
+        browser.destroy()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_header_shows_the_session_title_once_it_has_one():
+    from unittest.mock import Mock
+    from gui.i18n import t
+
+    bridge = Mock(is_running=False, session_id="s1")
+    bridge.get_token_usage.return_value = {}
+    bridge.new_session.return_value = True
+    gui = _gui_with_bridge(bridge)
+    gui._cleanup_stream_bubble = Mock()
+    sessions = [{"id": "s0", "title": "Other chat"}, {"id": "s1", "title": None, "preview": "hi"}]
+    gui.sidebar._sessions_data = sessions
+
+    gui._on_complete({})                                   # no title yet
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+
+    sessions[1]["title"] = "General assistance capabilities"
+    gui._on_complete({})
+    gui.chat_title.configure.assert_called_with(text="General assistance capabilities")
+
+    # A model or settings change rebuilds the agent with a new session id;
+    # until that session has a title, the header says New Chat again.
+    bridge.session_id = "s2"
+    sessions.insert(0, {"id": "s2", "title": None, "preview": "next"})
+    gui._on_complete({})
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+    assert gui._chat_title_text is None
+
+    gui._new_chat()
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+
+    gui._show_session_title("s0", "resumed")               # resuming a stored session
+    gui.chat_title.configure.assert_called_with(text="Other chat")
+    gui._show_session_title("s2", "resumed")               # one without a title
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
+    gui._set_chat_title("resumed", "x" * 80)               # long titles are shortened
+    assert gui.chat_title.configure.call_args.kwargs["text"] == "x" * 57 + "..."
+
+
+@pytest.mark.needs_core
 def test_gui_model_switch_is_refused_while_a_reply_runs():
     from unittest.mock import Mock
     from gui import app

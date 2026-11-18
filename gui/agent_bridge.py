@@ -48,6 +48,36 @@ def _load_cli_config() -> dict:
         }
 
 
+_skills_sync_lock = threading.Lock()
+_skills_synced = False
+
+
+def sync_bundled_skills_once() -> bool:
+    """Run the core's bundled-skills sync (tools.skills_sync) once per GUI
+    process, as the `hermes` CLI does on every start.
+
+    install.bat syncs only the home it installs into; any other home (a
+    second profile, HERMES_HOME set by hand) would have no skills in the
+    GUI. The sync is manifest-based: it adds new bundled skills, updates
+    untouched ones, and leaves user-edited and user-deleted skills alone,
+    so it is safe on every start and retries whatever an earlier run did
+    not finish. Call it from a worker thread (it copies files; a second
+    caller waits for the first). True if it ran now; never raises."""
+    global _skills_synced
+    with _skills_sync_lock:
+        if _skills_synced:
+            return False
+        _skills_synced = True
+        try:
+            from tools.skills_sync import sync_skills
+            sync_skills(quiet=True)
+            return True
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning("bundled skills sync failed", exc_info=True)
+            return False
+
+
 class TurnInProgress(RuntimeError):
     """A model/provider switch was requested while a reply is running."""
 
@@ -257,6 +287,7 @@ class AgentBridge:
 
     def _create_agent(self):
         from run_agent import AIAgent
+        sync_bundled_skills_once()   # before the first agent indexes the skills
         model = self.get_model()
         agent_config = self.config.get("agent", {})
 

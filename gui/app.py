@@ -10,6 +10,7 @@ import io
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import threading
+import queue
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -27,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
-from gui.agent_bridge import AgentBridge
+from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
 from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
@@ -1288,8 +1289,11 @@ def _discover_installed_skills(skills_dir: Path) -> Dict[str, list]:
     return categories
 
 class SkillsBrowser(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, may_sync=False):
+        """*may_sync*: no reply is running, so the list may first run the
+        once-per-process skills sync; otherwise it lists what is there."""
         super().__init__(parent)
+        self._may_sync = may_sync
         self.title(t("skills.title", "Skills Browser"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
@@ -1310,10 +1314,15 @@ class SkillsBrowser(tk.Toplevel):
 
         self._content_data = None
         register_listener(self.update_ui_language)
+        self._result = queue.SimpleQueue()
         threading.Thread(target=self._load, daemon=True).start()
+        self._poll_result()
 
     def destroy(self):
         unregister_listener(self.update_ui_language)
+        if getattr(self, "_poll_id", None):
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
         super().destroy()
 
     def update_ui_language(self, _lang_code=None):
@@ -1324,11 +1333,28 @@ class SkillsBrowser(tk.Toplevel):
             self._set(t(key, **kwargs), key=key, **kwargs)
 
     def _load(self):
+        """Worker thread: never touches Tk; the result goes through
+        self._result to _poll_result on the Tk thread."""
+        self._result.put(self._read_skills())
+
+    def _poll_result(self):
+        """Tk thread: show the worker's result once it is there."""
         try:
+            text, key, kwargs = self._result.get_nowait()
+        except queue.Empty:
+            self._poll_id = self.after(50, self._poll_result)
+            return
+        self._poll_id = None
+        self._set(text, key=key, **kwargs)
+
+    def _read_skills(self):
+        """(text, i18n key or None, key arguments) for the list."""
+        try:
+            if self._may_sync:
+                sync_bundled_skills_once()   # a home not made by install.bat has none yet
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
-                self.after(0, lambda: self._set(t("skills.no_dir"), key="skills.no_dir"))
-                return
+                return t("skills.no_dir"), "skills.no_dir", {}
             cats = _discover_installed_skills(skills_dir)
             lines = []
             for cat in sorted(cats):
@@ -1337,13 +1363,11 @@ class SkillsBrowser(tk.Toplevel):
                 for n, d in cats[cat]:
                     lines.append(f"    {n:30s} {d[:50]}" if d else f"    {n}")
             if lines:
-                self.after(0, lambda: self._set("\n".join(lines)))
-            else:
-                self.after(0, lambda: self._set(t("skills.no_skills"), key="skills.no_skills"))
+                return "\n".join(lines), None, {}
+            return t("skills.no_skills"), "skills.no_skills", {}
         except Exception as e:
             error = str(e)
-            self.after(0, lambda: self._set(t("skills.load_error", error=error),
-                                            key="skills.load_error", error=error))
+            return t("skills.load_error", error=error), "skills.load_error", {"error": error}
 
     def _set(self, txt, key=None, **kwargs):
         self._content_data = (key, kwargs) if key else None
@@ -1459,6 +1483,9 @@ class StatusBar(tk.Frame):
 # ============================================================================
 
 class HermesGUI:
+    _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
+    _chat_title_text = None      # the session's title once it has one
+
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()  # Hide until fully themed to avoid white flash
@@ -1633,8 +1660,7 @@ class HermesGUI:
 
         # 6. Chat title and persistent message headers
         if hasattr(self, "chat_title") and self.chat_title.winfo_exists():
-            key = "chat.resumed_session" if self._chat_title_kind == "resumed" else "chat.new_chat_title"
-            self.chat_title.configure(text=t(key))
+            self._set_chat_title(self._chat_title_kind, self._chat_title_text)
         if hasattr(self, "msg_frame"):
             for child in self.msg_frame.winfo_children():
                 if isinstance(child, MessageBubble):
@@ -1975,11 +2001,30 @@ class HermesGUI:
         if tokens.get("total"):
             total = tokens["total"]
             self.status_bar.set_tokens(total)
-        # Refresh session list
+        # Refresh session list; the header shows the title once there is one
         try:
             self.sidebar.refresh_sessions()
+            self._show_session_title(self.bridge.session_id)
         except Exception:
             pass
+
+    def _set_chat_title(self, kind, title=None):
+        """Chat header: the session's title when it has one, else "New Chat"
+        or "Resumed Session" (*kind*)."""
+        self._chat_title_kind = kind
+        self._chat_title_text = title or None
+        if title and len(title) > 60:
+            title = title[:57] + "..."
+        key = "chat.resumed_session" if kind == "resumed" else "chat.new_chat_title"
+        self.chat_title.configure(text=title or t(key))
+
+    def _show_session_title(self, session_id, kind="new"):
+        """Header for *session_id*: its title, as the sidebar's session list
+        (just refreshed) has it, else the *kind* label ("New Chat" after a
+        reply: a rebuilt agent's new session has no title yet)."""
+        title = next((s.get("title") for s in getattr(self.sidebar, "_sessions_data", None) or []
+                      if session_id and s.get("id") == session_id), None)
+        self._set_chat_title(kind, title)
 
     # ---- Commands ----
 
@@ -2006,8 +2051,7 @@ class HermesGUI:
             return
         for w in self.msg_frame.winfo_children():
             w.destroy()
-        self._chat_title_kind = "new"
-        self.chat_title.configure(text=t("chat.new_chat_title"))
+        self._set_chat_title("new")
         self.status_bar.set_ready()
         self._add_msg(t("chat.session_started", "New session started."), "system")
         self.input_text.focus_set()
@@ -2071,8 +2115,7 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            self._chat_title_kind = "resumed"
-            self.chat_title.configure(text=t("chat.resumed_session"))
+            self._show_session_title(session_id, "resumed")
 
             # Display messages
             for msg in messages:
@@ -2123,7 +2166,7 @@ class HermesGUI:
         self.sidebar.set_model(m)
 
     def _open_skills(self):
-        SkillsBrowser(self.root)
+        SkillsBrowser(self.root, may_sync=not self.bridge.is_running)
 
     def _open_permissions(self):
         if self._refuse_while_running():
@@ -2180,9 +2223,9 @@ class HermesGUI:
             self.status_bar.set_model(f"LM Studio: {short}")
             self.sidebar.set_model(model_id)
 
+        # The agent was dropped, so the next message builds one for this model.
         self._add_msg(t("chat.local_model_ready",
-                        model=model_id or t("chat.default_loaded_model"),
-                        new_chat=t("sidebar.new_chat")), "system")
+                        model=model_id or t("chat.default_loaded_model")), "system")
         self._note_dropped_resume(dropped)
 
     def _show_api_setup(self):
