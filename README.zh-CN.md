@@ -8,6 +8,10 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki"><img src="https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/hero.gif" alt="Portable Hermes Agent" width="900"></a>
+</p>
+
 **面向 Windows 的便携 AI 助手桌面版**：图形界面、100 种工具、通过 LM Studio 使用本地模型，以及语音、音乐、ComfyUI、工作流和自定义工具。无需在系统中安装 Python 或 Node.js，也无需 Docker 或管理员权限。
 
 本项目基于 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)（MIT 许可证），但这是 **aivrar 的便携发行版**。请从本仓库的发行页下载；上游 Hermes 的安装说明不适用于此便携包。
