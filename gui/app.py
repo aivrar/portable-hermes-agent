@@ -2300,9 +2300,16 @@ class HermesGUI:
             self.status_bar.set_thinking_key("status.streaming")
 
     def _cleanup_stream_bubble(self):
-        """Remove or finalize the active streaming bubble."""
+        """Remove or finalize the active streaming bubble (unless its widget
+        is already gone, e.g. with a cleared chat)."""
         if self._stream_bubble:
-            if self._stream_bubble.has_content():
+            try:
+                alive = bool(self._stream_bubble.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if not alive:
+                pass
+            elif self._stream_bubble.has_content():
                 self._stream_bubble.finalize()
             else:
                 try:
@@ -2417,14 +2424,21 @@ class HermesGUI:
         if dropped:
             self._add_msg(t("chat.resume_not_continued"), "system")
 
+    def _clear_chat(self):
+        """Empty the chat area (New Chat, loading a session): no earlier
+        turn's callback lands here, no reference to a destroyed bubble stays,
+        and the (empty) view follows its end again."""
+        self._stop_turn_clock()
+        self._stream_bubble = None
+        self._has_streamed = False
+        for w in self.msg_frame.winfo_children():
+            w.destroy()
+        self._follow_reply = True
+
     def _new_chat(self):
         if self._refuse_while_running() or not self.bridge.new_session():
             return
-        self._stop_turn_clock()
-        self._stream_bubble = None
-        for w in self.msg_frame.winfo_children():
-            w.destroy()
-        self._follow_reply = True            # an empty chat: nothing scrolled up
+        self._clear_chat()
         self._set_chat_title("new")
         self.status_bar.set_ready()
         self._add_msg(t("chat.session_started", "New session started."), "system")
@@ -2485,10 +2499,7 @@ class HermesGUI:
                 return
 
             # Clear current chat
-            for w in self.msg_frame.winfo_children():
-                w.destroy()
-            self._stop_turn_clock()          # no earlier turn's callback lands here
-            self._follow_reply = True        # show the loaded session's end
+            self._clear_chat()
 
             self._show_session_title(session_id, "resumed")
 

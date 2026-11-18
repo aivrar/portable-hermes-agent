@@ -2012,6 +2012,9 @@ class _FakeReplyBubble:
     def destroy(self):
         self.destroyed = True
 
+    def winfo_exists(self):
+        return not self.destroyed
+
 
 def _replying_gui(monkeypatch, *, local=True, history=()):
     """A HermesGUI that has just sent "hi" (fake Tk root and bubbles)."""
@@ -2249,6 +2252,49 @@ def test_gui_an_old_turns_end_delivered_after_a_new_send_leaves_the_new_turn_alo
     assert new.text == "Second answer" and new.finalized
     assert gui._turn_clock_id is None and gui._stream_bubble is None
     gui.status_bar.set_ready.assert_called()
+
+
+@pytest.mark.needs_core
+def test_gui_loading_a_session_before_a_turns_end_arrives_leaves_send_working(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    from gui import app
+
+    gui, bridge = _bridged_gui(monkeypatch)
+
+    def finished_turn(message, image_paths):
+        bridge._on_stream_delta("Answer")
+        bridge._post(bridge.on_response, "Answer")
+        bridge._post(bridge.on_complete, {})
+
+    bridge._run_agent_turn = finished_turn
+    gui._send()
+    bridge._agent_thread.join(10)                 # done; its end is still queued in Tk
+    old, = _FakeReplyBubble.made
+
+    @contextmanager
+    def store():
+        yield SimpleNamespace(conversation=lambda sid: [{"role": "user", "content": "old"}])
+
+    monkeypatch.setattr(app, "open_store", store)
+    bridge.resume_session = lambda sid, messages: True
+    gui.sidebar._sessions_data = []
+    gui.msg_frame.winfo_children.return_value = [old]   # what the chat area holds
+    gui._on_session_select("stored")
+    assert old.destroyed and gui._stream_bubble is None
+    _deliver_posted(gui.root)                     # the old end: dropped
+
+    bridge._run_agent_turn = lambda message, image_paths: None
+    gui._send()                                   # starts normally
+    assert len(_FakeReplyBubble.made) == 2 and bridge._turn == 2
+    assert not old.finalized
+    bridge._agent_thread.join(10)
+
+    # A leftover reference to a destroyed bubble is not finalized either.
+    gui._stream_bubble = gone = _FakeReplyBubble(None)
+    gone.destroyed = True
+    gui._cleanup_stream_bubble()
+    assert not gone.finalized and gui._stream_bubble is None
 
 
 @pytest.mark.needs_core
