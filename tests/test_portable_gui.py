@@ -671,6 +671,107 @@ def test_gui_new_chat_memory_commit_never_raises_into_the_gui():
         assert bridge.agent is None and bridge.conversation_history == []
 
 
+class _ReleasableAgent:
+    """Records what the bridge does with a dropped agent."""
+
+    def __init__(self):
+        self.calls = []
+
+    def close(self):
+        self.calls.append("close")
+
+    def release_clients(self):
+        self.calls.append("release_clients")
+
+    def commit_memory_session(self, messages):
+        self.calls.append("commit_memory_session")
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_closes_the_agent_and_commits_memory_once():
+    """close() already commits memory (shutdown_memory_provider): no second commit."""
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+
+    bridge.new_session()
+
+    assert agent.calls == ["close"]
+    assert bridge.agent is None
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("action", ["set_cloud_mode", "set_local_mode", "rebuild_agent"])
+def test_gui_rebuilding_the_agent_releases_the_old_one_softly(action):
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    args = {"set_cloud_mode": ("cloud/model",),
+            "set_local_mode": ("http://127.0.0.1:1234", "local-model"),
+            "rebuild_agent": ()}[action]
+
+    getattr(bridge, action)(*args)
+
+    assert agent.calls == ["release_clients"]     # chat goes on: no memory commit
+    assert bridge.agent is None and bridge.conversation_history == HISTORY
+
+
+@pytest.mark.needs_core
+def test_gui_resume_and_bridge_close_close_the_previous_agent():
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.resume_session("gui_other", [])
+    assert agent.calls == ["close"]
+
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.close()
+    assert agent.calls == ["close"] and bridge.agent is None
+
+
+@pytest.mark.needs_core
+def test_gui_agent_dropped_during_a_turn_is_released_when_the_turn_ends():
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.is_running = True
+
+    bridge.set_cloud_mode("cloud/model")
+    assert agent.calls == []                      # never under a running turn
+
+    bridge._finish_turn()
+    assert agent.calls == ["release_clients"] and bridge.is_running is False
+
+
+@pytest.mark.needs_core
+def test_gui_failing_release_never_raises_into_the_gui():
+    class Broken(_ReleasableAgent):
+        def close(self):
+            raise RuntimeError("close failed")
+
+        def release_clients(self):
+            raise RuntimeError("release failed")
+
+    for action in ("new_session", "rebuild_agent", "close"):
+        bridge = _new_chat_bridge(Broken(), HISTORY)
+        getattr(bridge, action)()
+        assert bridge.agent is None
+
+
+@pytest.mark.needs_core
+def test_gui_permissions_and_api_keys_rebuild_through_the_bridge():
+    from unittest.mock import Mock
+    from gui import app
+
+    gui = SimpleNamespace(bridge=Mock(), _add_msg=Mock())
+    app.HermesGUI._on_permissions_saved(gui, {})
+    gui.bridge.rebuild_agent.assert_called_once_with()
+
+
+@pytest.mark.needs_core
+def test_gui_bridge_release_methods_exist_in_the_core():
+    from run_agent import AIAgent
+
+    assert callable(AIAgent.close) and callable(AIAgent.release_clients)
+
+
 @pytest.mark.needs_core
 def test_gui_new_chat_commit_matches_the_core_signature():
     import inspect

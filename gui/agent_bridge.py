@@ -73,6 +73,9 @@ class AgentBridge:
         self.session_id: Optional[str] = None
         self._resume_session_id: Optional[str] = None  # set by resume_session()
         self.is_running = False
+        # Agents dropped while a turn was running; released when it ends.
+        self._agents_to_release: list = []
+        self._release_lock = threading.Lock()
         self._agent_thread: Optional[threading.Thread] = None
         self._clarify_queue = queue.Queue()
         self._approval_queue = queue.Queue()
@@ -125,14 +128,77 @@ class AgentBridge:
         self._active_provider = "local"
         self._lm_studio_base_url = base_url.rstrip("/")
         self._selected_model = model_id
-        self.agent = None  # Force recreation
+        self.rebuild_agent()  # Force recreation
 
     def set_cloud_mode(self, model: str):
         """Switch to OpenRouter as the active provider."""
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
-        self.agent = None
+        self.rebuild_agent()
+
+    # -- dropping agents ------------------------------------------------------
+    # Every dropped AIAgent is released, never just forgotten: it holds LLM
+    # clients, memory providers and (on close) terminal/browser processes.
+    #   conversation over (New Chat, switching to another stored session,
+    #   app exit): agent.close() - commits end-of-session memory once (via
+    #   shutdown_memory_provider), stops the session's processes and ends its
+    #   row ("agent_close"; a reason recorded earlier, e.g. "new_chat", wins).
+    #   rebuild (model switch, saved permissions or API keys; the chat goes
+    #   on with the same history): agent.release_clients() - the core's soft
+    #   release for agent rebuilds; no end-of-session memory extraction, so
+    #   the conversation is committed once, when it really ends.
+    # Both exist in the current core and the last-known-good one (8d285687).
+
+    def rebuild_agent(self):
+        """Drop the agent so the next turn builds a new one; the chat goes on."""
+        self._discard_agent(conversation_over=False)
+
+    def _release_state(self):
+        """The lock guarding is_running and the pending-release list (created
+        on first use, so partially built bridges work too)."""
+        state = self.__dict__
+        state.setdefault("_agents_to_release", [])
+        return state.setdefault("_release_lock", threading.Lock())
+
+    def _discard_agent(self, *, conversation_over: bool) -> None:
+        agent, self.agent = getattr(self, "agent", None), None
+        if agent is None:
+            return
+        history = list(getattr(self, "conversation_history", None) or [])
+        with self._release_state():
+            if getattr(self, "is_running", False):
+                # Never tear an agent down under a running turn; the worker
+                # releases it when the turn ends (_finish_turn).
+                self._agents_to_release.append((agent, conversation_over, history))
+                return
+        self._release_agent(agent, conversation_over, history)
+
+    def _release_agent(self, agent, conversation_over: bool, history) -> None:
+        """Release one dropped agent. Never raises into the GUI."""
+        try:
+            if conversation_over:
+                close = getattr(agent, "close", None)
+                if callable(close):
+                    close()
+                else:  # an agent without close(): at least commit the memory
+                    self._commit_memory(agent, history)
+            else:
+                release = getattr(agent, "release_clients", None)
+                if callable(release):
+                    release()
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning(
+                "releasing the previous agent failed", exc_info=True)
+
+    def _finish_turn(self) -> None:
+        """End of a worker turn: clear is_running, release agents dropped meanwhile."""
+        with self._release_state():
+            pending, self._agents_to_release = self._agents_to_release, []
+            self.is_running = False
+        for agent, conversation_over, history in pending:
+            self._release_agent(agent, conversation_over, history)
 
     def register_local_models(self, model_ids: list):
         """Register model IDs discovered from LM Studio so routing works correctly."""
@@ -752,7 +818,7 @@ You are running on **{os_name} {os_release}**.
             except Exception as e:
                 self._post(self.on_error, f"Guided mode error: {e}")
             finally:
-                self.is_running = False
+                self._finish_turn()
             return
 
         # Approval callbacks are thread-local in current Hermes. Install the
@@ -765,9 +831,13 @@ You are running on **{os_name} {os_release}**.
             if self.agent is None:
                 _dbg.debug("creating agent...")
                 self._create_agent()
-                _dbg.debug("agent created, base_url=%r api_key=%s",
-                           self.agent.base_url,
-                           "set" if getattr(self.agent, 'api_key', None) else "none")
+            # This turn keeps its own reference: the GUI may drop self.agent
+            # meanwhile (the dropped agent is released after the turn).
+            agent = self.agent
+            if agent is None:
+                raise RuntimeError("the agent was replaced before the turn started; please resend")
+            _dbg.debug("agent ready, base_url=%r api_key=%s",
+                       agent.base_url, "set" if getattr(agent, 'api_key', None) else "none")
 
             # Build user message content — multimodal if images attached
             if image_paths:
@@ -784,7 +854,7 @@ You are running on **{os_name} {os_release}**.
                 user_content = message
 
             _dbg.debug("calling run_conversation...")
-            result = self.agent.run_conversation(
+            result = agent.run_conversation(
                 user_message=user_content,
                 conversation_history=self.conversation_history,
             )
@@ -803,7 +873,7 @@ You are running on **{os_name} {os_release}**.
             self._post(self.on_error, error_msg)
         finally:
             set_approval_callback(None)
-            self.is_running = False
+            self._finish_turn()
 
     def interrupt(self):
         if self.agent and self.is_running:
@@ -816,6 +886,8 @@ You are running on **{os_name} {os_release}**.
     def close(self):
         """Release resources owned by the GUI bridge."""
         self.interrupt()
+        # Closed now, or (if a turn is still running) when that turn ends.
+        self._discard_agent(conversation_over=True)
         if self._session_db is not None:
             try:
                 self._session_db.close()
@@ -841,9 +913,8 @@ You are running on **{os_name} {os_release}**.
 
     def new_session(self):
         """Start a fresh session. Commits the old one to memory first."""
-        self._commit_memory(self.agent, self.conversation_history)
-
-        # End old session in database
+        # End old session in database (before the agent's close() records
+        # its own "agent_close"; the first reason recorded wins)
         if self._session_db and self.session_id:
             try:
                 # Positional: the parameter is ``end_reason`` (not ``reason``)
@@ -852,10 +923,13 @@ You are running on **{os_name} {os_release}**.
             except Exception:
                 pass
 
+        # close() commits the conversation to memory exactly once (its
+        # shutdown_memory_provider); an agent without close() gets
+        # commit_memory_session instead (_release_agent).
+        self._discard_agent(conversation_over=True)
         self.conversation_history = []
         self.session_id = None
         self._resume_session_id = None
-        self.agent = None
 
     def resume_session(self, session_id: str, messages: list):
         """Continue a stored session under its own id, as the CLI's resume does.
@@ -863,6 +937,9 @@ You are running on **{os_name} {os_release}**.
         The next agent is built with *session_id* (see _create_agent), so new
         turns are appended to the same session row instead of a new one; the
         core restores the session's stored system prompt for it."""
+        # The conversation shown so far is over: close its agent first (that
+        # ends its row), then reopen the stored session.
+        self._discard_agent(conversation_over=True)
         if self._session_db:
             try:
                 self._session_db.reopen_session(session_id)
@@ -871,7 +948,6 @@ You are running on **{os_name} {os_release}**.
         self.conversation_history = messages
         self.session_id = session_id
         self._resume_session_id = session_id
-        self.agent = None
 
     def set_model(self, model: str):
         """Switch model from the sidebar dropdown — always cloud."""

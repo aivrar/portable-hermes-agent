@@ -2019,7 +2019,7 @@ class HermesGUI:
         PermissionsPanel(self.root, on_save=self._on_permissions_saved)
 
     def _on_permissions_saved(self, perms):
-        self.bridge.agent = None  # Force agent recreation with new permissions
+        self.bridge.rebuild_agent()  # Force agent recreation with new permissions
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
 
     def _open_extensions(self):
@@ -2046,7 +2046,7 @@ class HermesGUI:
                 names = ", ".join(saved_keys.keys())
                 self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
-                self.bridge.agent = None
+                self.bridge.rebuild_agent()
             m = self.bridge.get_model()
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)
