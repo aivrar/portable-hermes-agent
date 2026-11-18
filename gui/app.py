@@ -300,8 +300,17 @@ class StreamingBubble(tk.Frame):
         if text is None:
             return
         self._full_text += text
+        if not self._body.get("1.0", "end-1c"):
+            # Models often open a reply (or a segment after a tool call) with
+            # blank lines; like MessageBubble, don't show leading whitespace.
+            text = text.lstrip()
+            if not text:
+                return
         self._body.insert("end", text)
-        # Auto-resize height based on content
+        self._fit_height()
+
+    def _fit_height(self):
+        """Size the body to its content."""
         content = self._body.get("1.0", "end-1c")
         lines = max(1, content.count('\n') + 1)
         for line in content.split('\n'):
@@ -312,12 +321,21 @@ class StreamingBubble(tk.Frame):
         return self._full_text
 
     def finalize(self):
-        """Stop cursor blink, lock the text, remove cursor."""
+        """Stop cursor blink, drop trailing blank lines, lock the text, remove cursor."""
         self._cursor_on = False
         try:
             self._cursor_lbl.destroy()
         except tk.TclError:
             pass
+        trimmed = False
+        while True:  # char by char: safe whatever Tk's index unit for non-BMP text
+            last = self._body.get("end-2c", "end-1c")
+            if not last or not last.isspace():
+                break
+            self._body.delete("end-2c", "end-1c")
+            trimmed = True
+        if trimmed:
+            self._fit_height()
         self._body.configure(state="disabled")
 
     def _blink(self):
