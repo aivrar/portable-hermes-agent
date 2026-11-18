@@ -257,6 +257,7 @@ class StreamingBubble(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent, bg=C["bg_main"])
         self._full_text = ""
+        self._leading = ""  # whitespace held before the first visible character
         self._bg = C["msg_ai"]
 
         pad = tk.Frame(self, bg=C["bg_main"])
@@ -300,12 +301,17 @@ class StreamingBubble(tk.Frame):
         if text is None:
             return
         self._full_text += text
-        if not self._body.get("1.0", "end-1c"):
+        if self._leading is not None:
             # Models often open a reply (or a segment after a tool call) with
-            # blank lines; like MessageBubble, don't show leading whitespace.
-            text = text.lstrip()
-            if not text:
+            # blank lines: hold whitespace until the first visible character,
+            # then drop the blank lines but keep that line's own indentation.
+            self._leading += text
+            content = self._leading.lstrip()
+            if not content:
                 return
+            blank = self._leading[:len(self._leading) - len(content)]
+            text = self._leading[blank.rfind("\n") + 1:]
+            self._leading = None
         self._body.insert("end", text)
         self._fit_height()
 

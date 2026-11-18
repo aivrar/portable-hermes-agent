@@ -244,14 +244,55 @@ def test_refresh_without_the_selected_model_selects_nothing():
     assert panel.model_list.curselection() == ()
 
 
-def test_load_success_refreshes_with_the_loaded_model_selected():
-    refresh = Mock()
-    panel = SimpleNamespace(_restore_load_btn=Mock(), status_dot=Mock(),
-                            _set_status=Mock(), _refresh_models=refresh)
+VARIANT = "deepseek-r1-0528-qwen3-8b@q4_k_m"
 
-    lm.LMStudioPanel._on_load_success(panel, "gemma-4-e4b-it")
 
-    refresh.assert_called_once_with(select_id="gemma-4-e4b-it")
+def _panel_refreshing_to(rows, requested):
+    """A panel with *requested* selected whose refresh shows *rows*."""
+    panel = _listed_panel([VARIANT, "deepseek-r1-0528-qwen3-8b@q6_k", "other"], requested)
+    panel._restore_load_btn = Mock()
+    panel.status_dot = Mock()
+    panel._set_status = Mock()
+    panel._refresh_models = lambda **kw: lm.LMStudioPanel._display_models(panel, rows, **kw)
+    return panel
+
+
+def _selected_id(panel):
+    (row,) = panel.model_list.curselection()
+    return panel.models[row]["id"]
+
+
+def test_load_success_selects_the_real_instance_id_when_it_differs():
+    rows = [{"id": "deepseek-r1-0528-qwen3-8b", "state": "loaded"},
+            {"id": "earlier-instance", "state": "loaded"},
+            {"id": VARIANT, "state": "not-loaded"},
+            {"id": "deepseek-r1-0528-qwen3-8b@q6_k", "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, "deepseek-r1-0528-qwen3-8b")
+
+    assert _selected_id(panel) == "deepseek-r1-0528-qwen3-8b"
+
+
+def test_load_success_with_unknown_id_selects_the_only_loaded_row():
+    rows = [{"id": VARIANT, "state": "not-loaded"},
+            {"id": "deepseek-r1-0528-qwen3-8b", "state": "loaded"},
+            {"id": "other", "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None)
+
+    assert _selected_id(panel) == "deepseek-r1-0528-qwen3-8b"
+
+
+def test_load_success_with_unknown_id_and_no_single_loaded_row_selects_requested():
+    rows = [{"id": "other", "state": "loaded"}, {"id": "more", "state": "loaded"},
+            {"id": VARIANT, "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, "other")
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None)
+
+    assert _selected_id(panel) == VARIANT
 
 
 def _tk_root_or_skip():
@@ -290,3 +331,34 @@ def test_load_and_restore_keep_the_button_order():
         assert row.pack_slaves() == [load_btn, unload_btn, refresh_btn]
     finally:
         root.destroy()
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_records_the_identifier_lm_studio_returned():
+    target = Mock(model_key=VARIANT, path="publisher/deepseek", display_name="DeepSeek")
+    target.load_new_instance.return_value = SimpleNamespace(identifier="deepseek-r1-0528-qwen3-8b")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model(VARIANT, context_length=65536)
+
+    assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_without_handle_identifier_uses_the_newly_listed_instance():
+    target = Mock(model_key=VARIANT, path="publisher/deepseek", display_name="DeepSeek")
+    target.load_new_instance.return_value = None
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    survivor = SimpleNamespace(identifier="survivor", unload=Mock())
+    fresh = SimpleNamespace(identifier="deepseek-r1-0528-qwen3-8b", unload=Mock())
+    client._sdk_client.llm.list_loaded.side_effect = [
+        [survivor],          # unload pass
+        [survivor],          # before the load
+        [survivor, fresh],   # after the load
+    ]
+
+    assert client.load_model(VARIANT, context_length=65536)
+
+    assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"

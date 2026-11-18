@@ -422,8 +422,8 @@ def test_gui_tool_bubble_still_accepts_legacy_name_preview_calls():
     assert [args for _, args in posted] == [("gpu_info", "query GPUs")]
 
 
-@pytest.mark.needs_core
-def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
+def _streamed(chunks):
+    """(shown text, height, raw text) of a StreamingBubble fed *chunks*, finalized."""
     import tkinter as tk
     from gui import app
 
@@ -434,14 +434,29 @@ def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
     root.withdraw()
     try:
         bubble = app.StreamingBubble(root)
-        for delta in ("\n", "\n  ", "Hello", " world\n", "line two", "\n\n", " \n"):
+        for delta in chunks:
             bubble.append_text(delta)
         bubble.finalize()
-
-        shown = bubble._body.get("1.0", "end-1c")
-        assert shown == "Hello world\nline two"
-        assert int(bubble._body.cget("height")) == 2
-        # The raw stream stays available to the caller unchanged.
-        assert bubble.get_text() == "\n\n  Hello world\nline two\n\n \n"
+        return (bubble._body.get("1.0", "end-1c"), int(bubble._body.cget("height")),
+                bubble.get_text())
     finally:
         root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
+    chunks = ("\n", "\n", "Hello", " world\n", "line two", "\n\n", " \n")
+    shown, height, raw = _streamed(chunks)
+
+    assert shown == "Hello world\nline two"
+    assert height == 2
+    # The raw stream stays available to the caller unchanged.
+    assert raw == "".join(chunks)
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_keeps_first_line_indentation():
+    assert _streamed(("\n\n", "    print(1)\n", "done"))[0] == "    print(1)\ndone"
+    # Indentation split over chunks, after whitespace-only chunks.
+    assert _streamed((" \n", "\n  ", "  print(1)"))[0] == "    print(1)"
+    assert _streamed(("  ", "x"))[0] == "  x"
