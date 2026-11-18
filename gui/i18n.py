@@ -45,6 +45,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "Skills Browser",
         "menu.extensions": "Extensions",
         "menu.toggle_sidebar": "Toggle Sidebar",
+        "menu.show_thinking": "Show Thinking",
         "menu.about": "About",
 
         # Sidebar
@@ -415,7 +416,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "API keys saved: {names}\nNew tools are now available!",
         "status.step": "Step {count}",
         "status.streaming": "Streaming",
-        "status.reasoning_preview": "Thinking: {preview}",
+        "reply.waiting": "Waiting for the model... {clock}",
+        "reply.first_turn_note": "The first message takes longest: the model first reads Hermes's instructions.",
+        "reply.thinking": "Thinking... {clock}",
+        "reply.running_tool": "Running {tool}... {clock}",
+        "reply.thought_for": "Thought for {seconds} s",
+        "reply.waited_for": "Waited {seconds} s",
         "skills.load_error": "Error: {error}",
         "about.core_version": "Hermes Agent core v{version}",
         "about.portable_credit": "Portable Windows distribution by aivrar",
@@ -467,6 +473,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "技能瀏覽器",
         "menu.extensions": "擴充套件",
         "menu.toggle_sidebar": "切換側邊欄",
+        "menu.show_thinking": "顯示思考過程",
         "menu.about": "關於",
 
         # Sidebar
@@ -837,7 +844,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "已儲存 API 金鑰：{names}\n新工具現在可以使用了！",
         "status.step": "步驟 {count}",
         "status.streaming": "正在串流",
-        "status.reasoning_preview": "思考中：{preview}",
+        "reply.waiting": "正在等待模型... {clock}",
+        "reply.first_turn_note": "第一則訊息最久：模型要先讀取 Hermes 的指示。",
+        "reply.thinking": "思考中... {clock}",
+        "reply.running_tool": "正在執行 {tool}... {clock}",
+        "reply.thought_for": "思考了 {seconds} 秒",
+        "reply.waited_for": "等待了 {seconds} 秒",
         "skills.load_error": "錯誤：{error}",
         "about.core_version": "Hermes Agent 核心 v{version}",
         "about.portable_credit": "由 aivrar 製作的 Windows 便攜版",
@@ -889,6 +901,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "技能浏览器",
         "menu.extensions": "扩展插件",
         "menu.toggle_sidebar": "切换侧边栏",
+        "menu.show_thinking": "显示思考过程",
         "menu.about": "关于",
 
         # Sidebar
@@ -1259,7 +1272,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "已保存 API 密钥：{names}\n新工具现已可用！",
         "status.step": "步骤 {count}",
         "status.streaming": "正在流式输出",
-        "status.reasoning_preview": "思考中：{preview}",
+        "reply.waiting": "正在等待模型... {clock}",
+        "reply.first_turn_note": "第一条消息最慢：模型要先读取 Hermes 的指令。",
+        "reply.thinking": "思考中... {clock}",
+        "reply.running_tool": "正在运行 {tool}... {clock}",
+        "reply.thought_for": "思考了 {seconds} 秒",
+        "reply.waited_for": "等待了 {seconds} 秒",
         "skills.load_error": "错误：{error}",
         "about.core_version": "Hermes Agent 核心 v{version}",
         "about.portable_credit": "由 aivrar 制作的 Windows 便携版",
@@ -1311,6 +1329,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "menu.skills": "Explorador de Habilidades",
         "menu.extensions": "Extensiones",
         "menu.toggle_sidebar": "Alternar Barra Lateral",
+        "menu.show_thinking": "Mostrar Razonamiento",
         "menu.about": "Acerca de",
 
         # Sidebar
@@ -1681,7 +1700,12 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.api_keys_saved": "Claves API guardadas: {names}\n¡Ya están disponibles las nuevas herramientas!",
         "status.step": "Paso {count}",
         "status.streaming": "Generando respuesta...",
-        "status.reasoning_preview": "Pensando: {preview}",
+        "reply.waiting": "Esperando al modelo... {clock}",
+        "reply.first_turn_note": "El primer mensaje tarda más: el modelo lee primero las instrucciones de Hermes.",
+        "reply.thinking": "Pensando... {clock}",
+        "reply.running_tool": "Ejecutando {tool}... {clock}",
+        "reply.thought_for": "Pensó durante {seconds} s",
+        "reply.waited_for": "Esperó {seconds} s",
         "skills.load_error": "Error: {error}",
         "about.core_version": "Núcleo de Hermes Agent v{version}",
         "about.portable_credit": "Distribución portátil para Windows de aivrar",
@@ -1796,6 +1820,37 @@ def save_language(lang_code: str) -> bool:
         return True
     except Exception as e:
         logger.warning("Failed to save language preference: %s", e)
+        return False
+
+
+def load_gui_setting(key: str, default):
+    """Another GUI preference from gui_config.json (*default* when unset or unreadable)."""
+    try:
+        import json
+        with open(_get_config_path(), "r", encoding="utf-8") as f:
+            value = json.load(f).get(key, default)
+        return value if isinstance(value, type(default)) else default
+    except Exception:
+        return default
+
+
+def save_gui_setting(key: str, value) -> bool:
+    """Store a GUI preference in gui_config.json, keeping the other entries."""
+    try:
+        import json
+        cfg_path = _get_config_path()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        data[key] = value
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.warning("Failed to save GUI setting %s: %s", key, e)
         return False
 
 

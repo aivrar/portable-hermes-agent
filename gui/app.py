@@ -43,7 +43,10 @@ from gui.i18n import (
     unregister_listener,
     SUPPORTED_LANGUAGES,
     init_language,
+    load_gui_setting,
+    save_gui_setting,
 )
+from gui.reply_activity import ReplyActivity
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -254,14 +257,70 @@ class ToolCallWidget(tk.Frame):
                     wraplength=S(500), justify="left", anchor="w").pack(fill="x")
 
 
-class StreamingBubble(tk.Frame):
-    """A chat bubble that streams text token-by-token."""
+class ReplyActivityView(tk.Frame):
+    """A reply bubble's activity line ("the tab") and, below it when open,
+    the model's thinking text, dimmed. Clicking the line opens or closes it."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, bg, activity, opened=False, on_toggle=None):
+        super().__init__(parent, bg=bg)
+        self.activity = activity
+        self.opened = opened
+        self._on_toggle = on_toggle
+        self._bg = bg
+        self._label = tk.Label(self, font=FONTS["small"], fg=C["text_hint"], bg=bg,
+                               anchor="w", justify="left", pady=0)
+        self._label.pack(fill="x")
+        self._label.bind("<Button-1>", self.toggle)
+        self._text = None    # the thinking text widget, made when first opened
+        self._shown = 0      # characters of thinking text already in it
+        self.refresh()
+
+    def refresh(self):
+        """Show the activity's current line and new thinking text (if open)."""
+        header = self.activity.header()
+        if header is None:
+            self.pack_forget()
+            return
+        expandable = self.activity.expandable
+        arrow = ("▾ " if self.opened else "▸ ") if expandable else ""
+        self._label.configure(text=arrow + header, cursor="hand2" if expandable else "")
+        if self.opened and expandable:
+            if self._text is None:
+                self._text = tk.Text(self, wrap="word", bg=self._bg, fg=C["text_hint"],
+                                     font=FONTS["small"], relief="flat", borderwidth=0,
+                                     highlightthickness=0, padx=0, pady=2, height=1)
+            new = self.activity.thinking_text[self._shown:]
+            if new:       # one insert per refresh, however many tokens arrived
+                self._text.configure(state="normal")
+                self._text.insert("end", new)
+                self._text.configure(state="disabled")
+                self._shown += len(new)
+                self._text.configure(height=min(12, int(self._text.index("end-1c").split(".")[0])))
+                self._text.see("end")
+            if not self._text.winfo_ismapped():
+                self._text.pack(fill="x")
+        elif self._text is not None:
+            self._text.pack_forget()
+
+    def toggle(self, _event=None):
+        if not self.activity.expandable:
+            return
+        self.opened = not self.opened
+        if self._on_toggle:
+            self._on_toggle(self.opened)
+        self.refresh()
+
+
+class StreamingBubble(tk.Frame):
+    """A chat bubble that streams text token-by-token, below an activity line
+    (waiting / thinking / running a tool) when given a ReplyActivity."""
+
+    def __init__(self, parent, activity=None, thinking_open=False, on_thinking_toggle=None):
         super().__init__(parent, bg=C["bg_main"])
         self._full_text = ""
         self._leading = ""  # whitespace held before the first visible character
         self._bg = C["msg_ai"]
+        self._refresh_id = None
 
         pad = tk.Frame(self, bg=C["bg_main"])
         pad.pack(fill="x", padx=16, pady=3)
@@ -279,6 +338,14 @@ class StreamingBubble(tk.Frame):
         ts = datetime.now().strftime("%H:%M")
         tk.Label(hdr, text=ts, font=SF("Segoe UI", 8),
                 fg=C["text_disabled"], bg=self._bg, pady=0).pack(side="right")
+
+        self.activity = activity
+        self._activity_view = None
+        if activity is not None:
+            self._activity_view = ReplyActivityView(self._card, self._bg, activity,
+                                                    thinking_open, on_thinking_toggle)
+            if activity.header() is not None:
+                self._activity_view.pack(fill="x")
 
         # Body text widget — stays editable (normal) during streaming
         self._body = tk.Text(self._card, wrap="word", bg=self._bg,
@@ -315,8 +382,41 @@ class StreamingBubble(tk.Frame):
             blank = self._leading[:len(self._leading) - len(content)]
             text = self._leading[blank.rfind("\n") + 1:]
             self._leading = None
+            if self.activity is not None:          # the answer starts
+                self.activity.answer_started()
+                self.refresh_activity()
         self._body.insert("end", text)
         self._fit_height()
+
+    def add_thinking(self, text: str):
+        """Thinking text arrives token by token: the view is refreshed at
+        most every 100 ms, with all of it in one insert."""
+        if self.activity is None:
+            return
+        self.activity.add_thinking(text)
+        if self._refresh_id is None:
+            self._refresh_id = self.after(100, self.refresh_activity)
+
+    def refresh_activity(self):
+        """Redraw the activity line (the clock calls this every second)."""
+        if self._refresh_id is not None:
+            try:
+                self.after_cancel(self._refresh_id)
+            except tk.TclError:
+                pass
+            self._refresh_id = None
+        if self._activity_view is None:
+            return
+        try:
+            if self.activity.header() is not None and not self._activity_view.winfo_ismapped():
+                self._activity_view.pack(fill="x", before=self._body)
+            self._activity_view.refresh()
+        except tk.TclError:
+            pass
+
+    def has_content(self) -> bool:
+        """Answer text or thinking text to keep."""
+        return bool(self._full_text.strip()) or bool(self.activity and self.activity.expandable)
 
     def _fit_height(self):
         """Size the body to its content."""
@@ -331,6 +431,9 @@ class StreamingBubble(tk.Frame):
 
     def finalize(self):
         """Stop cursor blink, drop trailing blank lines, lock the text, remove cursor."""
+        if self.activity is not None:
+            self.activity.finish()
+            self.refresh_activity()
         self._cursor_on = False
         try:
             self._cursor_lbl.destroy()
@@ -345,6 +448,8 @@ class StreamingBubble(tk.Frame):
             trimmed = True
         if trimmed:
             self._fit_height()
+        if not self._full_text.strip():
+            self._body.pack_forget()      # thinking only: no empty answer line
         self._body.configure(state="disabled")
 
     def _blink(self):
@@ -1466,6 +1571,7 @@ class StatusBar(tk.Frame):
 class HermesGUI:
     _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
     _chat_title_text = None      # the session's title once it has one
+    _turn_clock_id = None        # the running reply's per-second clock (Tk after id)
 
     def __init__(self):
         self.root = tk.Tk()
@@ -1501,6 +1607,10 @@ class HermesGUI:
         )
         self._stream_bubble = None  # Active streaming bubble
         self._has_streamed = False   # True once any stream delta arrived
+        # Reply activity: the View > Show Thinking and open-or-closed
+        # choices (gui_config.json).
+        self._show_thinking = load_gui_setting("show_thinking", True)
+        self._thinking_open = load_gui_setting("thinking_open", False)
 
         self._build_menu()
         self._build_layout()
@@ -1572,6 +1682,8 @@ class HermesGUI:
                 (t("menu.extensions"), self._open_extensions),
                 None,
                 (t("menu.toggle_sidebar"), self._toggle_sidebar),
+                (f"{'✓ ' if self._show_thinking else '   '}{t('menu.show_thinking')}",
+                 self._toggle_show_thinking),
             ]),
             (t("menu.language"), [
                 (f"{'✓ ' if current_lang == code else '   '}{name}", lambda c=code: self._switch_language(c))
@@ -1598,6 +1710,18 @@ class HermesGUI:
                 else:
                     menu.add_command(label=item[0], command=item[1])
             btn.configure(menu=menu)
+
+    def _toggle_show_thinking(self):
+        """View > Show Thinking: off keeps no thinking text (the waiting
+        line and its clock stay). Applies from the next reply."""
+        self._show_thinking = not self._show_thinking
+        save_gui_setting("show_thinking", self._show_thinking)
+        self._build_menu_items()
+
+    def _remember_thinking_open(self, opened):
+        """The user's last open/closed choice, for later replies and restarts."""
+        self._thinking_open = opened
+        save_gui_setting("thinking_open", opened)
 
     def _switch_language(self, lang_code: str):
         set_language(lang_code, persist=True)
@@ -1856,12 +1980,14 @@ class HermesGUI:
             display = msg + "\n\U0001f4ce " + ", ".join(fnames)
         self._add_msg(display, "user")
 
-        # Streaming bubble — shows tokens as they arrive
-        self._stream_bubble = StreamingBubble(self.msg_frame)
-        self._stream_bubble.pack(fill="x")
+        # Streaming bubble — shows tokens as they arrive, below its activity line
+        first_local_turn = (not self.bridge.conversation_history
+                            and self.bridge._is_local_model())
+        self._new_reply_bubble(first_local_turn=first_local_turn)
         self._has_streamed = False
 
         self.status_bar.set_thinking()
+        self._start_turn_clock()
 
         # Send with images
         images = list(self._attached_images) if self._attached_images else None
@@ -1885,11 +2011,42 @@ class HermesGUI:
 
     # ---- Callbacks ----
 
+    def _new_reply_bubble(self, tool=None, first_local_turn=False):
+        """A streaming bubble whose activity line waits for the model (or
+        shows *tool* running)."""
+        activity = ReplyActivity(keep_thinking=self._show_thinking,
+                                 first_local_turn=first_local_turn, tool=tool)
+        self._stream_bubble = StreamingBubble(self.msg_frame, activity, self._thinking_open,
+                                              self._remember_thinking_open)
+        self._stream_bubble.pack(fill="x")
+
+    def _start_turn_clock(self):
+        self._stop_turn_clock()
+        self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
+
+    def _tick_turn_clock(self):
+        """Every second while a reply runs: the activity line's clock moves."""
+        self._turn_clock_id = None
+        if self._stream_bubble is not None:
+            self._stream_bubble.refresh_activity()
+        self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
+
+    def _stop_turn_clock(self):
+        """Every way a turn ends: reply done, error, Stop, New Chat, window close."""
+        if self._turn_clock_id is not None:
+            try:
+                self.root.after_cancel(self._turn_clock_id)
+            except tk.TclError:
+                pass
+            self._turn_clock_id = None
+
     def _on_response(self, text):
         if self._stream_bubble:
             # Streaming bubble still alive — finalize it
-            if self._stream_bubble.get_text().strip():
+            if self._stream_bubble.has_content():
                 self._stream_bubble.finalize()
+                if text and not self._has_streamed and not self._stream_bubble.get_text().strip():
+                    self._add_msg(text, "ai")       # thinking above, the answer below
             else:
                 try:
                     self._stream_bubble.destroy()
@@ -1909,16 +2066,16 @@ class HermesGUI:
         w = ToolCallWidget(self.msg_frame, name, preview)
         w.pack(fill="x")
         self.status_bar.set_tool(name)
-        # Start a new streaming bubble for the next response segment
-        self._stream_bubble = StreamingBubble(self.msg_frame)
-        self._stream_bubble.pack(fill="x")
+        # A new streaming bubble for the next response segment; its line
+        # shows the tool running until the model is called again.
+        self._new_reply_bubble(tool=name)
         self._scroll_bottom()
 
     def _on_stream_delta(self, text):
         """Append a token to the streaming bubble."""
         if text is None:
             # End-of-turn signal — finalize the current bubble
-            if self._stream_bubble and self._stream_bubble.get_text().strip():
+            if self._stream_bubble and self._stream_bubble.has_content():
                 self._stream_bubble.finalize()
                 self._stream_bubble = None
             return
@@ -1931,7 +2088,7 @@ class HermesGUI:
     def _cleanup_stream_bubble(self):
         """Remove or finalize the active streaming bubble."""
         if self._stream_bubble:
-            if self._stream_bubble.get_text().strip():
+            if self._stream_bubble.has_content():
                 self._stream_bubble.finalize()
             else:
                 try:
@@ -1948,8 +2105,12 @@ class HermesGUI:
 
     def _on_step(self, n, _):
         self.status_bar.set_iter(n)
+        if self._stream_bubble is not None and self._stream_bubble.activity is not None:
+            self._stream_bubble.activity.model_called()     # a tool ran; waiting again
+            self._stream_bubble.refresh_activity()
 
     def _on_error(self, msg):
+        self._stop_turn_clock()
         self._cleanup_stream_bubble()
         self._add_msg(msg, "error")
         self.status_bar.set_error()
@@ -1968,13 +2129,17 @@ class HermesGUI:
         self.bridge.respond_to_approval(approved)
 
     def _on_reasoning(self, text):
-        """Show model's reasoning in the status bar (not as chat bubbles)."""
-        if text and text.strip():
-            # Truncate for status bar display
-            preview = text.strip().replace('\n', ' ')[:80]
-            self.status_bar.set_thinking_key("status.reasoning_preview", preview=preview)
+        """Thinking text: into the reply bubble's activity line (and, when
+        open, its thinking pane); the status bar says the model is thinking."""
+        if not text:
+            return
+        if self._stream_bubble is not None:
+            self._stream_bubble.add_thinking(text)
+        if text.strip():
+            self.status_bar.set_thinking_key("status.thinking")
 
     def _on_complete(self, result):
+        self._stop_turn_clock()
         self._cleanup_stream_bubble()
         self.status_bar.set_ready()
         # Update token display if available
@@ -2040,6 +2205,8 @@ class HermesGUI:
     def _new_chat(self):
         if self._refuse_while_running() or not self.bridge.new_session():
             return
+        self._stop_turn_clock()
+        self._stream_bubble = None
         for w in self.msg_frame.winfo_children():
             w.destroy()
         self._set_chat_title("new")
@@ -2137,6 +2304,7 @@ class HermesGUI:
     def _interrupt(self):
         if self.bridge.is_running:
             self.bridge.interrupt()
+            self._stop_turn_clock()
             self._cleanup_stream_bubble()
             self._add_msg(t("chat.generation_stopped", "Generation stopped."), "system")
             self.status_bar.set_ready()
@@ -2269,6 +2437,7 @@ class HermesGUI:
                                        parent=self.root):
                 return
         unregister_listener(self._on_language_changed)
+        self._stop_turn_clock()
         self.bridge.close()
         self.root.destroy()
 

@@ -1722,6 +1722,206 @@ def _chat_keeping_bubbles(gui, app):
     return bubbles
 
 
+class _FakeRoot:
+    """Tk's after/after_cancel, run by hand."""
+
+    def __init__(self):
+        self.pending, self.next_id = {}, 0
+
+    def after(self, ms, fn):
+        self.next_id += 1
+        self.pending[self.next_id] = (ms, fn)
+        return self.next_id
+
+    def after_cancel(self, after_id):
+        self.pending.pop(after_id, None)
+
+    def clock_ticks(self):
+        return [i for i, (ms, fn) in self.pending.items() if ms == 1000]
+
+    def run(self, after_id):
+        self.pending.pop(after_id)[1]()
+
+    def destroy(self):
+        pass
+
+
+class _FakeReplyBubble:
+    """StreamingBubble without Tk: the activity is real."""
+
+    made = []
+
+    def __init__(self, parent, activity=None, thinking_open=False, on_thinking_toggle=None):
+        self.activity, self.thinking_open = activity, thinking_open
+        self.on_thinking_toggle = on_thinking_toggle
+        self.refreshes, self.finalized, self.destroyed, self.text = 0, False, False, ""
+        _FakeReplyBubble.made.append(self)
+
+    def pack(self, **kw):
+        pass
+
+    def refresh_activity(self):
+        self.refreshes += 1
+
+    def add_thinking(self, text):
+        self.activity.add_thinking(text)
+
+    def append_text(self, text):
+        self.text += text
+        self.activity.answer_started()
+
+    def get_text(self):
+        return self.text
+
+    def has_content(self):
+        return bool(self.text.strip()) or self.activity.expandable
+
+    def finalize(self):
+        self.activity.finish()
+        self.finalized = True
+
+    def destroy(self):
+        self.destroyed = True
+
+
+def _replying_gui(monkeypatch, *, local=True, history=()):
+    """A HermesGUI that has just sent "hi" (fake Tk root and bubbles)."""
+    from unittest.mock import Mock
+    from gui import app
+
+    _FakeReplyBubble.made = []
+    monkeypatch.setattr(app, "StreamingBubble", _FakeReplyBubble)
+    monkeypatch.setattr(app, "ToolCallWidget", Mock())
+    bridge = Mock(is_running=False, conversation_history=list(history))
+    bridge.get_token_usage.return_value = {}
+    bridge._is_local_model.return_value = local
+    gui = _gui_with_bridge(bridge)
+    gui.__dict__.update(root=_FakeRoot(), _stream_bubble=None, _has_streamed=False,
+                        _turn_clock_id=None, _show_thinking=True, _thinking_open=False,
+                        _attached_images=[], _update_attach_preview=Mock(),
+                        msg_canvas=Mock())
+    gui.input_text.get.return_value = "hi"
+    gui._send()
+    bridge.is_running = True
+    return gui
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("exit_path", ["reply done", "error", "Stop", "New Chat", "window close"])
+def test_gui_reply_clock_ticks_and_stops_on_every_exit_path(monkeypatch, exit_path):
+    gui = _replying_gui(monkeypatch)
+    bubble, = _FakeReplyBubble.made
+    tick, = gui.root.clock_ticks()
+    gui.root.run(tick)                                 # one second later
+    assert bubble.refreshes == 1 and len(gui.root.clock_ticks()) == 1
+
+    if exit_path == "reply done":
+        gui.bridge.is_running = False
+        gui._on_complete({})
+    elif exit_path == "error":
+        gui._on_error("boom")
+    elif exit_path == "Stop":
+        gui._interrupt()
+    elif exit_path == "New Chat":
+        gui.bridge.is_running = False
+        gui.bridge.new_session.return_value = True
+        gui._new_chat()
+    else:
+        gui.bridge.is_running = False
+        from gui import app
+        monkeypatch.setattr(app, "unregister_listener", lambda fn: None)
+        gui._on_close()
+
+    assert gui.root.clock_ticks() == [] and gui._turn_clock_id is None
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubble_follows_waiting_thinking_tool_and_answer(monkeypatch):
+    from gui import i18n
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    gui = _replying_gui(monkeypatch, local=True, history=())
+    first, = _FakeReplyBubble.made
+    assert first.activity.first_local_turn and first.activity.state == "waiting"
+
+    gui._on_reasoning("Need the GPU list.")
+    assert first.activity.state == "thinking"
+    assert "Need the GPU list." in first.activity.header()
+
+    gui._on_tool_call("gpu_info", "{}")               # thinking kept, a new segment runs the tool
+    assert first.finalized and not first.destroyed
+    second = _FakeReplyBubble.made[-1]
+    assert second.activity.header().startswith("Running gpu_info...")
+    gui._on_step(2, ["gpu_info"])                      # the model is called again
+    assert second.activity.state == "waiting" and not second.activity.first_local_turn
+    gui._on_stream_delta("Your RTX 3060")
+    assert second.activity.state == "done"
+
+
+@pytest.mark.needs_core
+def test_gui_later_turns_and_cloud_models_get_no_first_turn_note(monkeypatch):
+    gui = _replying_gui(monkeypatch, local=True, history=[{"role": "user", "content": "x"}])
+    assert not _FakeReplyBubble.made[-1].activity.first_local_turn
+    gui = _replying_gui(monkeypatch, local=False, history=())
+    assert not _FakeReplyBubble.made[-1].activity.first_local_turn
+
+
+@pytest.mark.needs_core
+def test_gui_thinking_choices_are_remembered(monkeypatch):
+    saved = {}
+    from gui import app
+    monkeypatch.setattr(app, "save_gui_setting", lambda k, v: saved.__setitem__(k, v))
+    gui = _replying_gui(monkeypatch)
+    gui._build_menu_items = lambda: None
+
+    _FakeReplyBubble.made[-1].on_thinking_toggle(True)   # the user opens the tab
+    assert saved == {"thinking_open": True} and gui._thinking_open is True
+    gui._toggle_show_thinking()
+    assert saved["show_thinking"] is False
+
+    gui.bridge.is_running = False
+    gui._on_complete({})
+    gui._send()                                          # the next reply uses both
+    bubble = _FakeReplyBubble.made[-1]
+    assert bubble.thinking_open is True and bubble.activity.keep_thinking is False
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubble_activity_line_in_real_tk(monkeypatch):
+    import tkinter as tk
+    from gui import app, i18n
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    try:
+        toggles = []
+        bubble = app.StreamingBubble(root, ReplyActivity(), False, toggles.append)
+        bubble.pack()
+        view = bubble._activity_view
+        assert view._label.cget("text").startswith("Waiting for the model... 0:0")
+        for word in ["Let me ", "check ", "the ", "cards."] * 50:   # many tokens, one refresh
+            bubble.add_thinking(word)
+        assert bubble._refresh_id is not None
+        bubble.refresh_activity()
+        assert view._label.cget("text").startswith("▸ Thinking... 0:0")
+        assert view._text is None                         # closed: no thinking pane
+        view.toggle()
+        assert toggles == [True] and view._text.get("1.0", "end-1c").endswith("the cards.")
+        bubble.add_thinking(" More.")
+        bubble.refresh_activity()
+        assert view._text.get("1.0", "end-1c").endswith("cards. More.")
+        bubble.append_text("Answer")
+        assert view._label.cget("text").startswith("▾ Thought for ")
+        bubble.finalize()
+        assert bubble._body.get("1.0", "end-1c") == "Answer"
+    finally:
+        root.destroy()
+
+
 @pytest.mark.needs_core
 def test_gui_a_refusal_in_a_row_is_not_repeated_in_the_chat():
     import threading
