@@ -241,3 +241,56 @@ def test_settings_save_keeps_the_model_unless_it_was_changed(monkeypatch):
     dialog.model_var = SimpleNamespace(get=lambda: "openai/gpt-4o")
     app.SettingsDialog._save(dialog)
     dialog.bridge.set_model.assert_called_once_with("openai/gpt-4o")
+
+
+def _pending_switch(monkeypatch, calls):
+    release = threading.Event()
+
+    def use(provider, model):
+        release.wait(5)
+        calls.append(("use", provider, model))
+        return model
+    monkeypatch.setattr(accounts_core, "use", use)
+    monkeypatch.setattr(accounts_core, "models", lambda p: [])
+    gui = _gui(_account_bridge(calls))
+    gui._use_account("openai-codex", "gpt-6-sol")
+    return gui, release
+
+
+def test_while_an_account_switch_runs_nothing_else_changes_the_model(monkeypatch):
+    from gui.i18n import t
+    calls = []
+    gui, release = _pending_switch(monkeypatch, calls)
+    wait = t("chat.model_loading_wait")
+
+    assert gui._refuse_model_change() is True               # model box (can_change_model)
+    gui._on_session_select("stored")                         # loading a session
+    gui._open_settings()                                     # Settings (it can change the model)
+    gui._use_account("xai-oauth", "grok-4.6")                # another Use
+    gui._on_lm_studio_ready("http://127.0.0.1:1234", "local/m")
+    assert gui._model_work_running()                         # Send waits, as for a load
+    assert [c[0][0] for c in gui._add_msg.call_args_list] == [wait] * 5   # each one refused
+    gui.bridge.set_local_mode.assert_not_called()
+    gui.bridge.resume_session.assert_not_called()
+
+    release.set()
+    gui.root.drain(lambda: bool(calls) and calls[-1][0] == "bridge")
+    assert calls == [("use", "openai-codex", "gpt-6-sol"), ("bridge", "openai-codex", "gpt-6-sol")]
+    assert gui._refuse_model_change() is False
+
+
+def test_closing_the_app_during_a_switch_ignores_its_result(monkeypatch):
+    calls = []
+    gui, release = _pending_switch(monkeypatch, calls)
+    gui._closed = True                                       # _on_close sets this
+    release.set()
+    deadline = time.monotonic() + 5
+    while not calls:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    for fn in list(gui.root.pending):                        # any timer still due
+        fn()
+    assert calls == [("use", "openai-codex", "gpt-6-sol")]   # the write may complete...
+    gui._add_msg.assert_not_called()                         # ...but the GUI is not touched
+    gui.status_bar.set_model.assert_not_called()
+    gui.sidebar.set_model.assert_not_called()

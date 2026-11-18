@@ -1992,7 +1992,7 @@ class HermesGUI:
                                on_local_models=self._on_local_models_discovered,
                                on_auto_load=self._on_auto_load_status,
                                can_delete_session=self._can_delete_session,
-                               can_change_model=lambda: not self._refuse_while_running(),
+                               can_change_model=lambda: not self._refuse_model_change(),
                                track_model_work=self._track_model_work)
         self.sidebar.pack(side="left", fill="y")
 
@@ -2446,6 +2446,17 @@ class HermesGUI:
 
     # ---- Commands ----
 
+    def _refuse_model_change(self) -> bool:
+        """The one rule for anything that changes the model, provider or
+        session: refused while a reply runs, and while model work (an LM
+        Studio load, an account switch) is in progress; True when refused."""
+        if self._refuse_while_running():
+            return True
+        if self._model_work_running():
+            self._add_notice(t("chat.model_loading_wait"))
+            return True
+        return False
+
     def _refuse_while_running(self) -> bool:
         """While a reply is running, session changes are refused (the running
         turn would write into the new session); True when refused."""
@@ -2546,7 +2557,7 @@ class HermesGUI:
 
     def _on_session_select(self, session_id):
         """Load a past session into the chat view."""
-        if self._refuse_while_running():
+        if self._refuse_model_change():
             return
         try:
             with open_store() as store:
@@ -2603,7 +2614,7 @@ class HermesGUI:
     # files and env vars while it builds the agent).
 
     def _open_settings(self):
-        if self._refuse_while_running():
+        if self._refuse_model_change():     # Settings can change the model
             return
         d = SettingsDialog(self.root, self.bridge)
         self.root.wait_window(d)
@@ -2629,8 +2640,8 @@ class HermesGUI:
 
     # -- signed-in accounts (View > Accounts) ----------------------------------
     def _open_accounts(self):
-        AccountsWindow(self.root, on_use=self._use_account,
-                       active_account=self._active_account)
+        AccountsWindow(self.root, on_use=self._use_account, active_account=self._active_account,
+                       can_change=lambda: not self._refuse_model_change())
 
     def _active_account(self):
         """The signed-in account the chat goes through now (not while on LM Studio)."""
@@ -2647,11 +2658,7 @@ class HermesGUI:
         """Chat through a signed-in account. The core validates and writes the
         choice on a worker thread; sending waits meanwhile, as for a model load.
         Refused while a reply runs or a model loads."""
-        if self._refuse_while_running():
-            self.sidebar.set_model(self.bridge.get_model())
-            return
-        if self._model_work_running():
-            self._add_notice(t("chat.model_loading_wait"))
+        if self._refuse_model_change():
             self.sidebar.set_model(self.bridge.get_model())
             return
         results = queue.SimpleQueue()
@@ -2659,10 +2666,20 @@ class HermesGUI:
         def work():
             try:
                 results.put(("ok", accounts_core.use(provider, model)))
-            except Exception as exc:   # Rejected: the core's reason; else what failed
+            except accounts_core.Rejected as exc:   # the core's reason
+                results.put(("failed", str(exc)))
+            except Exception as exc:
+                import logging
+                logging.getLogger("hermes.bridge").warning("account switch failed", exc_info=True)
                 results.put(("failed", str(exc) or type(exc).__name__))
 
         def check():
+            # App closed meanwhile: the result is ignored and nothing in the
+            # GUI is touched (Tk runs no timers after the root is destroyed;
+            # this guard covers the rest). The core's config write itself may
+            # still complete; that is acceptable: it is what the user chose.
+            if getattr(self, "_closed", False):
+                return
             try:
                 kind, value = results.get_nowait()
             except queue.Empty:
@@ -2694,6 +2711,8 @@ class HermesGUI:
                          daemon=True).start()
 
         def check():
+            if getattr(self, "_closed", False):
+                return
             try:
                 ids = results.get_nowait()
             except queue.Empty:
@@ -2737,8 +2756,11 @@ class HermesGUI:
 
     def _on_lm_studio_ready(self, base_url, model_id):
         """Switch Hermes to use LM Studio as the LLM provider (refused during
-        a reply; the model stays loaded in LM Studio for later)."""
+        a reply or an account switch; the model stays loaded in LM Studio)."""
         if self._refuse_while_running():
+            return
+        if getattr(self, "_account_switching", False) is True:
+            self._add_notice(t("chat.model_loading_wait"))
             return
         dropped = False
         if model_id:
@@ -2802,6 +2824,7 @@ class HermesGUI:
                                        t("app.exit_confirm"),
                                        parent=self.root):
                 return
+        self._closed = True    # pending account-switch results are ignored
         unregister_listener(self._on_language_changed)
         self._stop_turn_clock()
         self.bridge.close()

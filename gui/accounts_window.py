@@ -65,11 +65,13 @@ class AccountsWindow(tk.Toplevel):
     """Two rows: name, status, [Connect] or [Use] [Disconnect].
 
     *on_use(provider, model)*: the app switches the chat to the account.
-    *active_account()*: the account the chat uses now, or None."""
+    *active_account()*: the account the chat uses now, or None.
+    *can_change()*: False while a reply runs or model work (a load, an
+    account switch) is in progress; Disconnect is refused then."""
 
-    def __init__(self, parent, on_use, active_account=lambda: None):
+    def __init__(self, parent, on_use, active_account=lambda: None, can_change=lambda: True):
         super().__init__(parent)
-        self.on_use, self.active_account = on_use, active_account
+        self.on_use, self.active_account, self.can_change = on_use, active_account, can_change
         _toplevel(self, parent, t("accounts.title"), 560, 300)
         tk.Label(self, text=t("accounts.title"), font=FONTS["title"], fg=C["accent"],
                  bg=C["bg_main"]).pack(pady=(16, 2))
@@ -134,6 +136,9 @@ class AccountsWindow(tk.Toplevel):
 
     def _disconnect(self, provider):
         name = self.names[provider]
+        if not self.can_change():
+            self.note.configure(text=t("accounts.busy"))
+            return
         if self.active_account() == provider:
             self.note.configure(text=t("accounts.disconnect_in_use", name=name))
             return

@@ -256,3 +256,13 @@ def test_closing_before_the_session_exists_still_cancels_it(tk_root, monkeypatch
     tk_root.update()
     assert fake_core.calls == [("start", "xai-oauth"), ("cancel", "s1")]
     assert shown_before == [] and used == [] and fake_core.opened == []
+
+
+def test_disconnect_is_refused_while_a_reply_or_model_work_runs(tk_root, monkeypatch):
+    from gui.accounts_window import AccountsWindow
+    fake_core = FakeCore(monkeypatch)
+    window = AccountsWindow(tk_root, on_use=lambda p, m: None, can_change=lambda: False)
+    window._disconnect("xai-oauth")
+    assert ("disconnect", "xai-oauth") not in fake_core.calls
+    assert window.note.cget("text") == "Wait until the reply or the model change has finished."
+    window.destroy()
