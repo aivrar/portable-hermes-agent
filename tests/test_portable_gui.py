@@ -2204,6 +2204,41 @@ def test_gui_sidebar_fit_note_follows_model_gpu_and_context(monkeypatch):
 
 
 @pytest.mark.needs_core
+def test_gui_open_thinking_pane_is_clearly_secondary_to_the_answer():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+    from gui.theme import C, FONTS, S
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        bubble.add_thinking("Two lines.")
+        bubble.refresh_activity()
+        bubble.append_text("The answer.")
+        view = bubble._activity_view
+        from tkinter import font as tkfont
+        actual = tkfont.Font(root=root, font=view._label.cget("font")).actual()
+        assert actual == tkfont.Font(root=root, font=FONTS["body"]).actual()   # normal size
+        text, pane = view._text, view._pane
+        assert text.cget("fg") == C["text_disabled"] != bubble._body.cget("fg")
+        assert int(text.cget("padx")) == S(8)                            # indented
+        bar = pane.winfo_children()[0]
+        assert bar.cget("bg") == C["border_dark"] and int(bar.cget("width")) == S(2)
+        assert pane.pack_info()["side"] == "top" and bar.pack_info()["side"] == "left"
+        pady = pane.pack_info()["pady"]
+        below = int(pady[1]) if isinstance(pady, tuple) else int(str(pady).split()[-1])
+        assert below == S(8)                                             # space before the answer
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 def test_gui_a_refusal_in_a_row_is_not_repeated_in_the_chat():
     import threading
     from unittest.mock import Mock

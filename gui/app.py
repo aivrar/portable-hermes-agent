@@ -287,13 +287,25 @@ class ReplyActivityView(tk.Frame):
         self.opened = opened
         self._on_toggle = on_toggle
         self._bg = bg
-        self._label = tk.Label(self, font=FONTS["small"], fg=C["text_hint"], bg=bg,
+        # The normal body size: the arrow is readable at any DPI.
+        self._label = tk.Label(self, font=FONTS["body"], fg=C["text_hint"], bg=bg,
                                anchor="w", justify="left", pady=0)
         self._label.pack(fill="x")
         self._label.bind("<Button-1>", self.toggle)
-        self._text = None    # the thinking text widget, made when first opened
+        self._pane = None    # the thinking pane, made when first opened
+        self._text = None
         self._shown = 0      # thinking chunks already in it
         self.refresh()
+
+    def _make_pane(self):
+        """Clearly secondary to the answer: dimmer text, indented behind a
+        thin bar, and space below it before the answer starts."""
+        self._pane = tk.Frame(self, bg=self._bg)
+        tk.Frame(self._pane, bg=C["border_dark"], width=S(2)).pack(side="left", fill="y")
+        self._text = tk.Text(self._pane, wrap="word", bg=self._bg, fg=C["text_disabled"],
+                             font=FONTS["small"], relief="flat", borderwidth=0,
+                             highlightthickness=0, padx=S(8), pady=S(2), height=1)
+        self._text.pack(side="left", fill="x", expand=True)
 
     def refresh(self):
         """Show the activity's current line and new thinking text (if open)."""
@@ -305,10 +317,8 @@ class ReplyActivityView(tk.Frame):
         arrow = ("▾ " if self.opened else "▸ ") if expandable else ""
         self._label.configure(text=arrow + header, cursor="hand2" if expandable else "")
         if self.opened and expandable:
-            if self._text is None:
-                self._text = tk.Text(self, wrap="word", bg=self._bg, fg=C["text_hint"],
-                                     font=FONTS["small"], relief="flat", borderwidth=0,
-                                     highlightthickness=0, padx=0, pady=2, height=1)
+            if self._pane is None:
+                self._make_pane()
             parts = self.activity.thinking_parts
             new = "".join(parts[self._shown:])    # only the chunks since last time
             self._shown = len(parts)
@@ -320,10 +330,10 @@ class ReplyActivityView(tk.Frame):
                 if height != int(self._text.cget("height")):   # a resize re-lays out the bubble
                     self._text.configure(height=height)
                 self._text.yview_moveto(1.0)
-            if not self._text.winfo_ismapped():
-                self._text.pack(fill="x")
-        elif self._text is not None:
-            self._text.pack_forget()
+            if not self._pane.winfo_manager():
+                self._pane.pack(fill="x", pady=(S(2), S(8)))
+        elif self._pane is not None:
+            self._pane.pack_forget()
 
     def toggle(self, _event=None):
         if not self.activity.expandable:
