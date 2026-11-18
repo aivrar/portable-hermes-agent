@@ -49,7 +49,7 @@ from gui.i18n import (
     save_gui_setting,
 )
 from gui.reply_activity import ReplyActivity, clock
-from gui.inline_markdown import BOLD, CODE, InlineMarkdown, spans
+from gui.inline_markdown import BOLD, CODE, spans
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -329,12 +329,15 @@ class StreamingBubble(tk.Frame):
     """A chat bubble that streams text token-by-token, below an activity line
     (waiting / thinking / running a tool) when given a ReplyActivity."""
 
+    _LINE = "md_line"            # Tk mark: where the unfinished line starts
+    PREVIEW_LINE_CHARS = 2000    # longer unfinished lines are previewed plain
+
     def __init__(self, parent, activity=None, thinking_open=False, on_thinking_toggle=None):
         super().__init__(parent, bg=C["bg_main"])
         self._full_text = ""
         self._leading = ""  # whitespace held before the first visible character
         self._shown = ""    # the text given to the body, markers included
-        self._markdown = InlineMarkdown()
+        self._line = ""     # its last, unfinished line
         self._bg = C["msg_ai"]
         self._refresh_id = None
 
@@ -373,6 +376,8 @@ class StreamingBubble(tk.Frame):
                             highlightthickness=0, height=1,
                             spacing1=0, spacing2=0, spacing3=0)
         self._body.pack(fill="x")
+        self._body.mark_set(self._LINE, "1.0")
+        self._body.mark_gravity(self._LINE, "left")   # stays before text added at it
 
         # Blinking cursor — separate label so it can't corrupt text
         self._cursor_lbl = tk.Label(self._card, text="\u258c",
@@ -402,8 +407,29 @@ class StreamingBubble(tk.Frame):
                 self.activity.answer_started()
                 self.refresh_activity()
         self._shown += text
-        _insert_styled(self._body, self._markdown.feed(text))
+        self._preview(text)
         self._fit_height()
+
+    def _preview(self, text: str):
+        """Best-effort styling while streaming: each line is styled on its
+        own once finished, the unfinished line again with each token (plain
+        once it is very long). finalize() redraws the whole reply."""
+        *finished, last = text.split("\n")
+        body = self._body
+        if finished:
+            finished[0] = self._line + finished[0]
+            self._line = ""
+            body.delete(self._LINE, "end-1c")
+            for line in finished:
+                _insert_styled(body, spans(line))
+                body.insert("end", "\n")
+            body.mark_set(self._LINE, "end-1c")
+        self._line += last
+        if len(self._line) <= self.PREVIEW_LINE_CHARS:
+            body.delete(self._LINE, "end-1c")
+            _insert_styled(body, spans(self._line))
+        else:
+            body.insert("end", last)
 
     def add_thinking(self, text: str):
         """Thinking text arrives token by token: the view is refreshed at
@@ -456,13 +482,10 @@ class StreamingBubble(tk.Frame):
             self._cursor_lbl.destroy()
         except tk.TclError:
             pass
-        held = self._markdown.flush()
-        if self._markdown.unclosed:
-            # A ** or ` the model never closed: show its markers as typed.
-            self._body.delete("1.0", "end")
-            _insert_styled(self._body, spans(self._shown))
-        else:
-            _insert_styled(self._body, held)
+        # One redraw of the whole reply: what stays is spans(full text),
+        # whatever the preview showed while it streamed.
+        self._body.delete("1.0", "end")
+        _insert_styled(self._body, spans(self._shown))
         while True:  # char by char: safe whatever Tk's index unit for non-BMP text
             last = self._body.get("end-2c", "end-1c")
             if not last or not last.isspace():

@@ -518,6 +518,61 @@ def _tagged(body, tag):
     return [body.get(ranges[i], ranges[i + 1]) for i in range(0, len(ranges), 2)]
 
 
+# Replies whose markers stream in awkward places (25a/25b review corpus).
+MARKDOWN_CORPUS = [
+    "Search **/*.py and **/*.txt", "2*3*4", "2**10 = 1024 and 3**2 = 9",
+    "C:\\Users\\*\\*.txt", "a ** b ** c", "**", "****", "***x***", "**bold**",
+    "**bold** and **more**", "`code with ** inside`", "an unmatched ` backtick",
+    "`a` and `b`", "**RTX 3060** (GPU 0)", "Run:\n```python\nx = 2**3  # **no**\n```\nDone **ok**.",
+    "***\n*x**", "Your **RTX 3060** has `12288` MiB and **bold",
+    "line one **a\nb** two `c\nd` three",
+]
+
+
+def _styled_chars(body):
+    """[(char, tags)] the bubble shows."""
+    from gui.inline_markdown import BOLD, CODE
+    text = body.get("1.0", "end-1c")
+    return [(ch, tuple(t for t in (BOLD, CODE) if t in body.tag_names(f"1.0+{i}c")))
+            for i, ch in enumerate(text)]
+
+
+def _expected_chars(text):
+    from gui.inline_markdown import spans
+    return [(ch, tags) for piece, tags in spans(text) for ch in piece]
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_shows_exactly_the_whole_reply_styling_for_any_split():
+    import random
+    import tkinter as tk
+    from gui import app
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    rng = random.Random(25)
+    try:
+        for text in MARKDOWN_CORPUS:
+            splits = [[text], list(text)]
+            splits += [[text[:c], text[c:]] for c in range(len(text) + 1)]
+            for _ in range(20):
+                cuts = sorted(rng.sample(range(len(text) + 1), min(len(text) + 1, rng.randint(1, 6))))
+                splits.append([text[a:b] for a, b in zip([0] + cuts, cuts + [len(text)])])
+            for chunks in splits:
+                bubble = app.StreamingBubble(root)
+                for chunk in chunks:
+                    bubble.append_text(chunk)
+                bubble.finalize()
+                assert _styled_chars(bubble._body) == _expected_chars(text), (text, chunks)
+                assert bubble.get_text() == text
+                bubble.destroy()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.needs_core
 def test_gui_reply_bubbles_show_bold_and_code_with_tags():
     import tkinter as tk
@@ -531,12 +586,10 @@ def test_gui_reply_bubbles_show_bold_and_code_with_tags():
     root.withdraw()
     try:
         stream = app.StreamingBubble(root)
-        shown_while_streaming = []
         for chunk in ("Your *", "*RTX 3060*", "* has `", "12288` MiB", " and **bold"):
             stream.append_text(chunk)
-            shown_while_streaming.append(stream._body.get("1.0", "end-1c"))
-        assert "*" not in "".join(shown_while_streaming) and "`" not in shown_while_streaming[-1]
-        assert _tagged(stream._body, BOLD) == ["RTX 3060", "bold"]       # still open
+        # while streaming, the line is styled as far as it is known
+        assert _tagged(stream._body, BOLD) == ["RTX 3060"]
         stream.finalize()                         # never closed: shown as typed
         assert stream._body.get("1.0", "end-1c") == "Your RTX 3060 has 12288 MiB and **bold"
         assert _tagged(stream._body, BOLD) == ["RTX 3060"]
