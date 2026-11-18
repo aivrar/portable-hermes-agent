@@ -222,3 +222,13 @@ def test_accounts_strings_exist_in_every_language():
             fields = [f for f in ("{name}", "{model}", "{time}", "{error}", "{command}", "{menu}")
                       if f in TRANSLATIONS["en"][key]]
             assert all(f in table[key] for f in fields), (lang, key)
+
+
+def test_the_key_wizard_points_subscribers_to_accounts(tk_root):
+    from gui.api_setup_wizard import APISetupWizard
+    wizard = APISetupWizard(tk_root)
+    try:
+        assert ("Have a ChatGPT or Grok subscription? Use View > Accounts (ChatGPT, Grok) "
+                "instead of a key.") in texts(wizard)
+    finally:
+        wizard.destroy()

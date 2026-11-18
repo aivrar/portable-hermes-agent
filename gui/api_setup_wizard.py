@@ -208,6 +208,9 @@ class APISetupWizard(tk.Toplevel):
         tk.Label(hdr, text=t("wizard.welcome_desc"),
                 font=FONTS["body"], fg=C["text_secondary"],
                 bg=C["bg_main"]).pack(anchor="w", pady=(4, 0))
+        tk.Label(hdr, text=t("wizard.accounts_hint", menu=f"{t('menu.view')} > {t('menu.accounts')}"),
+                font=FONTS["small"], fg=C["accent"],
+                bg=C["bg_main"]).pack(anchor="w", pady=(4, 0))
 
         # Status overview
         status_frame = tk.Frame(self, bg=C["bg_main"])

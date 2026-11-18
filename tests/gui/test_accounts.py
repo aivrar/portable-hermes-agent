@@ -191,3 +191,30 @@ def test_account_in_config():
     assert core.account_in_config({"model": {"provider": "OpenAI-Codex "}}) == "openai-codex"
     assert core.account_in_config({"model": {"provider": "openrouter"}}) is None
     assert core.account_in_config({"model": "gpt-6-sol"}) is None
+
+
+def _contract():
+    import ast
+    from pathlib import Path
+    from portable_hermes.verify import required_imports
+    tree = ast.parse(Path(core.__file__).read_text(encoding="utf-8"))
+    return {(module, name) for _, module, names in required_imports(tree) for name in names or []}
+
+
+def test_the_update_check_covers_the_public_core_functions_only():
+    needed = _contract()
+    assert {("hermes_cli.auth", "get_auth_status"), ("hermes_cli.auth", "clear_provider_auth"),
+            ("hermes_cli.models", "provider_model_ids"), ("hermes_cli.models", "pick_silent_default_model"),
+            ("hermes_cli.model_assignment", "validated_main_model_selection"),
+            ("hermes_cli.model_assignment", "apply_main_model_assignment"),
+            ("hermes_cli.model_switch", "ModelSwitchResult"),
+            ("hermes_cli.config", "load_config"), ("hermes_cli.config", "save_config")} <= needed
+    # The dashboard's private sign-in pieces degrade to the terminal command instead.
+    assert not [name for _, name in needed if name.startswith("_")]
+
+
+@pytest.mark.needs_core
+def test_the_installed_core_has_every_function_in_the_contract():
+    import importlib
+    missing = [f"{m}.{n}" for m, n in sorted(_contract()) if not hasattr(importlib.import_module(m), n)]
+    assert missing == []
