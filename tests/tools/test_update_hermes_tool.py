@@ -90,6 +90,22 @@ def test_update_failure_says_the_core_was_kept(calls):
     out = json.loads(tool.update_hermes_handler({}))
     assert not out["success"] and out["code"] == "verify_failed"
     assert "kept unchanged" in out["note"]
+    assert out["report"].endswith("(search first, then \"New issue\") and include this tool "
+                                  "result.")
+    assert "keeps working on the core it had" in out["report"]
+
+
+def test_a_last_known_good_fallback_asks_for_a_report_only_for_a_refused_core(calls):
+    _, replies = calls
+    replies[("core", "update")] = _completed({
+        "ok": True, "changed": True, "message": "core installed (last-known-good fallback)",
+        "fallback": {"code": "not_a_core", "reason": "run_agent.py missing", "commit": "b" * 40}})
+    out = json.loads(tool.update_hermes_handler({}))
+    assert out["success"] and "last verified core was installed instead" in out["report"]
+
+    replies[("core", "update")] = _completed({"ok": False, "code": "network",
+                                              "kept_existing_core": True, "reason": "offline"}, 3)
+    assert "report" not in json.loads(tool.update_hermes_handler({}))
 
 
 def test_check_in_a_git_clone_points_the_wrapper_at_git_pull(calls):

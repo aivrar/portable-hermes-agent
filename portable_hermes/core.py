@@ -409,6 +409,31 @@ def runtime_too_old_sentence(current: str | None, target: str | None,
             f"is {current or 'older'}.")
 
 
+# Failures that mean the downloaded core itself did not pass Portable Hermes's
+# checks. Everything else (network, disk, path length, a running Hermes, this
+# folder's Python, the wrapper itself) is not something to report upstream.
+CORE_REFUSED_CODES = frozenset({"verify_failed", "not_a_core", "lock_unusable",
+                                "unsafe_archive"})
+ISSUES_URL = "https://github.com/aivrar/portable-hermes-agent/issues"
+
+
+def core_refused_note(result: dict, include: str = "the lines above") -> str | None:
+    """What to do when a core install or update ended without the new core
+    (ASCII: it is printed on a cp1252 console). None for other failures."""
+    if result.get("ok"):
+        if (result.get("fallback") or {}).get("code") not in CORE_REFUSED_CODES:
+            return None
+        outcome = "The last verified core was installed instead."
+    elif {result.get("code"), result.get("newest_code")} & CORE_REFUSED_CODES:
+        outcome = ("Your install keeps working on the core it had."
+                   if result.get("kept_existing_core") else "No working core was installed.")
+    else:
+        return None
+    return ("The newest upstream Hermes core did not pass Portable Hermes's checks. "
+            f"{outcome} Please report it at {ISSUES_URL} (search first, then "
+            f"\"New issue\") and include {include}.")
+
+
 def check_python(project: dict, env: dict) -> None:
     """Raise ``runtime_too_old`` or ``python_incompatible`` when the core
     cannot run on this interpreter."""
@@ -1012,8 +1037,10 @@ class CoreLifecycle:
                         failure = self._failure(second, existing)
                         failure["reason"] = (f"newest core failed: {primary.reason}; "
                                              f"last-known-good failed: {second.reason}")
+                        failure["newest_code"] = primary.code
                         return failure
-                    result["fallback"] = {"reason": primary.reason, "commit": lkg["commit"]}
+                    result["fallback"] = {"reason": primary.reason, "code": primary.code,
+                                          "commit": lkg["commit"]}
                     result["message"] += " (last-known-good fallback)"
                 if recovered:
                     result["recovered"] = recovered

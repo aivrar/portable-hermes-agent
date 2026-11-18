@@ -75,6 +75,8 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
     if branch and branch != "main":
         command += ["--ref", branch]
     result = _run_portable(command, timeout)
+    from portable_hermes.core import core_refused_note
+    report = core_refused_note(result, include="this tool result")
     if result.get("ok"):
         changed = result.get("changed", True)
         payload = {
@@ -91,6 +93,8 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
         }
         if result.get("fallback"):
             payload["fallback"] = result["fallback"]
+        if report:
+            payload["report"] = report
         if result.get("kept_edits_count"):
             from portable_hermes.common import kept_sentence
             payload["kept_note"] = kept_sentence(result)
@@ -116,6 +120,8 @@ def update_hermes_handler(args: dict, **kwargs) -> str:
                            "not all be put back. Run UPDATE.bat to finish.")
     elif result.get("kept_existing_core"):
         payload["note"] = "The existing core was kept unchanged."
+    if report:
+        payload["report"] = report
     return json.dumps(payload, default=str)
 
 

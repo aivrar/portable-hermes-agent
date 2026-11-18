@@ -667,6 +667,8 @@ def test_fresh_install_falls_back_to_last_known_good(root, tmp_path, monkeypatch
     assert result["ok"], result
     assert result["commit"] == SHA_LKG and result["fallback"]["commit"] == SHA_LKG
     assert "BROKEN" in result["fallback"]["reason"]
+    assert result["fallback"]["code"] == "verify_failed"
+    assert "last verified core was installed instead" in core.core_refused_note(result)
     assert not (root / "BROKEN").exists()
 
 
@@ -695,6 +697,68 @@ def test_update_of_existing_core_never_falls_back(root, tmp_path, monkeypatch):
     verify.fail_when_file = "BROKEN"
     result = life.install()
     assert not result["ok"] and result["kept_existing_core"]
+    assert "keeps working on the core it had" in core.core_refused_note(result)
+
+
+# Which failures tell the user to report the core (the core itself did not pass
+# Portable Hermes's checks) and which do not (their side, or not the core).
+REPORTED = ["verify_failed", "not_a_core", "lock_unusable", "unsafe_archive"]
+NOT_REPORTED = ["network", "api", "timeout", "no_archive", "insecure_url", "bad_archive",
+                "path_too_long", "save_failed", "locked", "swap_failed", "rollback_failed",
+                "journal_exists", "journal_damaged", "pip", "dependencies_failed",
+                "runtime_too_old", "python_incompatible", "internal", "usage",
+                "spawn_failed", "no_result"]
+
+
+@pytest.mark.parametrize("code", REPORTED)
+def test_a_refused_core_says_what_to_do(code):
+    kept = core.core_refused_note({"ok": False, "code": code, "kept_existing_core": True})
+    assert kept == (
+        "The newest upstream Hermes core did not pass Portable Hermes's checks. Your install "
+        "keeps working on the core it had. Please report it at "
+        "https://github.com/aivrar/portable-hermes-agent/issues (search first, then "
+        "\"New issue\") and include the lines above.")
+    assert kept.isascii()
+    none = core.core_refused_note({"ok": False, "code": code, "kept_existing_core": False})
+    assert "No working core was installed." in none
+    fallback = core.core_refused_note({"ok": True, "fallback": {"code": code}})
+    assert "The last verified core was installed instead." in fallback
+
+
+@pytest.mark.parametrize("code", NOT_REPORTED)
+def test_failures_on_the_users_side_do_not_ask_for_a_report(code):
+    assert core.core_refused_note({"ok": False, "code": code, "kept_existing_core": True}) is None
+    assert core.core_refused_note({"ok": True, "fallback": {"code": code}}) is None
+
+
+def test_a_refused_newest_core_is_reported_when_the_fallback_fails_too():
+    both = {"ok": False, "code": "network", "newest_code": "verify_failed",
+            "kept_existing_core": False}
+    assert "No working core was installed." in core.core_refused_note(both)
+    offline = dict(both, newest_code="network")
+    assert core.core_refused_note(offline) is None
+    assert core.core_refused_note({"ok": True, "changed": True}) is None   # a plain success
+
+
+def test_the_refused_core_note_is_printed_after_a_core_result():
+    import contextlib
+    import io
+    from portable_hermes import __main__ as cli
+
+    def emitted(result, as_json=False):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._emit_core(result, as_json)
+        return out.getvalue()
+
+    printed = emitted({"ok": False, "code": "verify_failed", "reason": "session_store: x",
+                       "exit": 3, "kept_existing_core": True})
+    assert printed.startswith("FAILED: session_store: x\n")
+    assert "keeps working on the core it had" in " ".join(printed.split())
+    assert "report it" not in emitted({"ok": False, "code": "network", "reason": "no route",
+                                       "exit": 3, "kept_existing_core": True})
+    as_json = emitted({"ok": False, "code": "verify_failed", "reason": "x"}, True)
+    assert as_json.startswith("PORTABLE_RESULT ") and "report it" not in as_json  # the tool words it
 
 
 CLONE_DEV_FILES = {
