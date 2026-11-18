@@ -640,3 +640,68 @@ def test_gui_resumed_session_continues_under_its_own_id(monkeypatch, tmp_path):
         assert built[1] != "stored" and built[2] not in ("stored", built[1])
     finally:
         db.close()
+
+
+class _InlineThread:
+    def __init__(self, target, daemon=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def _delete_sidebar(app, monkeypatch):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(app.threading, "Thread", _InlineThread)
+    sidebar = object.__new__(app.Sidebar)
+    sidebar.__dict__.update(_session_widgets={}, after=Mock())
+    return sidebar
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_delete_removes_the_session_through_the_core(monkeypatch):
+    from gui import app
+    from hermes_state import SessionDB
+
+    with SessionDB() as db:
+        for sid in ("del_me", "keep"):
+            db.create_session(session_id=sid, source="gui", model="m")
+            db.append_message(sid, "user", "hello")
+    sidebar = _delete_sidebar(app, monkeypatch)
+
+    sidebar._perform_delete("del_me")
+
+    with SessionDB() as db:
+        assert db.get_session("del_me") is None
+        assert db.get_messages_as_conversation("del_me") == []
+        assert db.get_session("keep") is not None
+    sidebar.after.assert_not_called()
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_failed_delete_reloads_the_list_without_raw_sql(monkeypatch):
+    import sqlite3
+    import sys
+    from gui import app
+
+    class RefusingSessionDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def delete_session(self, session_id):
+            raise RuntimeError("session is being written")
+
+    def no_raw_sql(*args, **kwargs):
+        raise AssertionError("the GUI must not edit state.db directly")
+
+    monkeypatch.setitem(sys.modules, "hermes_state", SimpleNamespace(SessionDB=RefusingSessionDB))
+    monkeypatch.setattr(sqlite3, "connect", no_raw_sql)
+    sidebar = _delete_sidebar(app, monkeypatch)
+
+    sidebar._perform_delete("busy")
+
+    sidebar.after.assert_called_once_with(0, sidebar._load_sessions)

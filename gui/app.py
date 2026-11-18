@@ -994,21 +994,21 @@ class Sidebar(tk.Frame):
         if widget:
             widget.destroy()
 
-        # DB delete in background
+        # DB delete in background, through the core only: it also removes the
+        # session's search index, media and related rows, and refuses while
+        # the session is being written. If it fails, reload the list so the
+        # session shows again instead of looking deleted.
         def _do():
+            deleted = False
             try:
                 from hermes_state import SessionDB
                 with SessionDB() as db:
-                    db.delete_session(session_id)
+                    deleted = bool(db.delete_session(session_id))
             except Exception:
+                deleted = False
+            if not deleted:
                 try:
-                    import sqlite3
-                    from hermes_state import DEFAULT_DB_PATH
-                    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
-                    conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-                    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                    conn.commit()
-                    conn.close()
+                    self.after(0, self._load_sessions)
                 except Exception:
                     pass
         threading.Thread(target=_do, daemon=True).start()
