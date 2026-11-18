@@ -1447,6 +1447,37 @@ def test_gui_use_for_chat_says_the_next_message_uses_the_model(lang):
 
 
 @pytest.mark.needs_core
+def test_gui_header_shows_the_session_title_once_it_has_one():
+    from unittest.mock import Mock
+    from gui.i18n import t
+
+    bridge = Mock(is_running=False, session_id="s1")
+    bridge.get_token_usage.return_value = {}
+    bridge.new_session.return_value = True
+    gui = _gui_with_bridge(bridge)
+    gui._cleanup_stream_bubble = Mock()
+    sessions = [{"id": "s0", "title": "Other chat"}, {"id": "s1", "title": None, "preview": "hi"}]
+    gui.sidebar._sessions_data = sessions
+
+    gui._on_complete({})                                   # no title yet: header unchanged
+    gui.chat_title.configure.assert_not_called()
+
+    sessions[1]["title"] = "General assistance capabilities"
+    gui._on_complete({})
+    gui.chat_title.configure.assert_called_with(text="General assistance capabilities")
+
+    gui._new_chat()
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+    assert gui._chat_title_text is None
+
+    gui._set_chat_title("resumed")                         # resuming a stored session
+    gui._show_session_title("s0")
+    gui.chat_title.configure.assert_called_with(text="Other chat")
+    gui._set_chat_title("resumed", "x" * 80)               # long titles are shortened
+    assert gui.chat_title.configure.call_args.kwargs["text"] == "x" * 57 + "..."
+
+
+@pytest.mark.needs_core
 def test_gui_model_switch_is_refused_while_a_reply_runs():
     from unittest.mock import Mock
     from gui import app

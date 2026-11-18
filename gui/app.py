@@ -1459,6 +1459,9 @@ class StatusBar(tk.Frame):
 # ============================================================================
 
 class HermesGUI:
+    _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
+    _chat_title_text = None      # the session's title once it has one
+
     def __init__(self):
         self.root = tk.Tk()
         self.root.withdraw()  # Hide until fully themed to avoid white flash
@@ -1633,8 +1636,7 @@ class HermesGUI:
 
         # 6. Chat title and persistent message headers
         if hasattr(self, "chat_title") and self.chat_title.winfo_exists():
-            key = "chat.resumed_session" if self._chat_title_kind == "resumed" else "chat.new_chat_title"
-            self.chat_title.configure(text=t(key))
+            self._set_chat_title(self._chat_title_kind, self._chat_title_text)
         if hasattr(self, "msg_frame"):
             for child in self.msg_frame.winfo_children():
                 if isinstance(child, MessageBubble):
@@ -1975,11 +1977,30 @@ class HermesGUI:
         if tokens.get("total"):
             total = tokens["total"]
             self.status_bar.set_tokens(total)
-        # Refresh session list
+        # Refresh session list; the header shows the title once there is one
         try:
             self.sidebar.refresh_sessions()
+            self._show_session_title(self.bridge.session_id)
         except Exception:
             pass
+
+    def _set_chat_title(self, kind, title=None):
+        """Chat header: the session's title when it has one, else "New Chat"
+        or "Resumed Session" (*kind*)."""
+        self._chat_title_kind = kind
+        self._chat_title_text = title or None
+        if title and len(title) > 60:
+            title = title[:57] + "..."
+        key = "chat.resumed_session" if kind == "resumed" else "chat.new_chat_title"
+        self.chat_title.configure(text=title or t(key))
+
+    def _show_session_title(self, session_id):
+        """Show *session_id*'s title, as the sidebar's session list (just
+        refreshed) has it; nothing changes while the session has none."""
+        for sess in getattr(self.sidebar, "_sessions_data", None) or []:
+            if session_id and sess.get("id") == session_id and sess.get("title"):
+                self._set_chat_title(self._chat_title_kind, sess["title"])
+                return
 
     # ---- Commands ----
 
@@ -2006,8 +2027,7 @@ class HermesGUI:
             return
         for w in self.msg_frame.winfo_children():
             w.destroy()
-        self._chat_title_kind = "new"
-        self.chat_title.configure(text=t("chat.new_chat_title"))
+        self._set_chat_title("new")
         self.status_bar.set_ready()
         self._add_msg(t("chat.session_started", "New session started."), "system")
         self.input_text.focus_set()
@@ -2071,8 +2091,8 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            self._chat_title_kind = "resumed"
-            self.chat_title.configure(text=t("chat.resumed_session"))
+            self._set_chat_title("resumed")
+            self._show_session_title(session_id)
 
             # Display messages
             for msg in messages:
