@@ -64,6 +64,20 @@ def test_only_a_long_enough_fence_closes_the_block():
     assert spans("```x``` **bold**") == [("x", K), (" ", ()), ("bold", B)]   # code, no fence
 
 
+def test_a_long_plain_reply_costs_linear_time():
+    import time
+
+    def seconds(lines):
+        text = "a plain line of reply text\n" * lines
+        started = time.perf_counter()
+        assert spans(text) == [(text, ())]
+        return time.perf_counter() - started
+
+    small, large = seconds(50000), seconds(200000)
+    # 4x the lines: linear work takes ~4x, quadratic ~16x.
+    assert large < 10 * max(small, 0.01), (small, large)
+
+
 def test_line_by_line_matches_the_whole_text():
     text = "a **b**\n```\n**c**\n```\n`d` e"
     pieces, fenced = [], None

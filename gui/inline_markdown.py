@@ -25,6 +25,7 @@ whole reply with ``spans`` once the reply ends.
 from __future__ import annotations
 
 import re
+from itertools import groupby
 from typing import List, Tuple
 
 BOLD = "md_bold"
@@ -41,12 +42,14 @@ Piece = Tuple[str, Tuple[str, ...]]
 
 
 def _add(pieces: List[Piece], text: str, tags: Tuple[str, ...]):
-    if not text:
-        return
-    if pieces and pieces[-1][1] == tags:
-        pieces[-1] = (pieces[-1][0] + text, tags)
-    else:
+    if text:
         pieces.append((text, tags))
+
+
+def _merged(pieces: List[Piece]) -> List[Piece]:
+    """Neighbours with the same tags joined, each run in one join (linear)."""
+    return [("".join(text for text, _ in run), tags)
+            for tags, run in groupby(pieces, key=lambda piece: piece[1])]
 
 
 def _can_open(before: str, after: str) -> bool:
@@ -141,7 +144,7 @@ def line_spans(line: str, fence=None):
         _add(pieces, line, ())
         return pieces, opened
     _styled_line(line, pieces)
-    return pieces, None
+    return _merged(pieces), None
 
 
 def spans(text: str) -> List[Piece]:
@@ -152,6 +155,5 @@ def spans(text: str) -> List[Piece]:
         if k:
             _add(pieces, "\n", ())
         line_pieces, fenced = line_spans(line, fenced)
-        for piece, tags in line_pieces:
-            _add(pieces, piece, tags)
-    return pieces
+        pieces += line_pieces
+    return _merged(pieces)

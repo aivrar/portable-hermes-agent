@@ -645,6 +645,22 @@ def test_gui_long_streams_cost_about_linear_time():
             assert large < 20, newline_every     # about 1.5 s here
             # 4x the chunks: linear work takes ~4x, quadratic ~16x.
             assert large < 10 * max(small, 0.05), (newline_every, small, large)
+
+        def final_redraw(lines):                 # a long plain multi-line reply
+            bubble = app.StreamingBubble(root)
+            bubble.pack(fill="x")
+            for start in range(0, lines, 1000):  # few chunks: the redraw dominates
+                bubble.append_text("a plain line of reply text\n" * min(1000, lines - start))
+            started = time.perf_counter()
+            bubble.finalize()
+            seconds = time.perf_counter() - started
+            assert bubble.get_text().count("\n") == lines - 1
+            bubble.destroy()
+            return seconds
+
+        small, large = final_redraw(20000), final_redraw(80000)
+        assert large < 20
+        assert large < 10 * max(small, 0.05), (small, large)
     finally:
         root.destroy()
 
