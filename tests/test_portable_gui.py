@@ -513,6 +513,50 @@ def test_gui_streamed_reply_keeps_first_line_indentation():
     assert _streamed(("  ", "x"))[0] == "  x"
 
 
+def _tagged(body, tag):
+    ranges = body.tag_ranges(tag)
+    return [body.get(ranges[i], ranges[i + 1]) for i in range(0, len(ranges), 2)]
+
+
+@pytest.mark.needs_core
+def test_gui_reply_bubbles_show_bold_and_code_with_tags():
+    import tkinter as tk
+    from gui import app
+    from gui.inline_markdown import BOLD, CODE
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        stream = app.StreamingBubble(root)
+        shown_while_streaming = []
+        for chunk in ("Your *", "*RTX 3060*", "* has `", "12288` MiB", " and **bold"):
+            stream.append_text(chunk)
+            shown_while_streaming.append(stream._body.get("1.0", "end-1c"))
+        assert "*" not in "".join(shown_while_streaming) and "`" not in shown_while_streaming[-1]
+        assert _tagged(stream._body, BOLD) == ["RTX 3060", "bold"]       # still open
+        stream.finalize()                         # never closed: shown as typed
+        assert stream._body.get("1.0", "end-1c") == "Your RTX 3060 has 12288 MiB and **bold"
+        assert _tagged(stream._body, BOLD) == ["RTX 3060"]
+        assert _tagged(stream._body, CODE) == ["12288"]
+        assert stream.get_text().startswith("Your **RTX 3060**")      # the raw reply is kept
+
+        ai = app.MessageBubble(root, "Use **Split** or `gpu:1`.", "ai")
+        body = next(w for w in ai.winfo_children()[0].winfo_children()[0].winfo_children()
+                    if isinstance(w, tk.Text))
+        assert body.get("1.0", "end-1c") == "Use Split or gpu:1."
+        assert _tagged(body, BOLD) == ["Split"] and _tagged(body, CODE) == ["gpu:1"]
+
+        user = app.MessageBubble(root, "I typed **this**", "user")
+        body = next(w for w in user.winfo_children()[0].winfo_children()[0].winfo_children()
+                    if isinstance(w, tk.Text))
+        assert body.get("1.0", "end-1c") == "I typed **this**"       # only replies are styled
+    finally:
+        root.destroy()
+
+
 @pytest.mark.needs_core
 def test_gui_sidebar_auto_load_calls_load_model_and_reports_instance_id(monkeypatch):
     import logging

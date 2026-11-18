@@ -49,6 +49,7 @@ from gui.i18n import (
     save_gui_setting,
 )
 from gui.reply_activity import ReplyActivity, clock
+from gui.inline_markdown import BOLD, CODE, InlineMarkdown, spans
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -56,6 +57,14 @@ from hermes_cli import __version__ as HERMES_CORE_VERSION
 # ============================================================================
 # Chat Message Widgets
 # ============================================================================
+
+def _insert_styled(body, pieces):
+    """Insert (text, tags) pieces: **bold** and `code` from the model."""
+    body.tag_configure(BOLD, font=FONTS["body"] + ("bold",))
+    body.tag_configure(CODE, font=FONTS["mono"], background=C["bg_input"])
+    for text, tags in pieces:
+        body.insert("end", text, tags)
+
 
 class MessageBubble(tk.Frame):
     """A single chat message."""
@@ -117,7 +126,10 @@ class MessageBubble(tk.Frame):
                           padx=0, pady=2, cursor="arrow",
                           selectbackground=C["accent"], selectforeground="white",
                           highlightthickness=0)
-            body.insert("1.0", display_text)
+            if msg_type == "ai":
+                _insert_styled(body, spans(display_text))
+            else:
+                body.insert("1.0", display_text)
             body.configure(state="disabled")
 
             lines = max(1, display_text.count('\n') + 1)
@@ -321,6 +333,8 @@ class StreamingBubble(tk.Frame):
         super().__init__(parent, bg=C["bg_main"])
         self._full_text = ""
         self._leading = ""  # whitespace held before the first visible character
+        self._shown = ""    # the text given to the body, markers included
+        self._markdown = InlineMarkdown()
         self._bg = C["msg_ai"]
         self._refresh_id = None
 
@@ -387,7 +401,8 @@ class StreamingBubble(tk.Frame):
             if self.activity is not None:          # the answer starts
                 self.activity.answer_started()
                 self.refresh_activity()
-        self._body.insert("end", text)
+        self._shown += text
+        _insert_styled(self._body, self._markdown.feed(text))
         self._fit_height()
 
     def add_thinking(self, text: str):
@@ -441,15 +456,19 @@ class StreamingBubble(tk.Frame):
             self._cursor_lbl.destroy()
         except tk.TclError:
             pass
-        trimmed = False
+        held = self._markdown.flush()
+        if self._markdown.unclosed:
+            # A ** or ` the model never closed: show its markers as typed.
+            self._body.delete("1.0", "end")
+            _insert_styled(self._body, spans(self._shown))
+        else:
+            _insert_styled(self._body, held)
         while True:  # char by char: safe whatever Tk's index unit for non-BMP text
             last = self._body.get("end-2c", "end-1c")
             if not last or not last.isspace():
                 break
             self._body.delete("end-2c", "end-1c")
-            trimmed = True
-        if trimmed:
-            self._fit_height()
+        self._fit_height()
         if not self._full_text.strip():
             self._body.pack_forget()      # thinking only: no empty answer line
         self._body.configure(state="disabled")
