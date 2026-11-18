@@ -594,3 +594,49 @@ def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_pat
         assert db.get_session(bridge.session_id) is None
     finally:
         db.close()
+
+
+@pytest.mark.needs_core
+def test_gui_resumed_session_continues_under_its_own_id(monkeypatch, tmp_path):
+    from gui import agent_bridge
+    import run_agent
+    from hermes_cli import runtime_provider
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        db.create_session(session_id="stored", source="gui", model="m")
+        db.append_message("stored", "user", "hello")
+        db.end_session("stored", "new_chat")
+        bridge = _bridge_shell(agent_bridge, tmp_path)
+        bridge._session_db = db
+        bridge.agent = object()
+        built = []
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                built.append(kwargs["session_id"])
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kw: {
+            "provider": "custom", "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:9/v1", "api_key": "k"})
+        monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: subprocess.CompletedProcess(a[0], 1, "", ""))
+
+        history = db.get_messages_as_conversation("stored")
+        bridge.resume_session("stored", history)
+
+        assert bridge.agent is None
+        assert bridge.conversation_history == history
+        assert db.get_session("stored")["ended_at"] is None  # reopened, like the CLI
+        bridge._create_agent()
+        assert built == ["stored"]
+
+        # Only the resume keeps the id; a later rebuild or New Chat starts fresh.
+        bridge._create_agent()
+        bridge.new_session()
+        bridge._create_agent()
+        assert built[1] != "stored" and built[2] not in ("stored", built[1])
+    finally:
+        db.close()

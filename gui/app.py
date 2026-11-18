@@ -1950,9 +1950,8 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            # Load conversation into bridge
-            self.bridge.conversation_history = messages
-            self.bridge.agent = None  # Force recreation
+            # Continue the stored session (same id) with its history
+            self.bridge.resume_session(session_id, messages)
             self._chat_title_kind = "resumed"
             self.chat_title.configure(text=t("chat.resumed_session"))
 

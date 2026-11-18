@@ -71,6 +71,7 @@ class AgentBridge:
         self.agent = None
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_id: Optional[str] = None
+        self._resume_session_id: Optional[str] = None  # set by resume_session()
         self.is_running = False
         self._agent_thread: Optional[threading.Thread] = None
         self._clarify_queue = queue.Queue()
@@ -204,8 +205,14 @@ class AgentBridge:
         # Generate session ID. The core creates the session row itself when the
         # first turn starts (source "gui" from platform="gui", with model,
         # system prompt, model config and profile): creating it here first
-        # left an empty row whenever building the agent failed.
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
+        # left an empty row whenever building the agent failed. A resumed
+        # session keeps its id (resume_session).
+        resume_id = getattr(self, "_resume_session_id", None)
+        if resume_id:
+            self.session_id = resume_id
+            self._resume_session_id = None
+        else:
+            self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
 
         # Provider routing from config
         routing = self.config.get("provider_routing", {})
@@ -836,6 +843,23 @@ You are running on **{os_name} {os_release}**.
 
         self.conversation_history = []
         self.session_id = None
+        self._resume_session_id = None
+        self.agent = None
+
+    def resume_session(self, session_id: str, messages: list):
+        """Continue a stored session under its own id, as the CLI's resume does.
+
+        The next agent is built with *session_id* (see _create_agent), so new
+        turns are appended to the same session row instead of a new one; the
+        core restores the session's stored system prompt for it."""
+        if self._session_db:
+            try:
+                self._session_db.reopen_session(session_id)
+            except Exception:
+                pass
+        self.conversation_history = messages
+        self.session_id = session_id
+        self._resume_session_id = session_id
         self.agent = None
 
     def set_model(self, model: str):
