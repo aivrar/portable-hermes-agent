@@ -709,6 +709,79 @@ def _all_done(tracked):
     return tracked and not any(w.is_alive() for w in tracked)
 
 
+DEEPSEEK = "deepseek-r1-0528-qwen3-8b"
+DEEPSEEK_FILE = "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-GGUF/DeepSeek-R1-0528-Qwen3-8B-{}.gguf"
+
+
+def _sdk_model(key, path, name, ctx):
+    return SimpleNamespace(model_key=key, path=path,
+                           info=SimpleNamespace(display_name=name, max_context_length=ctx))
+
+
+def _refreshed_panel(monkeypatch):
+    """The panel's model list for this machine's LM Studio as seen on
+    2026-11-18: three quantisations of one model in the REST list, every LLM
+    again in the SDK's downloaded list (by key and file path), plus one
+    model only the SDK lists."""
+    rest = [{"id": f"{DEEPSEEK}@{q.lower()}", "path": f"{DEEPSEEK}@{q.lower()}",
+             "display_name": DEEPSEEK, "context_length": 131072, "quantization": q,
+             "state": "not-loaded"} for q in ("Q4_K_M", "Q6_K", "Q8_0")]
+    rest.append({"id": "lfm3-omni-2b", "path": "lfm3-omni-2b", "display_name": "lfm3-omni-2b",
+                 "context_length": 128000, "quantization": "Q8_0", "state": "not-loaded"})
+    downloaded = [_sdk_model(f"{DEEPSEEK}@{q.lower()}", DEEPSEEK_FILE.format(q),
+                             "DeepSeek R1 0528 Qwen3 8B", 131072) for q in ("Q4_K_M", "Q6_K", "Q8_0")]
+    downloaded += [_sdk_model("lfm3-omni-2b", "LiquidAI/LFM3-Omni-2B-GGUF/LFM3-Omni-2B-Q8_0.gguf",
+                              "LFM3 Omni 2B", 128000),
+                   _sdk_model("sdk-only-model", "pub/sdk-only-model-GGUF/sdk-only-Q4_K_M.gguf",
+                              "SDK Only Model", 65536)]
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = SimpleNamespace(llm=Mock(list_downloaded=lambda: downloaded))
+    client.list_models_api = lambda: [dict(r) for r in rest]
+
+    class InlineThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(lm, "HAS_SDK", True)
+    monkeypatch.setattr(lm.threading, "Thread", InlineThread)
+    panel = _panel_with(model_list=FakeListbox(), models=[], client=client)
+    panel._post_ui = lambda name, *a: getattr(lm.LMStudioPanel, name)(panel, *a)
+    lm.LMStudioPanel._refresh_models(panel)
+    return panel
+
+
+def test_model_list_shows_each_variant_once_and_tells_them_apart(monkeypatch):
+    panel = _refreshed_panel(monkeypatch)
+
+    ids = [m["id"] for m in panel.models]
+    assert ids == [f"{DEEPSEEK}@q4_k_m", f"{DEEPSEEK}@q6_k", f"{DEEPSEEK}@q8_0",
+                   "lfm3-omni-2b", "sdk-only-model"]           # nothing twice, nothing hidden
+    rows = panel.model_list.rows
+    assert len(set(rows)) == len(rows)
+    assert rows[1].startswith(f"{DEEPSEEK} [Q6_K]")
+    assert not any(".gguf" in row for row in rows)              # no raw file names
+    sdk_only = panel.models[-1]
+    assert sdk_only["display_name"] == "SDK Only Model" and sdk_only["context_length"] == 65536
+
+
+def test_load_acts_on_the_selected_variant(monkeypatch):
+    real_thread = lm.threading.Thread
+    listed = _refreshed_panel(monkeypatch).models
+    monkeypatch.setattr(lm.threading, "Thread", real_thread)   # the load runs in a thread
+    client = Mock()
+    panel, tracked, _posted = _working_panel(monkeypatch, client)
+    panel.models = listed
+    panel.model_list = Mock(curselection=lambda: (1,))         # the Q6_K row
+
+    lm.LMStudioPanel._load_model(panel)
+
+    assert _all_done(tracked)
+    assert client.load_model.call_args.args[0] == f"{DEEPSEEK}@q6_k"
+
+
 def test_panel_load_and_unload_are_refused_during_a_reply(monkeypatch):
     info = Mock()
     monkeypatch.setattr(lm.messagebox, "showinfo", info)

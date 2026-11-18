@@ -304,8 +304,19 @@ class LMStudioClient:
                          if not a.startswith("_") and not callable(getattr(m0, a, None))}
                 _log.info("SDK DownloadedModel attrs: %s", attrs)
                 _log.info("SDK DownloadedModel str: %s", str(m0))
-            return [{"path": self._extract_model_id(m),
-                     "display_name": self._extract_display_name(m)} for m in models]
+            rows = []
+            for m in models:
+                info = getattr(m, "info", None)
+                key = getattr(m, "model_key", None)
+                rows.append({
+                    "path": self._extract_model_id(m),
+                    # The key the REST list and load_model use for this model.
+                    "model_key": key if isinstance(key, str) and key else None,
+                    "display_name": (getattr(info, "display_name", None)
+                                     or self._extract_display_name(m)),
+                    "context_length": getattr(info, "max_context_length", None),
+                })
+            return rows
         except Exception:
             return []
 
@@ -375,6 +386,8 @@ class LMStudioClient:
                         
                         context_length = m.get("max_context_length") or m.get("context_length")
                         quantization = m.get("quantization") or "unknown"
+                        if isinstance(quantization, dict):     # /api/v1: {"name": "Q4_K_M", ...}
+                            quantization = quantization.get("name") or "unknown"
                         state = m.get("state") or "ready"
                         
                         result.append({
@@ -874,16 +887,20 @@ class LMStudioPanel(tk.Toplevel):
             if HAS_SDK and self.client._sdk_client:
                 try:
                     downloaded = self.client.list_downloaded_models()
-                    # Merge downloaded models not in API list
+                    # Add downloaded models the REST list lacks. The REST list
+                    # names models by key; the SDK by key and file path, so
+                    # match on both (on the path alone every model came twice).
                     api_ids = {m["id"] for m in models}
                     for d in downloaded:
-                        if d["path"] not in api_ids:
-                            models.append({
-                                "id": d["path"],
-                                "display_name": d.get("display_name", d["path"]),
-                                "context_length": None,
-                                "state": "not-loaded",
-                            })
+                        key = d.get("model_key")
+                        if d["path"] in api_ids or key in api_ids:
+                            continue
+                        models.append({
+                            "id": key or d["path"],
+                            "display_name": d.get("display_name") or key or d["path"],
+                            "context_length": d.get("context_length"),
+                            "state": "not-loaded",
+                        })
                 except Exception:
                     pass
             self._post_ui("_display_models", models, select_id, select_ids)
@@ -904,6 +921,9 @@ class LMStudioPanel(tk.Toplevel):
         for m in models:
             mid = m["id"]
             display = m.get("display_name") or mid
+            if "@" in mid:      # one of several variants of a model: say which
+                quant = m.get("quantization")
+                display += f" [{quant if quant and quant != 'unknown' else mid.split('@', 1)[1]}]"
             state = m.get("state", "")
             ctx = m.get("context_length")
             label = display
