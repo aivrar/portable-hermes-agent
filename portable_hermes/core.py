@@ -409,6 +409,66 @@ def runtime_too_old_sentence(current: str | None, target: str | None,
             f"is {current or 'older'}.")
 
 
+# Failures that mean the downloaded core itself did not pass Portable Hermes's
+# checks. Everything else (network, disk, path length, a running Hermes, this
+# folder's Python, the wrapper itself) is not something to report upstream.
+CORE_REFUSED_CODES = frozenset({"verify_failed", "not_a_core", "lock_unusable",
+                                "unsafe_archive"})
+ISSUES_URL = "https://github.com/aivrar/portable-hermes-agent/issues"
+
+
+def _verify_error(result: dict, failed: str, not_run: str) -> UpdateError:
+    """verify_failed when verify's checks ran and one failed (the core's
+    fault); verify_not_run when the verify process could not start, timed out
+    or gave no result (nothing was learnt about the core)."""
+    if any(not check.get("ok") for check in result.get("checks") or []):
+        return UpdateError(f"{failed}: {result.get('reason')}", code="verify_failed")
+    return UpdateError(f"{not_run} (the check process did not finish): "
+                       f"{result.get('reason')}", code="verify_not_run")
+
+
+def refused_by(core: str, exc: UpdateError) -> list:
+    """``[core]`` when *exc* means that core was checked and refused, else []
+    (*core*: "newest", "given" (--ref/--zip) or "last_known_good")."""
+    return [core] if exc.code in CORE_REFUSED_CODES else []
+
+
+_CHECKED = {
+    "newest": "The newest upstream Hermes core",
+    "given": "The Hermes core you asked for (a chosen branch, tag, commit or ZIP)",
+}
+
+
+def core_refused_note(result: dict, include: str = "the lines above") -> str | None:
+    """What to do when a core install or update ended without the core it
+    tried, because a core was checked and refused (``result["refused"]``,
+    in the order tried). ASCII: it is printed on a cp1252 console. None when
+    no core was refused (network, disk, a running Hermes, ...)."""
+    refused = result.get("refused") or []
+    if not refused:
+        return None
+    fallback_too = refused[-1] == "last_known_good"
+    first = refused[0] if refused[0] != "last_known_good" else None
+    if first and fallback_too:
+        what = (f"{_CHECKED[first]} did not pass Portable Hermes's checks, and neither did "
+                "the last verified core this Portable Hermes release falls back to. The "
+                "second is a Portable Hermes defect.")
+    elif fallback_too:
+        what = ("The newest upstream Hermes core could not be installed (see above), and "
+                "the last verified core this Portable Hermes release falls back to did not "
+                "pass Portable Hermes's checks. That is a Portable Hermes defect.")
+    else:
+        what = f"{_CHECKED[first]} did not pass Portable Hermes's checks."
+    if result.get("ok"):
+        outcome = "The last verified core was installed instead."
+    elif result.get("kept_existing_core"):
+        outcome = "Your install keeps working on the core it had."
+    else:
+        outcome = "No working core was installed."
+    return (f"{what} {outcome} Please report it at {ISSUES_URL} (search first, then "
+            f"\"New issue\") and include {include}.")
+
+
 def check_python(project: dict, env: dict) -> None:
     """Raise ``runtime_too_old`` or ``python_incompatible`` when the core
     cannot run on this interpreter."""
@@ -541,8 +601,7 @@ class CoreLifecycle:
             return 1, f"could not run pip: {exc}"
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
-    def _verify_env(self) -> dict:
-        home = tempfile.mkdtemp(prefix="portable-verify-home-")
+    def _verify_env(self, home: str) -> dict:
         extra = {"HERMES_HOME": home, "PORTABLE_HERMES_NO_HOOK": "1"}
         tcl = self.root / "python_embedded" / "tcl"
         if tcl.is_dir():
@@ -553,17 +612,22 @@ class CoreLifecycle:
         return common.clean_python_env(extra)
 
     def _default_verify(self, tree: Path, gui: bool = True) -> dict:
-        env = self._verify_env()
+        # The one throw-away home of the verify process (passed as --home; it
+        # makes none of its own). Removed once the process has exited
+        # (subprocess.run kills and waits on a timeout); a leftover in the
+        # system temp is harmless.
+        home = tempfile.mkdtemp(prefix="portable-verify-home-")
         cmd = [self.python, "-X", "utf8", "-c", common.VERIFY_BOOT, str(tree),
-               "--root", str(tree), "--json"] + ([] if gui else ["--no-gui"])
+               "--root", str(tree), "--json", "--home", home] + ([] if gui else ["--no-gui"])
         common.flush_output()
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace", timeout=900, cwd=str(tree), env=env)
+                                  errors="replace", timeout=900, cwd=str(tree),
+                                  env=self._verify_env(home))
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {"ok": False, "reason": f"verification process failed to run: {exc}"}
         finally:
-            shutil.rmtree(env["HERMES_HOME"], ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)
         for line in reversed((proc.stdout or "").splitlines()):
             if line.startswith("PORTABLE_VERIFY_RESULT "):
                 try:
@@ -858,8 +922,8 @@ class CoreLifecycle:
         self.say("Verifying the new core in a fresh process ...")
         result = self._run_verify(top)
         if not result.get("ok"):
-            raise UpdateError(f"verification of {(sha or 'the new core')[:12]} failed: "
-                              f"{result.get('reason')}", code="verify_failed")
+            raise _verify_error(result, f"verification of {(sha or 'the new core')[:12]} failed",
+                                "the new core could not be verified")
 
         # Plan the swap. A live file whose content is not what we recorded
         # installing (a user edit, or a file we never installed) is kept.
@@ -936,8 +1000,9 @@ class CoreLifecycle:
         txn.apply()
         live_result = self._run_verify(self.root)
         if not live_result.get("ok"):
-            raise UpdateError("the installed core failed verification and was rolled back: "
-                              f"{live_result.get('reason')}", code="verify_failed")
+            raise _verify_error(live_result,
+                                "the installed core failed verification and was rolled back",
+                                "the installed core could not be verified and was rolled back")
         kept = txn.commit()
         # Committed: nothing below may fail the update.
         warnings = []
@@ -982,6 +1047,7 @@ class CoreLifecycle:
         of git, and the files git tracks are wrapper paths, which the core
         installer never writes."""
         existing = "unknown"
+        tried = "given" if ref or zip_path else "newest"
         try:
             with common.InstallLock(self.root):
                 recovered = common.recover(self.root)
@@ -994,12 +1060,14 @@ class CoreLifecycle:
                     # Fall back only when there is no working core to keep, the
                     # caller did not ask for a specific source and the problem
                     # is not this folder's Python (a runtime upgrade fixes that).
-                    if (existing != "none" or ref or zip_path or not allow_fallback
+                    lkg = None
+                    if not (existing != "none" or ref or zip_path or not allow_fallback
                             or primary.code == "runtime_too_old"):
-                        return self._failure(primary, existing)
-                    lkg = self.last_known_good()
+                        lkg = self.last_known_good()
                     if lkg is None:
-                        return self._failure(primary, existing)
+                        failure = self._failure(primary, existing)
+                        failure["refused"] = refused_by(tried, primary)
+                        return failure
                     self.say(f"Newest core failed ({primary.reason}).")
                     self.say(f"Falling back to last-known-good {lkg['commit'][:12]} ...")
                     try:
@@ -1012,8 +1080,12 @@ class CoreLifecycle:
                         failure = self._failure(second, existing)
                         failure["reason"] = (f"newest core failed: {primary.reason}; "
                                              f"last-known-good failed: {second.reason}")
+                        failure["refused"] = (refused_by(tried, primary)
+                                              + refused_by("last_known_good", second))
                         return failure
-                    result["fallback"] = {"reason": primary.reason, "commit": lkg["commit"]}
+                    result["fallback"] = {"reason": primary.reason, "code": primary.code,
+                                          "commit": lkg["commit"]}
+                    result["refused"] = refused_by(tried, primary)
                     result["message"] += " (last-known-good fallback)"
                 if recovered:
                     result["recovered"] = recovered

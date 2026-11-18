@@ -295,16 +295,29 @@ def _sidebar_shell(app):
     return sidebar
 
 
+def _store():
+    """The session store of the test's Hermes home, the way the GUI opens it."""
+    from portable_hermes.session_store import open_store
+    return open_store()
+
+
+def _row(store, session_id):
+    """A session's row as a dict, or None (test-side read, both core shapes)."""
+    if store.legacy:
+        return store.handle.get_session(session_id)
+    record = store.handle.sessions.get(session_id)
+    return None if record is None else record.as_session_row()
+
+
 @pytest.mark.needs_core
 def test_gui_sidebar_hides_sessions_without_messages():
     """Empty sessions (failed first turn, gateway resets) cannot be resumed."""
     from gui import app
-    from hermes_state import SessionDB
 
-    with SessionDB() as db:
-        db.create_session(session_id="empty_session", source="gui", model="m")
-        db.create_session(session_id="chat_session", source="gui", model="m")
-        db.append_message("chat_session", "user", "hello")
+    with _store() as store:
+        store.create("empty_session", "gui", model="m")
+        store.create("chat_session", "gui", model="m")
+        store.append("chat_session", "user", "hello")
 
     sidebar = _sidebar_shell(app)
     sidebar._load_sessions()
@@ -312,26 +325,41 @@ def test_gui_sidebar_hides_sessions_without_messages():
     assert [s["id"] for s in sidebar._sessions_data] == ["chat_session"]
 
 
+def _installed_core_is_legacy():
+    """True on cores without persistence_assembly (the last-known-good core
+    the required CI runs against); False on current cores."""
+    import importlib.util
+    return importlib.util.find_spec("persistence_assembly") is None
+
+
 @pytest.mark.needs_core
-def test_gui_sidebar_detects_current_core_session_filter():
+def test_gui_opens_the_installed_core_store_the_way_its_agent_takes_it():
     import inspect
-    from hermes_state import SessionDB
+    from run_agent import AIAgent
 
-    with SessionDB() as db:
-        params = inspect.signature(db.list_sessions_rich).parameters
+    legacy = _installed_core_is_legacy()
+    print("installed core shape:", "SessionDB" if legacy else "storage interface")
+    with _store() as store:
+        assert store.legacy is legacy
+        keyword, = store.agent_kwargs()
+        assert keyword == ("session_db" if legacy else "persistence")
+        assert keyword in inspect.signature(AIAgent.__init__).parameters
 
-    assert "min_message_count" in params
+
+def _legacy_core(monkeypatch, session_db_class):
+    """Make the core look like one without persistence_assembly whose
+    hermes_state.SessionDB is *session_db_class*."""
+    import sys
+    monkeypatch.setitem(sys.modules, "persistence_assembly", None)   # import fails
+    monkeypatch.setitem(sys.modules, "hermes_state", SimpleNamespace(SessionDB=session_db_class))
 
 
 def _fake_session_db(rows, calls, supports_filter):
     """A SessionDB stand-in whose rows are newest first, honouring ``limit``."""
 
     class FakeSessionDB:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
+        def close(self):
+            pass
 
         if supports_filter:
             def list_sessions_rich(self, source=None, limit=20, min_message_count=0):
@@ -342,19 +370,17 @@ def _fake_session_db(rows, calls, supports_filter):
                 calls.append({"limit": limit})
                 return rows[:limit]
 
-    return SimpleNamespace(SessionDB=FakeSessionDB)
+    return FakeSessionDB
 
 
 @pytest.mark.needs_core
 def test_gui_sidebar_old_core_fallback_survives_20_newer_empty_sessions(monkeypatch):
-    import sys
     from gui import app
 
     rows = ([{"id": f"empty{i}", "message_count": 0} for i in range(20)]
             + [{"id": f"chat{i}", "message_count": 2} for i in range(25)])
     calls = []
-    monkeypatch.setitem(sys.modules, "hermes_state",
-                        _fake_session_db(rows, calls, supports_filter=False))
+    _legacy_core(monkeypatch, _fake_session_db(rows, calls, supports_filter=False))
 
     sidebar = _sidebar_shell(app)
     sidebar._load_sessions()
@@ -365,12 +391,10 @@ def test_gui_sidebar_old_core_fallback_survives_20_newer_empty_sessions(monkeypa
 
 @pytest.mark.needs_core
 def test_gui_sidebar_does_not_retry_when_supporting_core_raises_type_error(monkeypatch):
-    import sys
     from gui import app
 
     calls = []
-    monkeypatch.setitem(sys.modules, "hermes_state",
-                        _fake_session_db([], calls, supports_filter=True))
+    _legacy_core(monkeypatch, _fake_session_db([], calls, supports_filter=True))
 
     sidebar = _sidebar_shell(app)
     sidebar._load_sessions()
@@ -737,11 +761,10 @@ def test_gui_sidebar_auto_load_keeps_model_id_when_instance_matches_or_load_fail
 @pytest.mark.needs_core
 def test_gui_new_chat_ends_the_previous_session_in_the_database():
     from gui.agent_bridge import AgentBridge
-    from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = _store()
     try:
-        db.create_session(session_id="gui_old", source="gui", model="m")
+        db.create("gui_old", "gui", model="m")
         bridge = object.__new__(AgentBridge)
         bridge.agent = None
         bridge.conversation_history = [{"role": "user", "content": "hi"}]
@@ -750,7 +773,7 @@ def test_gui_new_chat_ends_the_previous_session_in_the_database():
 
         bridge.new_session()
 
-        row = db.get_session("gui_old")
+        row = _row(db, "gui_old")
         assert row["end_reason"] == "new_chat"
         assert row["ended_at"]
         assert bridge.session_id is None
@@ -936,9 +959,8 @@ def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_pat
     from gui import agent_bridge
     import run_agent
     from hermes_cli import runtime_provider
-    from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = _store()
     try:
         bridge = _bridge_shell(agent_bridge, tmp_path)
         bridge._session_db = db
@@ -959,11 +981,14 @@ def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_pat
         with pytest.raises(RuntimeError):
             bridge._create_agent()
 
-        # The agent gets the id and the database, and creates the row on its first turn.
+        # The agent gets the id and the store (persistence= on current cores,
+        # session_db= on older ones), and creates the row on its first turn.
         assert captured["session_id"] == bridge.session_id
-        assert captured["session_db"] is db
+        keyword, other = (("session_db", "persistence") if _installed_core_is_legacy()
+                          else ("persistence", "session_db"))
+        assert captured[keyword] is db.handle and other not in captured
         assert captured["platform"] == "gui"
-        assert db.get_session(bridge.session_id) is None
+        assert _row(db, bridge.session_id) is None
     finally:
         db.close()
 
@@ -973,13 +998,12 @@ def test_gui_resumed_session_continues_under_its_own_id(monkeypatch, tmp_path):
     from gui import agent_bridge
     import run_agent
     from hermes_cli import runtime_provider
-    from hermes_state import SessionDB
 
-    db = SessionDB()
+    db = _store()
     try:
-        db.create_session(session_id="stored", source="gui", model="m")
-        db.append_message("stored", "user", "hello")
-        db.end_session("stored", "new_chat")
+        db.create("stored", "gui", model="m")
+        db.append("stored", "user", "hello")
+        db.end("stored", "new_chat")
         bridge = _bridge_shell(agent_bridge, tmp_path)
         bridge._session_db = db
         bridge.agent = object()
@@ -996,12 +1020,13 @@ def test_gui_resumed_session_continues_under_its_own_id(monkeypatch, tmp_path):
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: subprocess.CompletedProcess(a[0], 1, "", ""))
 
-        history = db.get_messages_as_conversation("stored")
+        history = db.conversation("stored")
+        assert [m["content"] for m in history] == ["hello"]
         bridge.resume_session("stored", history)
 
         assert bridge.agent is None
         assert bridge.conversation_history == history
-        assert db.get_session("stored")["ended_at"] is None  # reopened, like the CLI
+        assert _row(db, "stored")["ended_at"] is None  # reopened, like the CLI
         bridge._create_agent()
         assert built == ["stored"]
 
@@ -1250,11 +1275,11 @@ def test_gui_failed_agent_build_keeps_the_pending_resume(monkeypatch, tmp_path):
 
 @pytest.mark.needs_core
 def test_gui_resume_fails_when_the_core_cannot_reopen_the_session(monkeypatch):
-    import hermes_state
+    from gui import app
     from gui.i18n import t
 
     class RefusingDB:
-        def reopen_session(self, session_id):
+        def reopen(self, session_id):
             raise RuntimeError("database is locked")
 
     agent = _ReleasableAgent()
@@ -1268,13 +1293,12 @@ def test_gui_resume_fails_when_the_core_cannot_reopen_the_session(monkeypatch):
 
     class StoredDB:  # the GUI's own read of the stored messages works
         def __enter__(self):
-            return SimpleNamespace(
-                get_messages_as_conversation=lambda sid: [{"role": "user", "content": "old"}])
+            return SimpleNamespace(conversation=lambda sid: [{"role": "user", "content": "old"}])
 
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr(hermes_state, "SessionDB", StoredDB)
+    monkeypatch.setattr(app, "open_store", StoredDB)
     gui = _gui_with_bridge(bridge)
     gui._on_session_select("stored")
 
@@ -1684,6 +1708,53 @@ def test_gui_send_is_refused_while_a_model_loads():
     assert gui._model_work_running() is False         # busy ends with the thread
 
 
+def _chat_keeping_bubbles(gui, app):
+    """_add_msg adds a (Tk-free) MessageBubble that the chat then lists."""
+    bubbles = []
+
+    def add(text, msg_type, tool_name=None):
+        bubble = object.__new__(app.MessageBubble)
+        bubble.__dict__.update(_text=text, _msg_type=msg_type, _tool_name=tool_name)
+        bubbles.append(bubble)
+
+    gui._add_msg = add
+    gui.msg_frame.winfo_children.side_effect = lambda: list(bubbles)
+    return bubbles
+
+
+@pytest.mark.needs_core
+def test_gui_a_refusal_in_a_row_is_not_repeated_in_the_chat():
+    import threading
+    from unittest.mock import Mock
+    from gui import app
+    from gui.i18n import t
+
+    busy = t("chat.busy_stop_first", stop=t("chat.stop"))
+    gui = _gui_with_bridge(Mock(is_running=True))
+    bubbles = _chat_keeping_bubbles(gui, app)
+
+    assert gui._refuse_while_running() and gui._refuse_while_running()
+    assert [(b._text, b._msg_type) for b in bubbles] == [(busy, "system")]
+
+    gui._add_msg("a reply", "ai")                     # another line in between: say it again
+    gui._refuse_while_running()
+    gui._add_msg(busy, "ai")                          # same words, but not a System line
+    gui._refuse_while_running()
+    assert [b._msg_type for b in bubbles] == ["system", "ai", "system", "ai", "system"]
+
+    gui.bridge.is_running = False
+    gui.input_text.get.return_value = "hello"
+    release = threading.Event()
+    loader = threading.Thread(target=release.wait, args=(10,), daemon=True)
+    loader.start()
+    gui._track_model_work(loader)
+    gui._send()
+    gui._send()
+    assert [b._text for b in bubbles[-2:]] == [busy, t("chat.model_loading_wait")]
+    release.set()
+    loader.join(10)
+
+
 @pytest.mark.needs_core
 def test_gui_busy_lasts_until_the_tk_side_completion_ran():
     from unittest.mock import Mock
@@ -1840,43 +1911,41 @@ def _delete_sidebar(app, monkeypatch):
 @pytest.mark.needs_core
 def test_gui_sidebar_delete_removes_the_session_through_the_core(monkeypatch):
     from gui import app
-    from hermes_state import SessionDB
 
-    with SessionDB() as db:
+    with _store() as db:
         for sid in ("del_me", "keep"):
-            db.create_session(session_id=sid, source="gui", model="m")
-            db.append_message(sid, "user", "hello")
+            db.create(sid, "gui", model="m")
+            db.append(sid, "user", "hello")
     sidebar = _delete_sidebar(app, monkeypatch)
 
     sidebar._perform_delete("del_me")
 
-    with SessionDB() as db:
-        assert db.get_session("del_me") is None
-        assert db.get_messages_as_conversation("del_me") == []
-        assert db.get_session("keep") is not None
+    with _store() as db:
+        assert _row(db, "del_me") is None
+        assert db.conversation("del_me") == []
+        assert _row(db, "keep") is not None
     sidebar.after.assert_not_called()
 
 
 @pytest.mark.needs_core
 def test_gui_sidebar_failed_delete_reloads_the_list_without_raw_sql(monkeypatch):
     import sqlite3
-    import sys
     from gui import app
 
-    class RefusingSessionDB:
+    class RefusingStore:
         def __enter__(self):
             return self
 
         def __exit__(self, *exc):
             return False
 
-        def delete_session(self, session_id):
+        def delete(self, session_id):
             raise RuntimeError("session is being written")
 
     def no_raw_sql(*args, **kwargs):
         raise AssertionError("the GUI must not edit state.db directly")
 
-    monkeypatch.setitem(sys.modules, "hermes_state", SimpleNamespace(SessionDB=RefusingSessionDB))
+    monkeypatch.setattr(app, "open_store", RefusingStore)
     monkeypatch.setattr(sqlite3, "connect", no_raw_sql)
     sidebar = _delete_sidebar(app, monkeypatch)
 

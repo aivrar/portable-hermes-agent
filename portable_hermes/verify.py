@@ -5,8 +5,10 @@ Run with the product interpreter::
     python -m portable_hermes.verify --root <tree> [--json] [--no-gui]
 
 The caller (the core/wrapper updaters) runs this with a scrubbed environment
-(no API keys), a throw-away ``HERMES_HOME`` and ``PORTABLE_HERMES_NO_HOOK=1``
-so the tree under test, not the live install, provides every module.
+(no API keys), a throw-away Hermes home given as ``--home`` (an existing empty
+folder, which it removes after this process exits) and
+``PORTABLE_HERMES_NO_HOOK=1`` so the tree under test, not the live install,
+provides every module. Without ``--home`` this process makes and removes its own.
 
 Each check reports a precise reason. Exit status 0 means every check passed.
 A check can also pass with a visible warning (for example when a private
@@ -295,10 +297,46 @@ def check_agent_keywords(root: Path, agent_class) -> tuple:
     return False, "AIAgent.__init__ does not accept: " + ", ".join(unknown)
 
 
-def verify(root: Path, *, gui: bool = True) -> dict:
+def check_session_store(home: Path) -> tuple:
+    """A GUI session's life through portable_hermes.session_store, in the
+    store of *home* (a throw-away folder, never the user's): create it with
+    messages the way the agent does, list it, read it back, end, reopen and
+    delete it. Also checks AIAgent takes the store the way the GUI passes it."""
+    import uuid
+    from portable_hermes.session_store import open_store
+    from run_agent import AIAgent
+
+    session_id = "portable_verify_" + uuid.uuid4().hex[:12]
+    with open_store(home) as store:
+        kind = "SessionDB" if store.legacy else "storage interface"
+        params = inspect.signature(AIAgent.__init__).parameters
+        for name in store.agent_kwargs():
+            if name not in params and not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                return False, f"{kind}: AIAgent.__init__ does not accept {name}="
+        store.create(session_id, "gui", model="portable-verify")
+        store.append(session_id, "user", "portable verify")
+        store.append(session_id, "assistant", "ok")
+        if not any(s.get("id") == session_id for s in store.list_with_messages(limit=20)):
+            return False, f"{kind}: a new session with messages is not listed"
+        read = [m.get("content") for m in store.conversation(session_id)]
+        if read != ["portable verify", "ok"]:
+            return False, f"{kind}: reading the session back gave {read!r}"
+        store.end(session_id, "portable_verify")
+        store.reopen(session_id)
+        if not store.delete(session_id):
+            return False, f"{kind}: deleting the session removed nothing"
+        if store.conversation(session_id) or any(
+                s.get("id") == session_id for s in store.list_with_messages(limit=20)):
+            return False, f"{kind}: the deleted session is still there"
+    return True, f"{kind}: create, list, read, end, reopen and delete a session"
+
+
+def verify(root: Path, *, home: Path, gui: bool = True) -> dict:
+    """*home* is a throw-away folder that becomes HERMES_HOME, replacing any
+    inherited one: building an agent and the session check write into the
+    Hermes home, and that must never be the user's."""
     root = Path(root).resolve()
-    if not os.environ.get("HERMES_HOME"):
-        os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="portable-verify-home-")
+    os.environ["HERMES_HOME"] = str(home)
     _isolate(root)
     checks = Checks()
 
@@ -319,7 +357,9 @@ def verify(root: Path, *, gui: bool = True) -> dict:
 
     def core_imports():
         import importlib
-        for name in ("hermes_constants", "hermes_cli.config", "hermes_state",
+        # The session store is reached through portable_hermes.session_store
+        # (storage interface or the older hermes_state), checked by session_store.
+        for name in ("hermes_constants", "hermes_cli.config",
                      "tools.registry", "toolsets", "model_tools"):
             importlib.import_module(name)
         from run_agent import AIAgent  # noqa: F401
@@ -327,7 +367,7 @@ def verify(root: Path, *, gui: bool = True) -> dict:
         origin = Path(run_agent.__file__).resolve()
         if root not in origin.parents:
             return False, f"run_agent imported from {origin}, not from the tree under test"
-        return True, "run_agent.AIAgent, model_tools, toolsets, hermes_cli.config, hermes_state"
+        return True, "run_agent.AIAgent, model_tools, toolsets, hermes_cli.config"
 
     if not checks.run("core_imports", core_imports):
         return _result(root, checks)
@@ -340,6 +380,10 @@ def verify(root: Path, *, gui: bool = True) -> dict:
 
     if (root / "gui" / "agent_bridge.py").is_file():
         checks.run("gui_agent_arguments", gui_agent_arguments)
+
+    # verify()'s own throw-away home: the core also writes its media cache and
+    # home folders under HERMES_HOME, whatever store home it is given.
+    checks.run("session_store", lambda: check_session_store(Path(os.environ["HERMES_HOME"])))
 
     expected = set(bridge.PORTABLE_TOOLS)
 
@@ -435,14 +479,34 @@ def main(argv=None) -> int:
     parser.add_argument("--root", required=True)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-gui", action="store_true")
+    parser.add_argument("--home", help="an existing empty folder to use as the throw-away "
+                                       "Hermes home (the installer makes and removes it)")
     args = parser.parse_args(argv)
+    # Without --home this process makes its own home and removes it. Only a
+    # folder made here is ever removed here (never one decided by name, never
+    # an inherited HERMES_HOME); the environment is not consulted for it.
+    given = args.home
+    if given:
+        try:
+            refused = (None if Path(given).is_dir() and not any(Path(given).iterdir())
+                       else "is not an existing empty folder")
+        except OSError as exc:
+            refused = f"cannot be read ({exc})"
+        if refused:
+            print(f"portable verify: --home {given} {refused}; nothing was verified "
+                  "or written", file=sys.stderr)
+            return 2
+    made = None if given else tempfile.mkdtemp(prefix="portable-verify-home-")
     # Tool modules print to stdout while importing; keep the JSON channel clean.
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        result = verify(Path(args.root), gui=not args.no_gui)
+        result = verify(Path(args.root), home=Path(given or made), gui=not args.no_gui)
     finally:
         sys.stdout = real_stdout
+        if made:
+            import shutil
+            shutil.rmtree(made, ignore_errors=True)
     if args.json:
         print("PORTABLE_VERIFY_RESULT " + json.dumps(result))
     else:

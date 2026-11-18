@@ -29,6 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
 from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
+from portable_hermes.session_store import open_store
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
 from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
@@ -58,6 +59,7 @@ class MessageBubble(tk.Frame):
         super().__init__(parent, bg=C["bg_main"])
         self._msg_type = msg_type
         self._tool_name = tool_name
+        self._text = text
 
         if msg_type == "user":
             bg, border, label, label_fg = C["msg_user"], C["msg_user_border"], t("chat.role_user"), C["accent"]
@@ -391,25 +393,6 @@ def _auto_load_local_model(model_id, settings, log):
     except Exception as e:
         log.error("auto-load EXCEPTION: %s", e)
         return False, str(e), None
-
-
-def _list_sessions_with_messages(db, limit=20, fallback_window=200):
-    """Recent sessions that have at least one message.
-
-    Sessions without messages (a first turn that failed, gateway resets,
-    compression parents) have nothing to resume, so the sidebar hides them.
-    A core whose list_sessions_rich has no min_message_count gets a wider
-    window filtered here, so newer empty rows cannot crowd out real ones.
-    """
-    try:
-        import inspect
-        supported = "min_message_count" in inspect.signature(db.list_sessions_rich).parameters
-    except (TypeError, ValueError):
-        supported = False
-    if supported:
-        return db.list_sessions_rich(source=None, limit=limit, min_message_count=1)
-    rows = db.list_sessions_rich(source=None, limit=fallback_window)
-    return [s for s in rows if s.get("message_count", 1)][:limit]
 
 
 class Sidebar(tk.Frame):
@@ -918,11 +901,11 @@ class Sidebar(tk.Frame):
             self.on_model_change(target)
 
     def _load_sessions(self):
-        """Load recent sessions from SessionDB."""
+        """Load recent sessions that have messages (empty ones, e.g. a first
+        turn that failed, have nothing to resume, so the sidebar hides them)."""
         try:
-            from hermes_state import SessionDB
-            with SessionDB() as db:
-                sessions = _list_sessions_with_messages(db, limit=20)
+            with open_store() as store:
+                sessions = store.list_with_messages(limit=20)
             self._sessions_data = sessions
             self._render_sessions()
         except Exception:
@@ -1073,15 +1056,13 @@ class Sidebar(tk.Frame):
             widget.destroy()
 
         # DB delete in background, through the core only: it also removes the
-        # session's search index, media and related rows, and refuses while
-        # the session is being written. If it fails, reload the list so the
-        # session shows again instead of looking deleted.
+        # session's search index, media and related rows. If it fails, reload
+        # the list so the session shows again instead of looking deleted.
         def _do():
             deleted = False
             try:
-                from hermes_state import SessionDB
-                with SessionDB() as db:
-                    deleted = bool(db.delete_session(session_id))
+                with open_store() as store:
+                    deleted = store.delete(session_id)
             except Exception:
                 deleted = False
             if not deleted:
@@ -1864,7 +1845,7 @@ class HermesGUI:
         if not msg or self.bridge.is_running:
             return
         if self._model_work_running():  # the message stays in the input box
-            self._add_msg(t("chat.model_loading_wait"), "system")
+            self._add_notice(t("chat.model_loading_wait"))
             return
         self.input_text.delete("1.0", "end")
 
@@ -2033,8 +2014,18 @@ class HermesGUI:
         turn would write into the new session); True when refused."""
         if not self.bridge.is_running:
             return False
-        self._add_msg(t("chat.busy_stop_first", stop=t("chat.stop")), "system")
+        self._add_notice(t("chat.busy_stop_first", stop=t("chat.stop")))
         return True
+
+    def _add_notice(self, text):
+        """A System line, unless the chat's last line is already this one
+        (refusals in a row would repeat it)."""
+        children = self.msg_frame.winfo_children()
+        last = children[-1] if children else None
+        if (isinstance(last, MessageBubble) and last._msg_type == "system"
+                and last._text == text):
+            return
+        self._add_msg(text, "system")
 
     def _can_delete_session(self, session_id) -> bool:
         """Sidebar delete guard: not the active session while its turn runs."""
@@ -2102,9 +2093,8 @@ class HermesGUI:
         if self._refuse_while_running():
             return
         try:
-            from hermes_state import SessionDB
-            with SessionDB() as db:
-                messages = db.get_messages_as_conversation(session_id)
+            with open_store() as store:
+                messages = store.conversation(session_id)
             # Continue the stored session (same id) with its history; the
             # bridge refuses if the core cannot reopen it.
             if not messages or not self.bridge.resume_session(session_id, messages):

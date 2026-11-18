@@ -75,6 +75,16 @@ def _emit(result: dict, as_json: bool) -> None:
         print(f"  dependencies: {line}")
 
 
+def _emit_core(result: dict, as_json: bool) -> None:
+    """A core install or update result, then what to do if the new core was refused."""
+    _emit(result, as_json)
+    from portable_hermes.core import core_refused_note
+    note = None if as_json else core_refused_note(result)
+    if note:
+        print()
+        print(textwrap.fill(note, width=88, break_long_words=False, break_on_hyphens=False))
+
+
 def _print_check(title: str, info: dict) -> None:
     print(title)
     for key in ("install_type", "installed_version", "latest_version", "repository",
@@ -101,7 +111,7 @@ def cmd_core(args) -> int:
     result = life.install(ref=ref, zip_path=zip_path, commit=commit,
                           skip_deps=args.skip_deps, force=args.force,
                           allow_fallback=not args.no_fallback)
-    _emit(result, args.json)
+    _emit_core(result, args.json)
     if result.get("ok") and result.get("changed") and not args.json:
         print("Restart Hermes (close and reopen the GUI or CLI) to load the new core.")
     return int(result.get("exit", 0 if result.get("ok") else 1))
@@ -178,7 +188,7 @@ def cmd_update(args) -> int:
         print("  Skipped.")
         return status
     result = life.install()
-    _emit(result, False)
+    _emit_core(result, False)
     if result.get("ok") and result.get("changed"):
         print("Restart Hermes (close and reopen the GUI or CLI) to load the new core.")
     core_status = int(result.get("exit", 0 if result.get("ok") else 1))

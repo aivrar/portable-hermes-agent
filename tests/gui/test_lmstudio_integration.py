@@ -145,12 +145,20 @@ def test_connection_reads_tk_variables_only_on_ui_thread(monkeypatch):
         assert threading.get_ident() == ui_thread
         return "test-key"
     client = Mock()
-    client.is_running.side_effect = lambda: complete.set() or False
-    panel = SimpleNamespace(client=client, _key_var=Mock(get=read_key), after=Mock())
+    client.is_running.return_value = False
+    posted = []
+
+    def post_ui(name, *args):   # the worker hands its result to the Tk thread
+        posted.append((name, args))
+        complete.set()
+
+    panel = SimpleNamespace(client=client, _key_var=Mock(get=read_key), after=Mock(),
+                            _post_ui=post_ui)
     monkeypatch.setattr(lm, "HAS_SDK", False)
     lm.LMStudioPanel._connect(panel)
     assert complete.wait(5)
     assert client.api_key == "test-key"
+    assert posted == [("_finish_connect", (client, False, False))]
 
 
 def _sdk_with_downloaded(*downloaded):
