@@ -363,9 +363,11 @@ class StreamingBubble(tk.Frame):
 def _auto_load_local_model(model_id, settings, log):
     """Load *model_id* in LM Studio for the sidebar; runs on a worker thread.
 
-    Returns (success, error message, instance id LM Studio used or None)."""
+    Returns (success, message, instance id LM Studio used or None). The
+    message is the error on failure; on success it is empty, or the warning
+    that the GPU could only be estimated (gui.lm_studio.gpu_unconfirmed_note)."""
     try:
-        from gui.lm_studio import LMStudioPanel, LMStudioClient
+        from gui.lm_studio import LMStudioPanel, LMStudioClient, gpu_choice_label, gpu_unconfirmed_note
         client = LMStudioClient(base_url=LMStudioPanel._resolve_base_url())
         if not client.connect_sdk():
             log.debug("auto-load SDK connect FAILED")
@@ -380,7 +382,11 @@ def _auto_load_local_model(model_id, settings, log):
         )
         loaded_id = client.last_loaded_identifier
         log.debug("auto-load SUCCESS instance=%r", loaded_id)
-        return True, "", loaded_id
+        plan = getattr(client, "last_gpu_plan", None)
+        note = None
+        if plan is not None and not getattr(plan, "confirmed", True):
+            note = gpu_unconfirmed_note(plan, gpu_choice_label(plan.placement))
+        return True, note or "", loaded_id
     except Exception as e:
         log.error("auto-load EXCEPTION: %s", e)
         return False, str(e), None
@@ -569,10 +575,11 @@ class Sidebar(tk.Frame):
         self._gpu_var = tk.StringVar(value="")
         self._gpus = []  # NvidiaGpu entries from gui.lm_studio.detect_gpus()
         self._gpu_label_to_placement = {}
+        self._gpu_user_choice = None  # placement the user picked, if any
         self._gpu_combo = ttk.Combobox(gpu_row, textvariable=self._gpu_var,
                                         font=FONTS["small"], state="readonly", width=22)
         self._gpu_combo.pack(side="left", fill="x", expand=True)
-        self._gpu_combo.bind("<<ComboboxSelected>>", lambda e: self._save_local_settings())
+        self._gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
 
         # Detect GPUs in background
         def _detect_gpus():
@@ -655,11 +662,17 @@ class Sidebar(tk.Frame):
                                   command=self._save_local_settings)
         self._flash_attn_cb.pack(side="left", padx=(8, 0))
 
+    def _on_gpu_chosen(self, _event=None):
+        """The user picked a GPU entry: remember it by placement (labels are
+        translated and the index shifts once GPUs are detected)."""
+        self._gpu_user_choice = self._get_gpu_placement()
+        self._save_local_settings()
+
     def _populate_gpus(self, gpus):
-        """Populate GPU combobox (called on main thread)."""
-        selected = self._get_gpu_placement() if self._gpu_var.get() else None
+        """Populate GPU combobox (called on main thread). Detection can finish
+        after the user already picked an entry; keep that choice if offered."""
         self._gpus = list(gpus)
-        self._show_gpu_choices(selected)
+        self._show_gpu_choices(getattr(self, "_gpu_user_choice", None))
         # Persist the selection so bridge can read it
         self._save_local_settings()
 
@@ -836,7 +849,10 @@ class Sidebar(tk.Frame):
 
         target = loaded_id if success and loaded_id else model_id
         if success:
-            self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
+            if error:  # loaded, but the GPU could only be estimated
+                self._show_load_status("sidebar.model_loaded_gpu_unconfirmed", prefix="\u26a0 ")
+            else:
+                self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
             self._model_states[target] = "loaded"
             if target != model_id:
                 # Route the new id to LM Studio before the next refresh lists it.
@@ -1953,6 +1969,8 @@ class HermesGUI:
         """Called when a local model auto-load completes."""
         if success:
             self._add_msg(t("chat.auto_load_success", model=model_id), "system")
+            if error:  # the GPU could only be estimated: say so and how to check
+                self._add_msg(error, "system")
         else:
             self._add_msg(t("chat.auto_load_failed", model=model_id, error=error), "error")
 

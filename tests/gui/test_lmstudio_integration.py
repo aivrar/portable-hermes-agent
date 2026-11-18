@@ -409,6 +409,7 @@ def test_load_single_gpu_maps_the_nvidia_smi_index(owner_gpus):
 def test_load_cpu_only_and_auto(owner_gpus):
     cpu = _loaded_gpu_setting("cpu")
     assert cpu.gpu.ratio == 0.0 and cpu.offload_kv_cache_to_gpu is False
+    assert list(cpu.gpu.disabled_gpus) == [0, 1]      # every GPU disabled
     assert _loaded_gpu_setting("auto").gpu is None
     assert _loaded_gpu_setting().gpu is None
 
@@ -425,6 +426,114 @@ def test_load_on_a_missing_gpu_fails_before_unloading_anything(owner_gpus):
 
     loaded.unload.assert_not_called()
     client._sdk_client.llm.load_new_instance.assert_not_called()
+
+
+class _ComboVar:
+    """gpu_var + gpu_combo stand-in: current(i) selects values[i]."""
+
+    def __init__(self):
+        self.value, self.values = "", []
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+    def configure(self, values):
+        self.values = list(values)
+
+    def current(self, index):
+        self.value = self.values[index]
+
+
+def _gpu_panel():
+    combo = _ComboVar()
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(gpus=[], _gpu_label_to_placement={}, gpu_var=combo, gpu_combo=combo)
+    panel._show_gpu_choices(lm.gpu_place.default_placement([]))    # before detection
+    return panel, combo
+
+
+def _pick(panel, combo, placement):
+    combo.set({p: label for label, p in panel._gpu_label_to_placement.items()}[placement])
+    panel._on_gpu_chosen()
+
+
+@pytest.mark.parametrize("choice", ["cpu", "auto"])
+def test_panel_keeps_a_choice_made_while_gpus_were_detected(choice):
+    panel, combo = _gpu_panel()
+    assert panel._selected_gpu_placement() == "auto"
+    _pick(panel, combo, choice)
+
+    panel._set_gpus(OWNER_NVIDIA)                    # detection finishes late
+
+    assert panel._selected_gpu_placement() == choice   # not reset to GPU 0
+    assert len(combo.values) == 5
+
+
+def test_panel_without_a_choice_defaults_to_the_first_gpu_after_detection():
+    panel, combo = _gpu_panel()
+    panel._set_gpus(OWNER_NVIDIA)
+    assert panel._selected_gpu_placement() == "gpu:0"
+    _pick(panel, combo, "split")
+    panel._set_gpus(OWNER_NVIDIA[:1])               # chosen entry no longer offered
+    assert panel._selected_gpu_placement() == "gpu:0"
+
+
+def test_load_success_with_an_estimated_gpu_warns(monkeypatch):
+    rows = [{"id": VARIANT, "state": "loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+    warn = Mock()
+    monkeypatch.setattr(lm.messagebox, "showwarning", warn)
+    plan = lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, None)
+    note = lm.gpu_unconfirmed_note(plan, "GPU 1: RTX 3090")
+    assert "GPU 1: RTX 3090" in note and "nvidia-smi" in note
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None, note)
+
+    panel._set_status.assert_called_with("lmstudio.loaded_model_gpu_unconfirmed", model=VARIANT)
+    assert warn.call_args.args[1] == note
+    assert lm.gpu_unconfirmed_note(lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, OWNER_SURVEY),
+                                   "x") is None
+
+
+def test_failed_load_refreshes_the_list_keeping_the_selection(monkeypatch):
+    rows = [{"id": "previous", "state": "not-loaded"},     # unloaded after the failure
+            {"id": "lfm3-1.7b", "state": "not-loaded"}]
+    panel = _listed_panel(["previous", "lfm3-1.7b"], "lfm3-1.7b")
+    lm.LMStudioPanel._display_models(panel, [{"id": "previous", "state": "loaded"},
+                                             {"id": "lfm3-1.7b"}])
+    assert lm.t("lmstudio.loaded_tag") in panel.model_list.rows[0]    # before: stale tag
+    panel._restore_load_btn, panel.status_dot, panel._set_status = Mock(), Mock(), Mock()
+    panel.client = SimpleNamespace(_sdk_client=None)
+    refreshed = []
+
+    def refresh(**kw):
+        refreshed.append(kw)
+        lm.LMStudioPanel._display_models(panel, rows, **kw)
+
+    panel._refresh_models = refresh
+    monkeypatch.setattr(lm.messagebox, "showerror", Mock())
+
+    lm.LMStudioPanel._on_load_error(panel, "unknown model architecture", "lfm3-1.7b")
+
+    assert refreshed == [{"select_ids": ("lfm3-1.7b",)}]
+    assert _selected_id(panel) == "lfm3-1.7b"
+    assert not any(lm.t("lmstudio.loaded_tag") in row for row in panel.model_list.rows)
+
+
+def test_gpu_unconfirmed_strings_exist_in_every_language():
+    from gui import i18n
+    for code in i18n.LANGUAGE_CODES:
+        table = i18n.TRANSLATIONS[code]
+        for key in ("lmstudio.gpu_unconfirmed", "lmstudio.gpu_unconfirmed_title",
+                    "lmstudio.loaded_model_gpu_unconfirmed",
+                    "sidebar.model_loaded_gpu_unconfirmed"):
+            assert table[key], (code, key)
+        assert "{choice}" in table["lmstudio.gpu_unconfirmed"]
+        assert "nvidia-smi" in table["lmstudio.gpu_unconfirmed"]
+        assert "{model}" in table["lmstudio.loaded_model_gpu_unconfirmed"]
 
 
 def test_gpu_choices_are_labelled_in_every_language():

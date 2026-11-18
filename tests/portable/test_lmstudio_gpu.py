@@ -1,6 +1,9 @@
 """GPU placement for LM Studio: nvidia-smi -> LM Studio mapping and load settings."""
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from portable_hermes import lmstudio_gpu as g
@@ -62,20 +65,95 @@ def test_without_uuids_unique_name_and_memory_still_match(owner):
     assert g.map_to_lmstudio(nvidia, no_uuid) == ({0: 1, 1: 0}, g.MAP_NAME)
 
 
-def test_identical_cards_without_uuids_use_the_documented_fallback():
+def test_identical_cards_without_uuids_are_only_estimated():
     nvidia = [g.NvidiaGpu(0, "RTX 3090", 24576), g.NvidiaGpu(1, "RTX 3090", 24576)]
     survey = [g.LmStudioGpu(0, "RTX 3090", 24575), g.LmStudioGpu(1, "RTX 3090", 24575)]
-    assert g.map_to_lmstudio(nvidia, survey) == ({0: 1, 1: 0}, g.MAP_FALLBACK)
+    assert g.map_to_lmstudio(nvidia, survey) == ({0: 0, 1: 1}, g.MAP_FALLBACK)
 
 
-@pytest.mark.parametrize("count, expected", [
-    (1, {0: 0}),
-    (2, {0: 1, 1: 0}),            # the reversal the panel always used
-    (3, {0: 0, 1: 1, 2: 2}),      # no rule known: nvidia-smi order unchanged
+@pytest.mark.parametrize("memories, expected", [
+    ([8192], {0: 0}),
+    ([12288, 24576], {0: 1, 1: 0}),              # the owner's PC: 3090 first
+    ([24576, 12288], {0: 0, 1: 1}),              # big card already first: no reversal
+    ([8192, 8192], {0: 0, 1: 1}),                # equal memory keeps nvidia-smi order
+    ([8192, 24576, 16384], {0: 2, 1: 0, 2: 1}),  # any count: most memory first
+    ([16384, 8192, 16384], {0: 0, 1: 2, 2: 1}),
 ])
-def test_without_a_survey_only_two_gpus_are_reversed(count, expected):
-    nvidia = [g.NvidiaGpu(i, f"GPU{i}", 8192) for i in range(count)]
+def test_without_a_survey_the_order_is_estimated_by_memory(memories, expected):
+    nvidia = [g.NvidiaGpu(i, f"GPU{i}", m) for i, m in enumerate(memories)]
     assert g.map_to_lmstudio(nvidia, None) == (expected, g.MAP_FALLBACK)
+
+
+def test_plans_say_whether_the_gpu_is_confirmed(owner):
+    nvidia, survey = owner
+    assert g.plan("gpu:1", nvidia, survey).confirmed
+    estimated = g.plan("gpu:1", nvidia, None)
+    assert estimated.mapping == g.MAP_FALLBACK and not estimated.confirmed
+    assert estimated.gpu["main_gpu"] == 0             # 3090 still LM Studio 0
+    assert not g.plan("split", nvidia, None).confirmed
+    assert g.plan("auto", nvidia, None).confirmed      # names no GPU
+    assert g.plan("cpu", nvidia, None).confirmed       # disables every GPU
+    assert "nvidia-smi" in g.UNCONFIRMED_HINT and "LM Studio" in g.UNCONFIRMED_HINT
+
+
+def _survey_with(gpu_info):
+    return {"engines": [{"hardwareSurvey": {"gpuSurveyResult": {"gpuInfo": gpu_info}}}]}
+
+
+@pytest.mark.parametrize("data", [
+    None, [], "text", 7, {}, {"engines": None}, {"engines": "x"}, {"engines": {"a": 1}},
+    {"engines": [None, 3, "x"]},
+    {"engines": [{"hardwareSurvey": "broken"}]},
+    {"engines": [{"hardwareSurvey": {"gpuSurveyResult": ["x"]}}]},
+    _survey_with("x"), _survey_with([]), _survey_with(["x"]), _survey_with([{"name": "a"}]),
+    _survey_with([{"deviceId": "zero"}]), _survey_with([{"deviceId": True}]),
+    _survey_with([{"deviceId": -1}]), _survey_with([{"deviceId": 0.5}]),
+    _survey_with([{"deviceId": 0}, {"deviceId": 0}]),
+])
+def test_unexpected_survey_json_counts_as_no_survey(data):
+    assert g.parse_lms_survey(data) is None
+
+
+def test_odd_survey_fields_are_tolerated():
+    gpus = g.parse_lms_survey(_survey_with([
+        {"deviceId": 0, "name": None, "dedicatedMemoryCapacityBytes": "lots",
+         "otherInfo": "x"}]))
+    assert gpus == [g.LmStudioGpu(0, "", 0, "")]
+
+
+@pytest.mark.parametrize("outcome", ["exit1", "not_json", "empty", "timeout", "oserror", "weird"])
+def test_survey_runner_never_raises(monkeypatch, outcome):
+    import subprocess
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen.update(kwargs)
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if outcome == "oserror":
+            raise OSError("cannot start")
+        if outcome == "weird":
+            raise RuntimeError("anything else")
+        stdout = {"exit1": json.dumps(SURVEY), "not_json": "Error: LM Studio is not running",
+                  "empty": None}[outcome]
+        return SimpleNamespace(returncode=1 if outcome == "exit1" else 0, stdout=stdout)
+
+    monkeypatch.setattr(g, "find_lms", lambda: "lms.exe")
+    monkeypatch.setattr(g.subprocess, "run", run)
+    assert g._run_lms_survey(5) is None
+    assert seen["timeout"] == 5 and seen["creationflags"] == g._NO_WINDOW
+
+
+def test_nvidia_smi_failures_never_raise(monkeypatch):
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("odd failure")
+
+    monkeypatch.setattr(g.subprocess, "run", run)
+    assert g.list_nvidia_gpus(timeout=3) == []
+    assert seen["timeout"] == 3 and seen["creationflags"] == g._NO_WINDOW
 
 
 def test_choices_offer_split_only_with_two_or_more_gpus(owner):
@@ -91,7 +169,9 @@ def test_plans_for_the_owners_machine(owner):
     nvidia, survey = owner
     assert g.plan("auto", nvidia, survey).gpu is None
     cpu = g.plan("cpu", nvidia, survey)
-    assert cpu.gpu == {"ratio": 0.0} and cpu.load == {"offload_kv_cache_to_gpu": False}
+    assert cpu.gpu == {"ratio": 0.0, "disabled_gpus": [0, 1]}     # every GPU off
+    assert cpu.load == {"offload_kv_cache_to_gpu": False}
+    assert g.plan("cpu", [], None).gpu == {"ratio": 0.0, "disabled_gpus": None}
 
     on_3060 = g.plan("gpu:0", nvidia, survey)
     assert on_3060.gpu == {"main_gpu": 1, "disabled_gpus": [0], "ratio": 1.0}
@@ -145,6 +225,7 @@ def test_sdk_sends_the_planned_split_and_cpu_settings(owner):
     cpu = sent(g.plan("cpu", nvidia, survey))
     assert cpu["llm.load.llama.acceleration.offloadRatio"] == 0.0
     assert cpu["llm.load.offloadKVCacheToGpu"] is False
+    assert cpu["load.gpuSplitConfig"]["disabledGpus"] == [0, 1]
 
     pinned = sent(g.plan("gpu:1", nvidia, survey))
     assert pinned["load.gpuSplitConfig"]["disabledGpus"] == [1]

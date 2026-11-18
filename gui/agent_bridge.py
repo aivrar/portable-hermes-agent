@@ -330,7 +330,9 @@ class AgentBridge:
             _r = _sp.run(
                 ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.free",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, timeout=5,
+                # no console window flash when the GUI runs windowless
+                creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
             )
             if _r.returncode == 0:
                 gpu_lines = []

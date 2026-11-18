@@ -61,6 +61,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "sidebar.temp": "Temperature:",
         "sidebar.loading_model": "Loading model...",
         "sidebar.model_loaded": "Model loaded",
+        "sidebar.model_loaded_gpu_unconfirmed": "Model loaded (GPU not confirmed)",
         "sidebar.load_failed": "Failed to load: {error}",
 
         # Chat Area
@@ -343,6 +344,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "Auto (LM Studio decides)",
         "lmstudio.gpu_cpu": "CPU only",
         "lmstudio.gpu_split": "All GPUs (largest first)",
+        "lmstudio.gpu_unconfirmed_title": "GPU not confirmed",
+        "lmstudio.gpu_unconfirmed": "The model was loaded, but Hermes could not confirm that it is on {choice}: LM Studio's GPU list was not available, so the GPU numbering was estimated (largest card first). Check where the model is loaded in LM Studio, or compare the GPU memory use in nvidia-smi.",
         "lmstudio.context": "Context:",
         "lmstudio.unload": "Unload",
         "lmstudio.use_chat": "Use for Chat",
@@ -425,6 +428,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.cancelling": "Cancelling...",
         "lmstudio.load_cancelled": "Load cancelled",
         "lmstudio.loaded_model": "Loaded: {model}",
+        "lmstudio.loaded_model_gpu_unconfirmed": "Loaded: {model} (GPU not confirmed)",
         "lmstudio.load_failed": "Load failed",
         "lmstudio.load_error_title": "Load Error",
         "lmstudio.load_error_details": "Model: {model}\nContext: {context}\nGPU: {gpu}\n\n{error}",
@@ -473,6 +477,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "sidebar.temp": "溫度值：",
         "sidebar.loading_model": "正在載入模型...",
         "sidebar.model_loaded": "模型載入完成",
+        "sidebar.model_loaded_gpu_unconfirmed": "模型載入完成（GPU 未確認）",
         "sidebar.load_failed": "載入失敗：{error}",
 
         # Chat Area
@@ -755,6 +760,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "自動（由 LM Studio 決定）",
         "lmstudio.gpu_cpu": "僅 CPU",
         "lmstudio.gpu_split": "所有 GPU（最大的優先）",
+        "lmstudio.gpu_unconfirmed_title": "GPU 未確認",
+        "lmstudio.gpu_unconfirmed": "模型已載入，但 Hermes 無法確認它位於 {choice}：無法取得 LM Studio 的 GPU 清單，因此 GPU 編號是推估的（最大的顯示卡優先）。請在 LM Studio 中查看模型載入的位置，或在 nvidia-smi 中比較各 GPU 的記憶體用量。",
         "lmstudio.context": "上下文：",
         "lmstudio.unload": "卸載模型",
         "lmstudio.use_chat": "用於對話",
@@ -837,6 +844,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.cancelling": "正在取消...",
         "lmstudio.load_cancelled": "已取消載入",
         "lmstudio.loaded_model": "已載入：{model}",
+        "lmstudio.loaded_model_gpu_unconfirmed": "已載入：{model}（GPU 未確認）",
         "lmstudio.load_failed": "載入失敗",
         "lmstudio.load_error_title": "載入錯誤",
         "lmstudio.load_error_details": "模型：{model}\n上下文：{context}\nGPU：{gpu}\n\n{error}",
@@ -885,6 +893,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "sidebar.temp": "温度值：",
         "sidebar.loading_model": "正在加载模型...",
         "sidebar.model_loaded": "模型加载完成",
+        "sidebar.model_loaded_gpu_unconfirmed": "模型加载完成（GPU 未确认）",
         "sidebar.load_failed": "加载失败：{error}",
 
         # Chat Area
@@ -1167,6 +1176,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "自动（由 LM Studio 决定）",
         "lmstudio.gpu_cpu": "仅 CPU",
         "lmstudio.gpu_split": "所有 GPU（最大的优先）",
+        "lmstudio.gpu_unconfirmed_title": "GPU 未确认",
+        "lmstudio.gpu_unconfirmed": "模型已加载，但 Hermes 无法确认它位于 {choice}：无法获取 LM Studio 的 GPU 列表，因此 GPU 编号是估计的（最大的显卡优先）。请在 LM Studio 中查看模型加载的位置，或在 nvidia-smi 中比较各 GPU 的显存占用。",
         "lmstudio.context": "上下文：",
         "lmstudio.unload": "卸载模型",
         "lmstudio.use_chat": "用于对话",
@@ -1249,6 +1260,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.cancelling": "正在取消...",
         "lmstudio.load_cancelled": "已取消加载",
         "lmstudio.loaded_model": "已加载：{model}",
+        "lmstudio.loaded_model_gpu_unconfirmed": "已加载：{model}（GPU 未确认）",
         "lmstudio.load_failed": "加载失败",
         "lmstudio.load_error_title": "加载错误",
         "lmstudio.load_error_details": "模型：{model}\n上下文：{context}\nGPU：{gpu}\n\n{error}",
@@ -1297,6 +1309,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "sidebar.temp": "Temperatura:",
         "sidebar.loading_model": "Cargando modelo...",
         "sidebar.model_loaded": "Modelo cargado",
+        "sidebar.model_loaded_gpu_unconfirmed": "Modelo cargado (GPU no confirmada)",
         "sidebar.load_failed": "Error al cargar: {error}",
 
         # Chat Area
@@ -1579,6 +1592,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.gpu_auto": "Automático (decide LM Studio)",
         "lmstudio.gpu_cpu": "Solo CPU",
         "lmstudio.gpu_split": "Todas las GPU (la mayor primero)",
+        "lmstudio.gpu_unconfirmed_title": "GPU no confirmada",
+        "lmstudio.gpu_unconfirmed": "El modelo se cargó, pero Hermes no pudo confirmar que esté en {choice}: la lista de GPU de LM Studio no estaba disponible, así que la numeración de las GPU es una estimación (la tarjeta más grande primero). Comprueba en LM Studio dónde está cargado el modelo, o compara el uso de memoria de las GPU en nvidia-smi.",
         "lmstudio.context": "Contexto:",
         "lmstudio.unload": "Descargar",
         "lmstudio.use_chat": "Usar para Chat",
@@ -1661,6 +1676,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "lmstudio.cancelling": "Cancelando...",
         "lmstudio.load_cancelled": "Carga cancelada",
         "lmstudio.loaded_model": "Cargado: {model}",
+        "lmstudio.loaded_model_gpu_unconfirmed": "Cargado: {model} (GPU no confirmada)",
         "lmstudio.load_failed": "Error al cargar",
         "lmstudio.load_error_title": "Error de carga",
         "lmstudio.load_error_details": "Modelo: {model}\nContexto: {context}\nGPU: {gpu}\n\n{error}",

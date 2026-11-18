@@ -129,6 +129,13 @@ def gpu_choices(gpus) -> List[tuple]:
     return [(p, gpu_choice_label(p, gpus)) for p in gpu_place.placements_for(gpus)]
 
 
+def gpu_unconfirmed_note(plan, choice_label: str) -> Optional[str]:
+    """User-facing warning when *plan*'s GPU numbering was only estimated."""
+    if plan is None or getattr(plan, "confirmed", True):
+        return None
+    return t("lmstudio.gpu_unconfirmed", choice=choice_label)
+
+
 def get_available_gpus() -> List[str]:
     """Display labels of the GPU choices (kept for older callers)."""
     return [label for _placement, label in gpu_choices(detect_gpus())]
@@ -534,6 +541,7 @@ class LMStudioPanel(tk.Toplevel):
         self.client = LMStudioClient(base_url=base_url, api_key=api_key)
         self.gpus = []  # NvidiaGpu entries; choices come from gpu_choices()
         self._gpu_label_to_placement = {}
+        self._gpu_user_choice = None  # placement the user picked, if any
         self.models = []
         self._ui_results = queue.SimpleQueue()
         self._closed = False
@@ -601,9 +609,16 @@ class LMStudioPanel(tk.Toplevel):
         self.gpu_combo.configure(values=[label for _p, label in choices])
         self.gpu_combo.current(placements.index(selected))
 
+    def _on_gpu_chosen(self, _event=None):
+        """The user picked a GPU entry: remember it (by placement, not label)."""
+        self._gpu_user_choice = self._selected_gpu_placement()
+
     def _set_gpus(self, gpus):
+        """Detection finished (possibly after the user already chose an entry,
+        e.g. CPU only): keep that choice when it is still offered."""
         self.gpus = list(gpus)
-        self._show_gpu_choices(gpu_place.default_placement(self.gpus))
+        chosen = getattr(self, "_gpu_user_choice", None)
+        self._show_gpu_choices(chosen or gpu_place.default_placement(self.gpus))
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -723,6 +738,7 @@ class LMStudioPanel(tk.Toplevel):
         self.option_add("*TCombobox*Listbox.font", FONTS["body"])
         # Auto until GPU detection finishes; then the first GPU (_set_gpus).
         self._show_gpu_choices(gpu_place.default_placement(self.gpus))
+        self.gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
         self.gpu_combo.pack(side="left", fill="x", expand=True)
 
         # Context length slider
@@ -965,15 +981,17 @@ class LMStudioPanel(tk.Toplevel):
                 self.client.load_model(model_path, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
+                    note = gpu_unconfirmed_note(getattr(self.client, "last_gpu_plan", None),
+                                                gpu_label)
                     self._post_ui("_on_load_success", model_id,
-                                  getattr(self.client, "last_loaded_identifier", None))
+                                  getattr(self.client, "last_loaded_identifier", None), note)
             except Exception as e:
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
                     err = t("lmstudio.load_error_details", model=model_path, context=ctx,
                             gpu=gpu_label, error=e)
-                    self._post_ui("_on_load_error", err)
+                    self._post_ui("_on_load_error", err, model_id)
 
         threading.Thread(target=_do, daemon=True).start()
 
@@ -1009,19 +1027,27 @@ class LMStudioPanel(tk.Toplevel):
         # Back in its original slot: [Load Model][Unload][Refresh Models]
         self.load_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
 
-    def _on_load_success(self, model_id, loaded_id=None):
+    def _on_load_success(self, model_id, loaded_id=None, gpu_note=None):
         """*loaded_id*: the instance id LM Studio gave the load, if known; it can
-        differ from the requested row id (e.g. for "name@quant" variants)."""
+        differ from the requested row id (e.g. for "name@quant" variants).
+        *gpu_note*: set when the GPU could only be estimated (gpu_unconfirmed_note)."""
         self._restore_load_btn()
         short = model_id.split("/")[-1] if "/" in model_id else model_id
-        self.status_dot.configure(fg=C["success"])
-        self._set_status("lmstudio.loaded_model", model=short)
+        if gpu_note:
+            self.status_dot.configure(fg=C["warning_dark"])
+            self._set_status("lmstudio.loaded_model_gpu_unconfirmed", model=short)
+            messagebox.showwarning(t("lmstudio.gpu_unconfirmed_title"), gpu_note, parent=self)
+        else:
+            self.status_dot.configure(fg=C["success"])
+            self._set_status("lmstudio.loaded_model", model=short)
         # Prefer the real instance id, else the only row marked loaded, else
         # the requested row.
         prefer = (loaded_id,) if loaded_id else ()
         self._refresh_models(select_ids=prefer + (ONLY_LOADED_ROW, model_id))
 
-    def _on_load_error(self, error):
+    def _on_load_error(self, error, model_id=None):
+        """*model_id*: the row the user tried to load; it stays selected when
+        the list is refreshed (the unload below changes what is loaded)."""
         self._restore_load_btn()
         self.status_dot.configure(fg=C["danger"])
         self._set_status("lmstudio.load_failed")
@@ -1035,6 +1061,9 @@ class LMStudioPanel(tk.Toplevel):
                         pass
         except Exception:
             pass
+        # The unload changed what is loaded: refresh so no row still shows
+        # [LOADED], keeping the user's selection.
+        self._refresh_models(select_ids=(model_id,) if model_id else ())
         messagebox.showerror(t("lmstudio.load_error_title"), error, parent=self)
 
     def _unload_model(self):

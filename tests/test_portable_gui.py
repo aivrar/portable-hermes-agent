@@ -566,6 +566,89 @@ def test_gui_sidebar_gpu_choices_keep_the_selection_and_translate(monkeypatch):
     assert sidebar._get_gpu_placement() == "gpu:0" and sidebar._get_gpu_index() == 0
 
 
+@pytest.mark.needs_core
+@pytest.mark.parametrize("choice", ["cpu", "auto"])
+def test_gui_sidebar_keeps_a_gpu_choice_made_during_detection(choice):
+    from unittest.mock import MagicMock
+    from gui import app
+    from portable_hermes import lmstudio_gpu as gpu_place
+
+    class Var:
+        value = ""
+
+        def get(self):
+            return self.value
+
+        def set(self, value):
+            self.value = value
+
+    saved = []
+    sidebar = object.__new__(app.Sidebar)
+    sidebar.__dict__.update(_gpu_var=Var(), _gpus=[], _gpu_label_to_placement={},
+                            _gpu_combo=MagicMock(), _gpu_user_choice=None,
+                            _save_local_settings=lambda: saved.append(1))
+    sidebar._show_gpu_choices()                         # before detection: auto, cpu
+    label_of = {p: label for label, p in sidebar._gpu_label_to_placement.items()}
+    sidebar._gpu_var.set(label_of[choice])
+    sidebar._on_gpu_chosen()                            # the user's pick
+    assert saved == [1]
+
+    sidebar._populate_gpus([gpu_place.NvidiaGpu(0, "RTX 3060", 12288),
+                            gpu_place.NvidiaGpu(1, "RTX 3090", 24576)])
+
+    assert sidebar._get_gpu_placement() == choice      # not reset to GPU 0
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_auto_load_reports_an_estimated_gpu(monkeypatch):
+    import logging
+    from unittest.mock import Mock
+    from gui import app
+    from gui import lm_studio as lm
+    from portable_hermes import lmstudio_gpu as gpu_place
+
+    nvidia = [gpu_place.NvidiaGpu(0, "RTX 3060", 12288), gpu_place.NvidiaGpu(1, "RTX 3090", 24576)]
+    plans = {"estimated": gpu_place.plan("gpu:1", nvidia, None),
+             "confirmed": gpu_place.plan(
+                 "gpu:1", nvidia, [gpu_place.LmStudioGpu(0, "RTX 3090", 24575),
+                                   gpu_place.LmStudioGpu(1, "RTX 3060", 12287)])}
+    current = {}
+
+    class FakeClient:
+        last_loaded_identifier = "deepseek"
+
+        def __init__(self, base_url):
+            self.last_gpu_plan = plans[current["kind"]]
+
+        def connect_sdk(self):
+            return True
+
+        def load_model(self, model_id, **kwargs):
+            pass
+
+    monkeypatch.setattr(lm, "LMStudioClient", FakeClient)
+    monkeypatch.setattr(lm.LMStudioPanel, "_resolve_base_url",
+                        staticmethod(lambda: "http://127.0.0.1:9/v1"))
+    settings = {"gpu_placement": "gpu:1", "gpu_index": 1,
+                "context_length": 65536, "flash_attention": True}
+
+    current["kind"] = "confirmed"
+    assert app._auto_load_local_model("deepseek", settings, logging.getLogger("t")) == (
+        True, "", "deepseek")
+    current["kind"] = "estimated"
+    ok, note, _loaded = app._auto_load_local_model("deepseek", settings, logging.getLogger("t"))
+    assert ok and "nvidia-smi" in note and "GPU 1" in note
+
+    sidebar = _auto_load_sidebar(app, ["deepseek"])
+    sidebar._on_auto_load_complete("deepseek", True, note, "deepseek")
+    assert sidebar._show_load_status.call_args_list[0].args[0] == \
+        "sidebar.model_loaded_gpu_unconfirmed"
+
+    gui = SimpleNamespace(_add_msg=Mock())
+    app.HermesGUI._on_auto_load_status(gui, "deepseek", True, note)
+    assert [c.args for c in gui._add_msg.call_args_list][1] == (note, "system")
+
+
 def _auto_load_sidebar(app, local_ids):
     from unittest.mock import Mock
 

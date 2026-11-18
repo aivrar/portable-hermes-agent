@@ -120,7 +120,9 @@ config = LlmLoadModelConfig(
     ),
     # All GPUs, largest first: GpuSetting(main_gpu=0, split_strategy="favorMainGpu",
     #                                     disabled_gpus=[], ratio=1.0)
-    # CPU only: GpuSetting(ratio=0.0) plus offload_kv_cache_to_gpu=False
+    # CPU only: GpuSetting(ratio=0.0, disabled_gpus=[every LM Studio GPU id])
+    # plus offload_kv_cache_to_gpu=False (ratio 0 alone still left ~3 GB of
+    # a vision model on a GPU in testing)
     context_length=8192,     # Adjust based on model + VRAM
 )
 

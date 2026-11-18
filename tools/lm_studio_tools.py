@@ -166,6 +166,7 @@ def lm_studio_status_handler(args: dict, **kwargs) -> str:
                 ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,memory.free",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if proc.returncode == 0:
                 for line in proc.stdout.strip().splitlines():
@@ -247,7 +248,7 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
         # Same placement rules and nvidia-smi -> LM Studio GPU mapping as the
         # GUI's LM Studio panel and sidebar auto-load.
         from portable_hermes import lmstudio_gpu as gpu_place
-        needs_gpus = placement not in (gpu_place.AUTO, gpu_place.CPU)
+        needs_gpus = placement != gpu_place.AUTO   # CPU only disables every GPU
         nvidia = gpu_place.list_nvidia_gpus() if needs_gpus else []
         if placement.startswith("gpu:") and not nvidia:
             logger.warning("No GPUs detected, ignoring gpu_index (%s)", placement)
@@ -285,7 +286,9 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
         # Store handle for later unload
         _sdk_handles[instance_id] = handle
 
+        extra = {} if plan.confirmed else {"gpu_note": gpu_place.UNCONFIRMED_HINT}
         return json.dumps({
+            **extra,
             "loaded": True,
             "model": model_path,
             "identifier": instance_id,
@@ -294,6 +297,7 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
             "gpu_placement": plan.placement,
             "lmstudio_gpu": plan.lmstudio_gpu,
             "gpu_mapping": plan.mapping,
+            "gpu_confirmed": plan.confirmed,
         }, ensure_ascii=False)
 
     except Exception as e:

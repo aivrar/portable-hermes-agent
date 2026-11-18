@@ -19,9 +19,15 @@ LM Studio call the 3090 device 0). The mapping is taken, in order, from:
 1. LM Studio's own hardware survey (``lms runtime survey --json``), matched
    by GPU UUID. Exact, also for identical cards.
 2. The same survey matched by name and memory, when every match is unique.
-3. A documented guess when no survey is available: with exactly two GPUs the
-   order is reversed (fastest-first vs PCI order on the usual "small card in
-   the first slot" build); otherwise the nvidia-smi order is used unchanged.
+3. An estimate when there is no usable survey (``lms`` missing, unexpected
+   output, ambiguous matches): CUDA's default order is "fastest first", which
+   is approximated as most memory first, cards with equal memory keeping
+   their nvidia-smi (PCI) order. Any GPU count. Such a plan is marked
+   unconfirmed (:attr:`GpuPlan.confirmed`) and the GUI and the tool say so.
+
+Detection never raises: every subprocess has a timeout and runs without a
+console window (the GUI can run windowless), and unexpected output counts as
+"nothing detected".
 
 Standard library only (this package must import without Hermes or the SDK);
 callers turn :attr:`GpuPlan.gpu` into the SDK's ``GpuSetting``.
@@ -52,7 +58,9 @@ SPLIT_STRATEGY = "favorMainGpu"
 #: How the nvidia-smi -> LM Studio mapping was found.
 MAP_UUID = "lmstudio-survey-uuid"
 MAP_NAME = "lmstudio-survey-name"
-MAP_FALLBACK = "fallback"
+MAP_FALLBACK = "estimated"
+#: Sources that identify the GPU for sure.
+CONFIRMED_MAPPINGS = (MAP_UUID, MAP_NAME)
 
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -92,6 +100,19 @@ class GpuPlan:
     load: dict = field(default_factory=dict)
     lmstudio_gpu: Optional[int] = None
     mapping: Optional[str] = None
+
+    @property
+    def confirmed(self) -> bool:
+        """False when the GPU indices are only an estimate (no usable survey).
+
+        Auto and CPU-only plans name no GPU, so they need no confirmation."""
+        return self.mapping is None or self.mapping in CONFIRMED_MAPPINGS
+
+
+#: Shown (in English, e.g. in tool results) when a plan is not confirmed.
+UNCONFIRMED_HINT = ("The GPU could not be confirmed: LM Studio's GPU list was not available, "
+                    "so the GPU numbering was estimated (largest card first). Check where the "
+                    "model is loaded in LM Studio, or compare GPU memory use in nvidia-smi.")
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +197,9 @@ def list_nvidia_gpus(timeout: float = 10) -> List[NvidiaGpu]:
             capture_output=True, text=True, check=True, timeout=timeout,
             creationflags=_NO_WINDOW,
         )
-    except (OSError, subprocess.SubprocessError):
+        return parse_nvidia_smi(result.stdout)
+    except Exception:  # missing, timed out, non-zero exit, odd output
         return []
-    return parse_nvidia_smi(result.stdout)
 
 
 def parse_lms_survey(data) -> Optional[List[LmStudioGpu]]:
@@ -186,56 +207,71 @@ def parse_lms_survey(data) -> Optional[List[LmStudioGpu]]:
 
     Uses the first engine that reports CUDA GPUs (the order the CUDA engine
     and therefore ``GpuSetting`` indices use), else the first that reports
-    any GPU. None when the data holds no GPU list."""
+    any GPU. None when the data holds no usable GPU list; never raises."""
+    try:
+        return _parse_lms_survey(data)
+    except Exception as exc:  # unexpected shape: same as "no survey"
+        logger.info("LM Studio hardware survey not understood: %s", exc)
+        return None
+
+
+def _parse_lms_survey(data) -> Optional[List[LmStudioGpu]]:
     if not isinstance(data, dict):
         return None
+    engines = data.get("engines")
+    if not isinstance(engines, list):
+        return None
     candidates = []
-    for engine in data.get("engines") or []:
-        if not isinstance(engine, dict):
-            continue
-        survey = (engine.get("hardwareSurvey") or {}).get("gpuSurveyResult") or {}
-        infos = survey.get("gpuInfo")
-        if isinstance(infos, list) and infos:
+    for engine in engines:
+        hardware = engine.get("hardwareSurvey") if isinstance(engine, dict) else None
+        survey = hardware.get("gpuSurveyResult") if isinstance(hardware, dict) else None
+        infos = survey.get("gpuInfo") if isinstance(survey, dict) else None
+        if isinstance(infos, list) and infos and all(isinstance(g, dict) for g in infos):
             candidates.append(infos)
     if not candidates:
         return None
     cuda = [c for c in candidates
-            if all(str(g.get("detectionPlatform", "")).upper() == "CUDA" for g in c if isinstance(g, dict))]
-    chosen = (cuda or candidates)[0]
+            if all(str(g.get("detectionPlatform", "")).upper() == "CUDA" for g in c)]
     gpus = []
-    for info in chosen:
-        if not isinstance(info, dict):
-            continue
-        try:
-            device_id = int(info["deviceId"])
-        except (KeyError, TypeError, ValueError):
+    for info in (cuda or candidates)[0]:
+        device_id = info.get("deviceId")
+        if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 0:
             return None
         memory = info.get("dedicatedMemoryCapacityBytes") or info.get("totalMemoryCapacityBytes") or 0
+        if isinstance(memory, bool) or not isinstance(memory, (int, float)):
+            memory = 0
         other = info.get("otherInfo") if isinstance(info.get("otherInfo"), dict) else {}
         gpus.append(LmStudioGpu(
             device_id=device_id,
-            name=str(info.get("name", "")).strip(),
+            name=str(info.get("name") or "").strip(),
             memory_mib=int(memory) // (1024 * 1024),
             uuid=_normalise_uuid(other.get("deviceUUID")),
         ))
+    if len({g.device_id for g in gpus}) != len(gpus):
+        return None  # duplicate device ids: not a list we can map against
     return gpus or None
 
 
 def find_lms() -> Optional[str]:
     """Path of LM Studio's ``lms`` CLI, if installed."""
-    found = shutil.which("lms")
-    if found:
-        return found
-    home = Path.home()
-    for folder in (home / ".lmstudio" / "bin", home / ".cache" / "lm-studio" / "bin"):
-        for name in ("lms.exe", "lms"):
-            candidate = folder / name
-            if candidate.is_file():
-                return str(candidate)
+    try:
+        found = shutil.which("lms")
+        if found:
+            return found
+        home = Path.home()
+        for folder in (home / ".lmstudio" / "bin", home / ".cache" / "lm-studio" / "bin"):
+            for name in ("lms.exe", "lms"):
+                candidate = folder / name
+                if candidate.is_file():
+                    return str(candidate)
+    except Exception:  # no home folder, unreadable PATH entry, ...
+        pass
     return None
 
 
 def _run_lms_survey(timeout: float) -> Optional[List[LmStudioGpu]]:
+    """Run ``lms runtime survey --json``; None on any failure (missing CLI,
+    timeout, non-zero exit, non-JSON or unexpected output). Never raises."""
     lms = find_lms()
     if not lms:
         return None
@@ -245,8 +281,11 @@ def _run_lms_survey(timeout: float) -> Optional[List[LmStudioGpu]]:
             capture_output=True, text=True, timeout=timeout,
             encoding="utf-8", errors="replace", creationflags=_NO_WINDOW,
         )
-        return parse_lms_survey(json.loads(result.stdout))
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        if result.returncode != 0:
+            logger.info("LM Studio hardware survey exited with %s", result.returncode)
+            return None
+        return parse_lms_survey(json.loads(result.stdout or ""))
+    except Exception as exc:
         logger.info("LM Studio hardware survey unavailable: %s", exc)
         return None
 
@@ -298,10 +337,10 @@ def map_to_lmstudio(nvidia: Sequence[NvidiaGpu],
         else:
             if nvidia and len(set(mapping.values())) == len(mapping):
                 return mapping, MAP_NAME
-    if len(nvidia) == 2:
-        first, second = sorted(g.index for g in nvidia)
-        return {first: 1, second: 0}, MAP_FALLBACK
-    return {g.index: position for position, g in enumerate(sorted(nvidia, key=lambda g: g.index))}, MAP_FALLBACK
+    # Estimate of CUDA's default (fastest-first) order: most memory first,
+    # equal memory keeps the nvidia-smi (PCI) order.
+    estimated = sorted(nvidia, key=lambda g: (-g.memory_mib, g.index))
+    return {g.index: position for position, g in enumerate(estimated)}, MAP_FALLBACK
 
 
 _UNSET = object()
@@ -317,14 +356,20 @@ def plan(placement, nvidia: Optional[Sequence[NvidiaGpu]] = None, survey=_UNSET)
     kind, index = parse_placement(placement)
     if kind == AUTO:
         return GpuPlan(placement=AUTO)
-    if kind == CPU:
-        return GpuPlan(placement=CPU, gpu={"ratio": 0.0},
-                       load={"offload_kv_cache_to_gpu": False})
 
     gpus = list(list_nvidia_gpus() if nvidia is None else nvidia)
     lms = lmstudio_gpu_survey() if survey is _UNSET else survey
     mapping, source = map_to_lmstudio(gpus, lms)
     every = sorted({g.device_id for g in lms}) if lms else sorted(set(mapping.values()))
+
+    if kind == CPU:
+        # The strongest "no GPU" the SDK can express: offload ratio 0, KV
+        # cache in RAM, and every GPU disabled (ratio 0 + KV cache alone
+        # still put ~3 GB of a vision model on a GPU). The installed SDK
+        # (1.5.0) has no separate setting for a vision projector. All GPUs
+        # are disabled, so their order does not matter: no mapping needed.
+        return GpuPlan(placement=CPU, gpu={"ratio": 0.0, "disabled_gpus": every or None},
+                       load={"offload_kv_cache_to_gpu": False})
 
     if kind == "gpu":
         if index not in mapping:

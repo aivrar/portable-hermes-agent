@@ -54,10 +54,25 @@ def test_split_mode_fills_the_largest_gpu_first(sdk):
 
 
 def test_cpu_and_default_modes(sdk):
-    _result, cpu = _load(sdk, gpu_mode="cpu")
+    result, cpu = _load(sdk, gpu_mode="cpu")
     assert cpu.gpu.ratio == 0.0 and cpu.offload_kv_cache_to_gpu is False
+    assert list(cpu.gpu.disabled_gpus) == [0, 1]              # every GPU off
+    assert result["gpu_confirmed"] is True and "gpu_note" not in result
     result, auto = _load(sdk)
     assert auto.gpu is None and result["gpu_placement"] == "auto"
+
+
+def test_estimated_gpu_numbering_is_reported_plainly(sdk, monkeypatch):
+    monkeypatch.setattr(gpu_place, "lmstudio_gpu_survey", lambda *a, **k: None)
+    result, config = _load(sdk, gpu_index=1)          # nvidia-smi 1 = RTX 3090
+    assert config.gpu.main_gpu == 0                    # largest card first
+    assert result["gpu_mapping"] == gpu_place.MAP_FALLBACK
+    assert result["gpu_confirmed"] is False
+    assert result["gpu_note"] == gpu_place.UNCONFIRMED_HINT
+
+    monkeypatch.setattr(gpu_place, "lmstudio_gpu_survey", lambda *a, **k: list(SURVEY))
+    result, _config = _load(sdk, gpu_index=1)
+    assert result["gpu_confirmed"] is True and "gpu_note" not in result
 
 
 @pytest.mark.parametrize("args, message", [
