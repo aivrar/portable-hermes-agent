@@ -574,6 +574,51 @@ def test_gui_streamed_reply_shows_exactly_the_whole_reply_styling_for_any_split(
 
 
 @pytest.mark.needs_core
+def test_gui_long_streams_cost_about_linear_time():
+    import time
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    # Mapped (off-screen) at a real size: a withdrawn window's text widgets
+    # are 1 pixel wide, and Tk then wraps every word onto its own line.
+    root.geometry("900x700+-3000+-3000")
+    root.update()
+
+    def stream(n, newline_every):
+        bubble = app.StreamingBubble(root, ReplyActivity(), True)
+        bubble.pack(fill="x")
+        root.update()
+        started = time.perf_counter()
+        for i in range(n):
+            bubble.add_thinking("think " if i % 15 else "think\n")
+            if i % 100 == 0:
+                bubble.refresh_activity()        # what the 100 ms batching does
+        for i in range(n):
+            bubble.append_text("word\n" if i % newline_every == newline_every - 1 else "word ")
+        bubble.finalize()
+        seconds = time.perf_counter() - started
+        assert len(bubble.get_text()) == 5 * n
+        assert bubble._activity_view._text.get("1.0", "end-1c") == "".join(
+            "think " if i % 15 else "think\n" for i in range(n))
+        bubble.destroy()
+        return seconds
+
+    try:
+        for newline_every in (20, 10 ** 9):      # short lines; one ever-growing line
+            small, large = stream(5000, newline_every), stream(20000, newline_every)
+            assert large < 20, newline_every     # about 1.5 s here
+            # 4x the chunks: linear work takes ~4x, quadratic ~16x.
+            assert large < 10 * max(small, 0.05), (newline_every, small, large)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 @pytest.mark.parametrize("keep_thinking", [True, False])
 def test_gui_destroying_a_bubble_cancels_its_pending_redraws(keep_thinking):
     import time

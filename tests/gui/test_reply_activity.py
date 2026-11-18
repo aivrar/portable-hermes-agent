@@ -107,6 +107,21 @@ def test_show_thinking_off_keeps_no_text_but_still_moves():
     assert activity.header() == "Thought for 5 s"
 
 
+def test_a_long_thinking_stream_keeps_chunks_and_a_small_tail():
+    import time
+    activity, _ = _activity()
+    started = time.perf_counter()
+    for i in range(20000):
+        activity.add_thinking(f"step {i} considers the cards. ")
+        if i % 100 == 0:
+            activity.header()                    # the closed line, redrawn as it streams
+    assert time.perf_counter() - started < 5     # generous: about 0.1 s here
+    assert len(activity.thinking_parts) == 20000
+    assert len(activity._tail) <= 4 * 60         # the preview never looks at more
+    assert activity.preview().endswith("step 19999 considers the cards.")
+    assert activity.thinking_text.startswith("step 0 considers")
+
+
 def test_every_language_has_the_activity_strings():
     keys = ("reply.waiting", "reply.first_turn_note", "reply.thinking", "reply.running_tool",
             "reply.thought_for", "reply.waited_for", "menu.show_thinking")

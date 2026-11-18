@@ -58,10 +58,15 @@ from hermes_cli import __version__ as HERMES_CORE_VERSION
 # Chat Message Widgets
 # ============================================================================
 
-def _insert_styled(body, pieces):
-    """Insert (text, tags) pieces: **bold** and `code` from the model."""
+def _style_tags(body):
+    """Define the **bold** and `code` tags of a reply's text widget (once:
+    re-configuring a tag's font makes Tk lay out all of its text again)."""
     body.tag_configure(BOLD, font=FONTS["body"] + ("bold",))
     body.tag_configure(CODE, font=FONTS["mono"], background=C["bg_input"])
+
+
+def _insert_styled(body, pieces):
+    """Insert (text, tags) pieces: **bold** and `code` from the model."""
     for text, tags in pieces:
         body.insert("end", text, tags)
 
@@ -127,6 +132,7 @@ class MessageBubble(tk.Frame):
                           selectbackground=C["accent"], selectforeground="white",
                           highlightthickness=0)
             if msg_type == "ai":
+                _style_tags(body)
                 _insert_styled(body, spans(display_text))
             else:
                 body.insert("1.0", display_text)
@@ -286,7 +292,7 @@ class ReplyActivityView(tk.Frame):
         self._label.pack(fill="x")
         self._label.bind("<Button-1>", self.toggle)
         self._text = None    # the thinking text widget, made when first opened
-        self._shown = 0      # characters of thinking text already in it
+        self._shown = 0      # thinking chunks already in it
         self.refresh()
 
     def refresh(self):
@@ -303,14 +309,17 @@ class ReplyActivityView(tk.Frame):
                 self._text = tk.Text(self, wrap="word", bg=self._bg, fg=C["text_hint"],
                                      font=FONTS["small"], relief="flat", borderwidth=0,
                                      highlightthickness=0, padx=0, pady=2, height=1)
-            new = self.activity.thinking_text[self._shown:]
+            parts = self.activity.thinking_parts
+            new = "".join(parts[self._shown:])    # only the chunks since last time
+            self._shown = len(parts)
             if new:       # one insert per refresh, however many tokens arrived
                 self._text.configure(state="normal")
                 self._text.insert("end", new)
                 self._text.configure(state="disabled")
-                self._shown += len(new)
-                self._text.configure(height=min(12, int(self._text.index("end-1c").split(".")[0])))
-                self._text.see("end")
+                height = min(12, int(self._text.index("end-1c").split(".")[0]))
+                if height != int(self._text.cget("height")):   # a resize re-lays out the bubble
+                    self._text.configure(height=height)
+                self._text.yview_moveto(1.0)
             if not self._text.winfo_ismapped():
                 self._text.pack(fill="x")
         elif self._text is not None:
@@ -334,11 +343,15 @@ class StreamingBubble(tk.Frame):
 
     def __init__(self, parent, activity=None, thinking_open=False, on_thinking_toggle=None):
         super().__init__(parent, bg=C["bg_main"])
-        self._full_text = ""
-        self._leading = ""  # whitespace held before the first visible character
-        self._shown = ""    # the text given to the body, markers included
-        self._line = ""     # its last, unfinished line
+        # Text arrives in many small chunks: kept in lists and joined only
+        # when the whole text is needed, never grown per token.
+        self._received = []   # every chunk, as received
+        self._leading = ""    # whitespace held before the first visible character
+        self._shown = []      # the chunks given to the body, markers included
+        self._line = []       # the chunks of its last, unfinished line
+        self._line_len = 0
         self._fenced = False  # a ``` block is open after the finished lines
+        self._tall = False    # the body has reached its height limit
         self._bg = C["msg_ai"]
         self._refresh_id = None
 
@@ -377,6 +390,7 @@ class StreamingBubble(tk.Frame):
                             highlightthickness=0, height=1,
                             spacing1=0, spacing2=0, spacing3=0)
         self._body.pack(fill="x")
+        _style_tags(self._body)
         self._body.mark_set(self._LINE, "1.0")
         self._body.mark_gravity(self._LINE, "left")   # stays before text added at it
 
@@ -392,7 +406,7 @@ class StreamingBubble(tk.Frame):
         """Append a text delta to the streaming bubble."""
         if text is None:
             return
-        self._full_text += text
+        self._received.append(text)
         if self._leading is not None:
             # Models often open a reply (or a segment after a tool call) with
             # blank lines: hold whitespace until the first visible character,
@@ -407,7 +421,7 @@ class StreamingBubble(tk.Frame):
             if self.activity is not None:          # the answer starts
                 self.activity.answer_started()
                 self.refresh_activity()
-        self._shown += text
+        self._shown.append(text)
         self._preview(text)
         self._fit_height()
 
@@ -418,18 +432,19 @@ class StreamingBubble(tk.Frame):
         *finished, last = text.split("\n")
         body = self._body
         if finished:
-            finished[0] = self._line + finished[0]
-            self._line = ""
+            finished[0] = "".join(self._line) + finished[0]
+            self._line, self._line_len = [], 0
             body.delete(self._LINE, "end-1c")
             for line in finished:
                 pieces, self._fenced = line_spans(line, self._fenced)
                 _insert_styled(body, pieces)
                 body.insert("end", "\n")
             body.mark_set(self._LINE, "end-1c")
-        self._line += last
-        if len(self._line) <= self.PREVIEW_LINE_CHARS:
+        self._line.append(last)
+        self._line_len += len(last)
+        if self._line_len <= self.PREVIEW_LINE_CHARS:   # bounded work per token
             body.delete(self._LINE, "end-1c")
-            _insert_styled(body, line_spans(self._line, self._fenced)[0])
+            _insert_styled(body, line_spans("".join(self._line), self._fenced)[0])
         else:
             body.insert("end", last)
 
@@ -483,18 +498,23 @@ class StreamingBubble(tk.Frame):
 
     def has_content(self) -> bool:
         """Answer text or thinking text to keep."""
-        return bool(self._full_text.strip()) or bool(self.activity and self.activity.expandable)
+        # _leading is None once a visible character arrived
+        return self._leading is None or bool(self.activity and self.activity.expandable)
 
     def _fit_height(self):
-        """Size the body to its content."""
+        """Size the body to its content. Once it reaches the 30-line limit
+        it is not measured again while streaming (the text only grows)."""
+        if self._tall:
+            return
         content = self._body.get("1.0", "end-1c")
         lines = max(1, content.count('\n') + 1)
         for line in content.split('\n'):
             lines += max(0, len(line) // 70)
+        self._tall = lines >= 30
         self._body.configure(height=min(lines, 30))
 
     def get_text(self) -> str:
-        return self._full_text
+        return "".join(self._received)
 
     def finalize(self):
         """Stop cursor blink, drop trailing blank lines, lock the text, remove cursor."""
@@ -510,14 +530,15 @@ class StreamingBubble(tk.Frame):
         # One redraw of the whole reply: what stays is spans(full text),
         # whatever the preview showed while it streamed.
         self._body.delete("1.0", "end")
-        _insert_styled(self._body, spans(self._shown))
+        _insert_styled(self._body, spans("".join(self._shown)))
         while True:  # char by char: safe whatever Tk's index unit for non-BMP text
             last = self._body.get("end-2c", "end-1c")
             if not last or not last.isspace():
                 break
             self._body.delete("end-2c", "end-1c")
+        self._tall = False
         self._fit_height()
-        if not self._full_text.strip():
+        if self._leading is not None:
             self._body.pack_forget()      # thinking only: no empty answer line
         self._body.configure(state="disabled")
 

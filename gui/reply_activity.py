@@ -37,7 +37,8 @@ class ReplyActivity:
         self.state = "tool" if tool else "waiting"
         self.tool = tool
         self.phase_started = now()
-        self.thinking_text = ""      # kept only with keep_thinking
+        self.thinking_parts = []     # thinking chunks, kept only with keep_thinking
+        self._tail = ""              # the latest thinking text, for the preview
         self.thought = False         # thinking arrived (kept or not)
         self.seconds = None          # the segment's duration once done
 
@@ -50,8 +51,14 @@ class ReplyActivity:
         if self.state == "done" or not text:
             return
         self.state, self.thought = "thinking", True
-        if self.keep_thinking:
-            self.thinking_text += text
+        if self.keep_thinking:     # chunks in a list: no growing string per token
+            self.thinking_parts.append(text)
+            self._tail = (self._tail + text)[-4 * PREVIEW_CHARS:]
+
+    @property
+    def thinking_text(self) -> str:
+        """All kept thinking text (joined when needed, not per token)."""
+        return "".join(self.thinking_parts)
 
     def answer_started(self) -> None:
         """The answer text starts (or the segment ends without one)."""
@@ -63,11 +70,11 @@ class ReplyActivity:
 
     @property
     def expandable(self) -> bool:
-        return bool(self.thinking_text)
+        return bool(self.thinking_parts)
 
     def preview(self) -> str:
         """The latest thinking text on one line, at most PREVIEW_CHARS."""
-        tail = " ".join(self.thinking_text[-4 * PREVIEW_CHARS:].split())
+        tail = " ".join(self._tail.split())
         return tail if len(tail) <= PREVIEW_CHARS else "…" + tail[-(PREVIEW_CHARS - 1):]
 
     def header(self) -> str | None:
