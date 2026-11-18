@@ -48,22 +48,27 @@ def _load_cli_config() -> dict:
         }
 
 
-_skills_seed_lock = threading.Lock()
+_skills_sync_lock = threading.Lock()
+_skills_synced = False
 
 
-def ensure_bundled_skills() -> bool:
-    """Copy the bundled skills into a Hermes home that has none, as the
-    `hermes` CLI does when it starts (the core's tools.skills_sync).
+def sync_bundled_skills_once() -> bool:
+    """Run the core's bundled-skills sync (tools.skills_sync) once per GUI
+    process, as the `hermes` CLI does on every start.
 
-    install.bat syncs the home it installs into; a home made any other way
-    (a second profile, HERMES_HOME set by hand) would otherwise have no
-    skills in the GUI, for the agent or the Skills browser. Call it from a
-    worker thread (it copies files). True if it synced; never raises."""
-    with _skills_seed_lock:   # the agent build and the browser may both ask
+    install.bat syncs only the home it installs into; any other home (a
+    second profile, HERMES_HOME set by hand) would have no skills in the
+    GUI. The sync is manifest-based: it adds new bundled skills, updates
+    untouched ones, and leaves user-edited and user-deleted skills alone,
+    so it is safe on every start and retries whatever an earlier run did
+    not finish. Call it from a worker thread (it copies files; a second
+    caller waits for the first). True if it ran now; never raises."""
+    global _skills_synced
+    with _skills_sync_lock:
+        if _skills_synced:
+            return False
+        _skills_synced = True
         try:
-            skills_dir = get_hermes_home() / "skills"
-            if skills_dir.is_dir() and next(skills_dir.rglob("SKILL.md"), None) is not None:
-                return False
             from tools.skills_sync import sync_skills
             sync_skills(quiet=True)
             return True
@@ -282,7 +287,7 @@ class AgentBridge:
 
     def _create_agent(self):
         from run_agent import AIAgent
-        ensure_bundled_skills()   # before the agent indexes the skills
+        sync_bundled_skills_once()   # before the first agent indexes the skills
         model = self.get_model()
         agent_config = self.config.get("agent", {})
 

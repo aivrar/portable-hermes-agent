@@ -1447,42 +1447,77 @@ def test_gui_use_for_chat_says_the_next_message_uses_the_model(lang):
 
 
 @pytest.mark.needs_core
-def test_gui_seeds_the_bundled_skills_into_a_home_that_has_none(monkeypatch, tmp_path):
-    """A home not made by install.bat: the core's own sync runs, once."""
-    import tools.skills_sync as skills_sync
-    from gui import agent_bridge, app
-
-    skill = tmp_path / "bundled" / "demo" / "hello-skill"
+def _bundled_skill(root, name):
+    skill = root / "demo" / name
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text(
-        "---\nname: hello-skill\ndescription: Says hello.\n---\nSay hello.\n", encoding="utf-8")
-    home = tmp_path / "fresh-home"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(tmp_path / "bundled"))
+        f"---\nname: {name}\ndescription: A test skill.\n---\nDo it.\n", encoding="utf-8")
 
-    assert agent_bridge.ensure_bundled_skills() is True
-    assert [p.parent.name for p in (home / "skills").rglob("SKILL.md")] == ["hello-skill"]
-    names = [n for skills in app._discover_installed_skills(home / "skills").values()
-             for n, _d in skills]
-    assert "hello-skill" in names                       # the Skills browser lists it
 
-    def must_not_run(**_kw):
-        raise AssertionError("synced a home that already has skills")
-    monkeypatch.setattr(skills_sync, "sync_skills", must_not_run)
-    assert agent_bridge.ensure_bundled_skills() is False
+def _skill_names(home):
+    return sorted(p.parent.name for p in (home / "skills").rglob("SKILL.md"))
 
 
 @pytest.mark.needs_core
-def test_gui_skills_seeding_never_raises(monkeypatch, tmp_path):
+def test_gui_skills_sync_completes_a_partly_seeded_home(monkeypatch, tmp_path):
+    """The core's sync runs whatever the home holds: a home with one of the
+    bundled skills (an earlier sync stopped half way) gets the rest."""
+    from gui import agent_bridge, app
+
+    bundled = tmp_path / "bundled"
+    _bundled_skill(bundled, "first-skill")
+    home = tmp_path / "home"
+    _bundled_skill(home / "skills", "first-skill")
+    _bundled_skill(bundled, "second-skill")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled))
+    monkeypatch.setattr(agent_bridge, "_skills_synced", False)
+
+    assert agent_bridge.sync_bundled_skills_once() is True
+    assert _skill_names(home) == ["first-skill", "second-skill"]
+    names = [n for skills in app._discover_installed_skills(home / "skills").values()
+             for n, _d in skills]
+    assert "second-skill" in names                      # the Skills browser lists it
+
+
+@pytest.mark.needs_core
+def test_gui_skills_sync_runs_once_per_process_and_never_raises(monkeypatch):
     import tools.skills_sync as skills_sync
     from gui import agent_bridge
 
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "fresh-home"))
+    calls = []
 
-    def broken(**_kw):
+    def broken(**kw):
+        calls.append(kw)
         raise OSError("disk full")
     monkeypatch.setattr(skills_sync, "sync_skills", broken)
-    assert agent_bridge.ensure_bundled_skills() is False
+    monkeypatch.setattr(agent_bridge, "_skills_synced", False)
+
+    assert agent_bridge.sync_bundled_skills_once() is False   # failed: logged, not raised
+    assert agent_bridge.sync_bundled_skills_once() is False   # not again in this process
+    assert calls == [{"quiet": True}]
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("may_sync", [True, False])
+def test_gui_skills_browser_syncs_only_when_no_reply_runs(monkeypatch, tmp_path, may_sync):
+    from unittest.mock import Mock
+    from gui import app
+
+    sync = Mock()
+    monkeypatch.setattr(app, "sync_bundled_skills_once", sync)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _bundled_skill(tmp_path / "skills", "listed-skill")
+    browser = object.__new__(app.SkillsBrowser)
+    shown = []
+    browser.__dict__.update(_may_sync=may_sync, after=lambda _ms, fn: fn(),
+                            _post_ui=lambda fn: fn(),
+                            _set=lambda text, **_kw: shown.append(text))
+
+    browser._load()
+
+    assert sync.call_count == (1 if may_sync else 0)
+    assert "listed-skill" in shown[-1]                  # during a reply: what is there
 
 
 @pytest.mark.needs_core

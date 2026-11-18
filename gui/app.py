@@ -27,7 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
-from gui.agent_bridge import AgentBridge, ensure_bundled_skills
+from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
 from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
@@ -1288,8 +1288,11 @@ def _discover_installed_skills(skills_dir: Path) -> Dict[str, list]:
     return categories
 
 class SkillsBrowser(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent, may_sync=False):
+        """*may_sync*: no reply is running, so the list may first run the
+        once-per-process skills sync; otherwise it lists what is there."""
         super().__init__(parent)
+        self._may_sync = may_sync
         self.title(t("skills.title", "Skills Browser"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
@@ -1325,7 +1328,8 @@ class SkillsBrowser(tk.Toplevel):
 
     def _load(self):
         try:
-            ensure_bundled_skills()   # a home not made by install.bat has none yet
+            if self._may_sync:
+                sync_bundled_skills_once()   # a home not made by install.bat has none yet
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
                 self.after(0, lambda: self._set(t("skills.no_dir"), key="skills.no_dir"))
@@ -2143,7 +2147,7 @@ class HermesGUI:
         self.sidebar.set_model(m)
 
     def _open_skills(self):
-        SkillsBrowser(self.root)
+        SkillsBrowser(self.root, may_sync=not self.bridge.is_running)
 
     def _open_permissions(self):
         if self._refuse_while_running():
