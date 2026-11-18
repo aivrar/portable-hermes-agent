@@ -1653,6 +1653,14 @@ class StatusBar(tk.Frame):
         self.dot.configure(fg=C["danger"])
         self.status_lbl.configure(text=t("status.error", error=""))
 
+    def set_activity(self, text, seconds, tool=False):
+        """A running reply's state, as its activity line says it (the line's
+        own clock next to it)."""
+        self._state_kind = "activity"
+        self.dot.configure(fg=C["warning_dark"] if tool else C["info"])
+        self.status_lbl.configure(text=text)
+        self.set_elapsed(seconds)
+
     def set_elapsed(self, seconds=None):
         """The running reply's clock next to the status text; None clears it."""
         self.clock_lbl.configure(text="" if seconds is None else clock(seconds))
@@ -2115,7 +2123,6 @@ class HermesGUI:
         self._new_reply_bubble(first_local_turn=first_local_turn)
         self._has_streamed = False
 
-        self.status_bar.set_thinking()
         self._start_turn_clock()
 
         # Send with images
@@ -2152,7 +2159,7 @@ class HermesGUI:
     def _start_turn_clock(self):
         self._stop_turn_clock()
         self._turn_started = time.monotonic()
-        self.status_bar.set_elapsed(0)
+        self._show_activity_status()
         self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
 
     def _tick_turn_clock(self):
@@ -2161,8 +2168,20 @@ class HermesGUI:
         self._turn_clock_id = None
         if self._stream_bubble is not None:
             self._stream_bubble.refresh_activity()
-        self.status_bar.set_elapsed(time.monotonic() - self._turn_started)
+        self._show_activity_status()
         self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
+
+    def _show_activity_status(self):
+        """The status bar says what the reply bubble's line says (same state,
+        same clock, no thinking tail). While the answer streams it keeps its
+        text ("Streaming") and shows the turn's clock."""
+        activity = getattr(self._stream_bubble, "activity", None)
+        status = activity.status() if activity is not None else None
+        if status is None:
+            self.status_bar.set_elapsed(time.monotonic() - self._turn_started)
+            return
+        text, seconds = status
+        self.status_bar.set_activity(text, seconds, tool=activity.state == "tool")
 
     def _stop_turn_clock(self):
         """Every way a turn ends: reply done, error, Stop, New Chat, window close."""
@@ -2199,10 +2218,10 @@ class HermesGUI:
         self._cleanup_stream_bubble()
         w = ToolCallWidget(self.msg_frame, name, preview)
         w.pack(fill="x")
-        self.status_bar.set_tool(name)
         # A new streaming bubble for the next response segment; its line
         # shows the tool running until the model is called again.
         self._new_reply_bubble(tool=name)
+        self._show_activity_status()
         self._scroll_bottom()
 
     def _on_stream_delta(self, text):
@@ -2232,6 +2251,8 @@ class HermesGUI:
             self._stream_bubble = None
 
     def _on_thinking(self, text):
+        if self._turn_clock_id is not None:
+            return   # a reply runs: the status bar follows the reply bubble's line
         if text:
             self.status_bar.set_thinking(text)
         else:
@@ -2242,6 +2263,7 @@ class HermesGUI:
         if self._stream_bubble is not None and self._stream_bubble.activity is not None:
             self._stream_bubble.activity.model_called()     # a tool ran; waiting again
             self._stream_bubble.refresh_activity()
+            self._show_activity_status()
 
     def _on_error(self, msg):
         self._stop_turn_clock()
@@ -2269,8 +2291,7 @@ class HermesGUI:
             return
         if self._stream_bubble is not None:
             self._stream_bubble.add_thinking(text)
-        if text.strip():
-            self.status_bar.set_thinking_key("status.thinking")
+            self._show_activity_status()
 
     def _on_complete(self, result):
         self._stop_turn_clock()

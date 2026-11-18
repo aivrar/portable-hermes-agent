@@ -2026,15 +2026,46 @@ def test_gui_status_bar_clock_runs_with_the_reply(monkeypatch, exit_path):
     now = [500.0]
     monkeypatch.setattr(app, "time", SimpleNamespace(monotonic=lambda: now[0]))
     gui = _replying_gui(monkeypatch)
-    gui.status_bar.set_elapsed.assert_called_once_with(0)
+    assert gui.status_bar.set_activity.call_count == 1          # from the start, with its clock
+    gui._on_stream_delta("The answer")                          # the line is done now
 
-    now[0] += 65.4
+    now[0] += 65.4                                              # the turn's clock is shown
     gui.root.run(gui.root.clock_ticks()[0])
     assert abs(gui.status_bar.set_elapsed.call_args.args[0] - 65.4) < 1e-6
 
     {"reply done": lambda: gui._on_complete({}), "error": lambda: gui._on_error("boom"),
      "Stop": gui._interrupt}[exit_path]()
     assert gui.status_bar.set_elapsed.call_args.args == (None,)
+
+
+@pytest.mark.needs_core
+def test_gui_status_bar_says_what_the_reply_line_says(monkeypatch):
+    from gui import i18n
+    monkeypatch.setattr(i18n, "_current_language", "en")
+    gui = _replying_gui(monkeypatch)
+    bar = gui.status_bar
+
+    def agree(text, tool=False):
+        bubble = _FakeReplyBubble.made[-1]
+        args, kwargs = bar.set_activity.call_args
+        assert args[0] == text and kwargs == {"tool": tool}
+        assert bubble.activity.header().startswith(text)        # the same state
+        assert abs(args[1] - bubble.activity._seconds()) < 1     # and the same clock
+
+    agree("Waiting for the model...")
+    gui._on_thinking("(¬‿¬) pondering...")                       # the core's spinner phrase
+    gui._on_thinking("")
+    bar.set_thinking.assert_not_called()
+    bar.set_ready.assert_not_called()
+    agree("Waiting for the model...")
+    gui._on_reasoning("Need the GPU list.")
+    agree("Thinking...")                                          # no thinking tail
+    gui._on_tool_call("gpu_info", "{}")
+    agree("Running gpu_info...", tool=True)
+    gui._on_step(2, ["gpu_info"])
+    agree("Waiting for the model...")
+    gui.root.run(gui.root.clock_ticks()[0])
+    agree("Waiting for the model...")
 
 
 def test_status_bar_clock_text():

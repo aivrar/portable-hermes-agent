@@ -90,18 +90,34 @@ class ReplyActivity:
         tail = " ".join(self._tail.split())
         return tail if len(tail) <= PREVIEW_CHARS else "…" + tail[-(PREVIEW_CHARS - 1):]
 
+    def _seconds(self) -> float:
+        """The running clock: since thinking started while thinking, else
+        since this phase (waiting / tool) started."""
+        started = self.thinking_started if self.state == "thinking" else self.phase_started
+        return self._now() - started
+
+    def _phase_text(self, clock_text: str) -> str:
+        if self.state == "waiting":
+            return t("reply.waiting", clock=clock_text)
+        if self.state == "thinking":
+            return t("reply.thinking", clock=clock_text)
+        return t("reply.running_tool", tool=self.tool, clock=clock_text)
+
+    def status(self):
+        """``(text, seconds)`` for the status bar while the line runs: the
+        same state and clock, without the thinking tail. None once done."""
+        if self.state == "done":
+            return None
+        return self._phase_text("").strip(), self._seconds()
+
     def header(self) -> str | None:
         """The line to show now, or None for no line."""
-        elapsed = clock(self._now() - self.phase_started)
-        if self.state == "waiting":
-            text = t("reply.waiting", clock=elapsed)
-            return text + "  " + t("reply.first_turn_note") if self.first_local_turn else text
-        if self.state == "thinking":       # its clock: since thinking started
-            preview = self.preview()
-            text = t("reply.thinking", clock=clock(self._now() - self.thinking_started))
+        if self.state != "done":
+            text = self._phase_text(clock(self._seconds()))
+            if self.state == "waiting" and self.first_local_turn:
+                return text + "  " + t("reply.first_turn_note")
+            preview = self.preview() if self.state == "thinking" else ""
             return f"{text}  {preview}" if preview else text
-        if self.state == "tool":
-            return t("reply.running_tool", tool=self.tool, clock=elapsed)
         waited = round(self.waited or 0)
         if self.thought:
             text = t("reply.thought_for", seconds=round(self.thinking_seconds or 0))
