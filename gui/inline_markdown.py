@@ -1,10 +1,21 @@
 """**bold** and `code` in assistant replies, as (text, tags) pieces for Tk
 text tags. Nothing more: no headings, lists, links or italics.
 
-``spans(text)`` styles a complete text, only where a marker is closed. A
-streaming bubble styles each line with it as it arrives (a best-effort
-preview) and redraws the whole reply with it once the reply ends, so what
-stays on screen is always ``spans`` of the full text.
+The rules are conservative: anything doubtful is shown as typed.
+
+- Styling never crosses a line. A line starting with ``` opens or closes a
+  fenced block; the fence lines and everything inside stay literal.
+- A run of backticks opens a code span only if the same run closes it later
+  on the same line; inside a code span nothing is bold.
+- Only a run of exactly two asterisks can be bold. An opening ``**`` is at
+  the start of the line or after whitespace or ( [ " ', and is followed by a
+  non-space; a closing ``**`` follows a non-space and is followed by the end,
+  whitespace or punctuation. So ``**/*.py``, ``2**10``, ``a ** b`` and
+  ``***x***`` stay as typed.
+
+``spans(text)`` styles a complete text. A streaming bubble styles each line
+with ``line_spans`` as it arrives (a best-effort preview) and redraws the
+whole reply with ``spans`` once the reply ends.
 """
 from __future__ import annotations
 
@@ -13,13 +24,10 @@ from typing import List, Tuple
 
 BOLD = "md_bold"
 CODE = "md_code"
-_TOKEN = re.compile(r"(\*\*|`+)")
+_RUN = re.compile(r"(\*+|`+)")
+_OPENS_AFTER = "([\"'"
 
 Piece = Tuple[str, Tuple[str, ...]]
-
-
-def _tags(bold, code) -> Tuple[str, ...]:
-    return tuple(tag for tag, on in ((BOLD, bold), (CODE, code)) if on)
 
 
 def _add(pieces: List[Piece], text: str, tags: Tuple[str, ...]):
@@ -31,11 +39,23 @@ def _add(pieces: List[Piece], text: str, tags: Tuple[str, ...]):
         pieces.append((text, tags))
 
 
-def spans(text: str) -> List[Piece]:
-    """A complete text's pieces: a backtick run opens code only when the
-    same run closes it later; "**" outside code pairs with the next one."""
-    tokens = _TOKEN.split(text or "")
-    role = {}                          # token index -> "code" / "bold" (a used marker)
+def _can_open(before: str, after: str) -> bool:
+    return bool(after) and not after.isspace() and (
+        not before or before.isspace() or before in _OPENS_AFTER)
+
+
+def _can_close(before: str, after: str) -> bool:
+    return bool(before) and not before.isspace() and (
+        not after or after.isspace() or not (after.isalnum() or after == "_"))
+
+
+def _styled_line(line: str, pieces: List[Piece]):
+    tokens = _RUN.split(line)          # odd indices: runs of * or `
+    starts, pos = [], 0
+    for token in tokens:
+        starts.append(pos)
+        pos += len(token)
+    role = {}
     i = 1
     while i < len(tokens):             # code spans first: their content stays literal
         if tokens[i].startswith("`"):
@@ -48,13 +68,16 @@ def spans(text: str) -> List[Piece]:
     for i in range(1, len(tokens), 2):  # then bold pairs outside code spans
         if role.get(i) == "code":
             in_code = not in_code
-        elif tokens[i] == "**" and not in_code:
-            if opened is None:
-                opened = i
-            else:
-                role[opened] = role[i] = "bold"
-                opened = None
-    pieces: List[Piece] = []
+            continue
+        if in_code or tokens[i] != "**":
+            continue
+        before = line[starts[i] - 1] if starts[i] else ""
+        after = line[starts[i] + 2:starts[i] + 3]
+        if opened is not None and _can_close(before, after):
+            role[opened] = role[i] = "bold"
+            opened = None
+        elif _can_open(before, after):
+            opened = i
     bold = code = False
     for i, token in enumerate(tokens):
         kind = role.get(i) if i % 2 else None
@@ -63,5 +86,30 @@ def spans(text: str) -> List[Piece]:
         elif kind == "bold":
             bold = not bold
         else:
-            _add(pieces, token, _tags(bold, code))
+            _add(pieces, token, tuple(t for t, on in ((BOLD, bold), (CODE, code)) if on))
+
+
+def line_spans(line: str, fenced: bool = False) -> Tuple[List[Piece], bool]:
+    """One line's pieces, and whether a fenced block is open after it."""
+    pieces: List[Piece] = []
+    if line.lstrip().startswith("```"):
+        _add(pieces, line, ())
+        return pieces, not fenced
+    if fenced:
+        _add(pieces, line, ())
+    else:
+        _styled_line(line, pieces)
+    return pieces, fenced
+
+
+def spans(text: str) -> List[Piece]:
+    """A complete text's pieces."""
+    pieces: List[Piece] = []
+    fenced = False
+    for k, line in enumerate((text or "").split("\n")):
+        if k:
+            _add(pieces, "\n", ())
+        line_pieces, fenced = line_spans(line, fenced)
+        for piece, tags in line_pieces:
+            _add(pieces, piece, tags)
     return pieces

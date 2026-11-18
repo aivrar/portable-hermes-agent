@@ -49,7 +49,7 @@ from gui.i18n import (
     save_gui_setting,
 )
 from gui.reply_activity import ReplyActivity, clock
-from gui.inline_markdown import BOLD, CODE, spans
+from gui.inline_markdown import BOLD, CODE, line_spans, spans
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -338,6 +338,7 @@ class StreamingBubble(tk.Frame):
         self._leading = ""  # whitespace held before the first visible character
         self._shown = ""    # the text given to the body, markers included
         self._line = ""     # its last, unfinished line
+        self._fenced = False  # a ``` block is open after the finished lines
         self._bg = C["msg_ai"]
         self._refresh_id = None
 
@@ -421,13 +422,14 @@ class StreamingBubble(tk.Frame):
             self._line = ""
             body.delete(self._LINE, "end-1c")
             for line in finished:
-                _insert_styled(body, spans(line))
+                pieces, self._fenced = line_spans(line, self._fenced)
+                _insert_styled(body, pieces)
                 body.insert("end", "\n")
             body.mark_set(self._LINE, "end-1c")
         self._line += last
         if len(self._line) <= self.PREVIEW_LINE_CHARS:
             body.delete(self._LINE, "end-1c")
-            _insert_styled(body, spans(self._line))
+            _insert_styled(body, line_spans(self._line, self._fenced)[0])
         else:
             body.insert("end", last)
 
