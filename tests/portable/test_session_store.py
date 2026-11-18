@@ -1,0 +1,213 @@
+"""portable_hermes.session_store: one door to the session store, on both core
+shapes (storage interface, or the older hermes_state.SessionDB)."""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+
+import pytest
+
+from portable_hermes import session_store
+
+
+def _module(monkeypatch, name, **attrs):
+    module = ModuleType(name)
+    module.__dict__.update(attrs)
+    monkeypatch.setitem(sys.modules, name, module)
+    return module
+
+
+# -- older core: hermes_state.SessionDB only ------------------------------------
+
+class FakeSessionDB:
+    """Records the SessionDB calls the adapter makes."""
+
+    opened: list = []
+
+    def __init__(self, db_path=None):
+        self.calls = []
+        FakeSessionDB.opened.append(db_path)
+
+    def close(self):
+        self.calls.append(("close",))
+
+    def list_sessions_rich(self, source=None, limit=20, min_message_count=0):
+        self.calls.append(("list", source, limit, min_message_count))
+        return [{"id": "s1", "title": "Hi", "message_count": 2}]
+
+    def get_messages_as_conversation(self, session_id):
+        self.calls.append(("read", session_id))
+        return [{"role": "user", "content": "hello"}]
+
+    def end_session(self, session_id, end_reason):
+        self.calls.append(("end", session_id, end_reason))
+
+    def reopen_session(self, session_id):
+        self.calls.append(("reopen", session_id))
+
+    def delete_session(self, session_id):
+        self.calls.append(("delete", session_id))
+        return True
+
+    def create_session(self, session_id, source, **kw):
+        self.calls.append(("create", session_id, source, kw))
+
+    def append_message(self, session_id, role, content):
+        self.calls.append(("append", session_id, role, content))
+
+
+@pytest.fixture
+def legacy_core(monkeypatch):
+    monkeypatch.setitem(sys.modules, "persistence_assembly", None)    # not in this core
+    _module(monkeypatch, "hermes_state", SessionDB=FakeSessionDB)
+    FakeSessionDB.opened = []
+
+
+def test_older_core_uses_session_db(legacy_core, tmp_path):
+    store = session_store.open_store()
+    db = store.handle
+    assert store.legacy and isinstance(db, FakeSessionDB) and FakeSessionDB.opened == [None]
+    assert store.agent_kwargs() == {"session_db": db}
+
+    assert store.list_with_messages(limit=20)[0]["title"] == "Hi"
+    assert store.conversation("s1") == [{"role": "user", "content": "hello"}]
+    store.end("s1", "new_chat")
+    store.reopen("s1")
+    assert store.delete("s1") is True
+    store.create("s2", "gui", model="m")
+    store.append("s2", "user", "hi")
+    store.close()
+    assert db.calls == [("list", None, 20, 1), ("read", "s1"), ("end", "s1", "new_chat"),
+                        ("reopen", "s1"), ("delete", "s1"), ("create", "s2", "gui", {"model": "m"}),
+                        ("append", "s2", "user", "hi"), ("close",)]
+
+    session_store.open_store(tmp_path)                   # an explicit home: its state.db
+    assert FakeSessionDB.opened[-1] == tmp_path / "state.db"
+
+
+def test_a_broken_storage_interface_is_not_mistaken_for_an_older_core(monkeypatch):
+    """persistence_assembly is there but one of its own imports fails: raise,
+    do not quietly fall back to the deprecated SessionDB."""
+    import builtins
+    real_import = builtins.__import__
+
+    def failing(name, *args, **kwargs):
+        if name == "persistence_assembly":
+            raise ModuleNotFoundError("No module named 'persistence.core'", name="persistence.core")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing)
+    with pytest.raises(ModuleNotFoundError):
+        session_store.open_store()
+
+
+# -- current core: persistence_assembly ------------------------------------------
+
+class FakeHandle:
+    """open_persistence(...)'s handle: repositories ``sessions`` and ``messages``."""
+
+    def __init__(self, scope):
+        self.scope = scope
+        self.calls = []
+        self.closed = False
+        calls = self.calls
+        self.sessions = SimpleNamespace(
+            list_sessions=lambda query, window, **kw: (
+                calls.append(("list", query, window)) or
+                [SimpleNamespace(as_list_row=lambda: {"id": "s1", "title": "Hi", "message_count": 2})]),
+            end=lambda sid, reason: calls.append(("end", sid, reason)),
+            reopen=lambda sid: calls.append(("reopen", sid)),
+            delete=lambda sid, **kw: calls.append(("delete", sid, kw)) or ["s1"],
+            create=lambda new: calls.append(("create", new)))
+        self.messages = SimpleNamespace(
+            read_conversation=lambda sid, request: (
+                calls.append(("read", sid, request)) or
+                [SimpleNamespace(as_openai_message=lambda: {"role": "user", "content": "hello"})]),
+            append=lambda sid, message: calls.append(("append", sid, message)))
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def current_core(monkeypatch):
+    opened = []
+
+    def open_persistence(scope, eager=False):
+        handle = FakeHandle(scope)
+        opened.append((scope, eager, handle))
+        return handle
+
+    def profile_scope(profile=None, *, home=None):
+        return SimpleNamespace(profile_dir=Path(home) if home else Path("CURRENT_HOME"))
+
+    _module(monkeypatch, "persistence_assembly", open_persistence=open_persistence,
+            profile_scope=profile_scope)
+    _module(monkeypatch, "persistence")
+    _module(monkeypatch, "persistence.conversation")
+    _module(monkeypatch, "persistence.conversation.sessions",
+            SessionQuery=lambda **kw: ("SessionQuery", kw),
+            SessionWindow=lambda **kw: ("SessionWindow", kw),
+            NewSession=lambda **kw: ("NewSession", kw))
+    _module(monkeypatch, "persistence.conversation.messages",
+            ConversationRequest=lambda **kw: ("ConversationRequest", kw),
+            NewMessage=SimpleNamespace(from_live=lambda m: ("NewMessage", dict(m))))
+    _module(monkeypatch, "gateway")
+    _module(monkeypatch, "gateway.session_ingress_media", native_inputs_root=lambda: Path("MEDIA"))
+    removed = []
+    _module(monkeypatch, "session_retention",
+            after_sessions_removed=lambda *a, **kw: removed.append((a, kw)))
+
+    def no_session_db(*a, **kw):
+        raise AssertionError("a core with the storage interface must not use SessionDB")
+    _module(monkeypatch, "hermes_state", SessionDB=no_session_db)
+    return SimpleNamespace(opened=opened, removed=removed)
+
+
+def test_current_core_uses_the_storage_interface(current_core, tmp_path):
+    store = session_store.open_store()
+    scope, eager, handle = current_core.opened[0]
+    assert not store.legacy and store.handle is handle
+    assert scope.profile_dir == Path("CURRENT_HOME") and eager is True   # opens now, errors now
+    assert store.agent_kwargs() == {"persistence": handle}
+
+    assert store.list_with_messages(limit=20) == [{"id": "s1", "title": "Hi", "message_count": 2}]
+    assert store.conversation("s1") == [{"role": "user", "content": "hello"}]
+    store.end("s1", "new_chat")
+    store.reopen("s1")
+    assert store.delete("s1") is True
+    store.create("s2", "gui", model="m")
+    store.append("s2", "user", "hi")
+    store.close()
+
+    assert handle.calls == [
+        # The calls the core's own SessionDB stand-in makes for the old methods.
+        ("list", ("SessionQuery", {"min_message_count": 1}), ("SessionWindow", {"limit": 20})),
+        ("read", "s1", ("ConversationRequest", {})),
+        ("end", "s1", "new_chat"),
+        ("reopen", "s1"),
+        ("delete", "s1", {"expected_ids": None, "expected_display": None, "refuse_guarded": False,
+                          "include_compression_chain": False, "media_root": "MEDIA"}),
+        ("create", ("NewSession", {"session_id": "s2", "source": "gui", "model": "m"})),
+        ("append", "s2", ("NewMessage", {"role": "user", "content": "hi"})),
+    ]
+    assert handle.closed
+    (args, kwargs), = current_core.removed            # media and transcript files follow the rows
+    assert args == (handle, Path("CURRENT_HOME"), ["s1"])
+    assert kwargs == {"reason": "delete", "primary": "s1", "sessions_dir": None}
+
+    session_store.open_store(tmp_path)
+    assert current_core.opened[-1][0].profile_dir == tmp_path
+
+
+def test_nothing_deleted_reports_false(current_core):
+    store = session_store.open_store()
+    store.handle.sessions.delete = lambda sid, **kw: []
+    assert store.delete("gone") is False
+
+
+def test_the_store_closes_when_its_block_ends(current_core):
+    with session_store.open_store() as store:
+        handle = store.handle
+    assert handle.closed

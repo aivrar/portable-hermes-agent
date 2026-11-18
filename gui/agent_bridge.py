@@ -131,11 +131,14 @@ class AgentBridge:
         # Load config (same as CLI)
         self.config = _load_cli_config()
 
-        # Session database for persistence
+        # The session store (portable_hermes.session_store: the core's storage
+        # interface, or SessionDB on older cores); agents borrow it.
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            from portable_hermes.session_store import open_store
+            self._session_db = open_store()
         except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning("session store unavailable", exc_info=True)
             self._session_db = None
 
         # Mark this as an interactive frontend. Dangerous actions are routed to
@@ -499,7 +502,7 @@ You are running on **{os_name} {os_release}**.
             disabled_toolsets=disabled,
             ephemeral_system_prompt=permissions_prompt or None,
             session_id=self.session_id,
-            session_db=self._session_db,
+            **(self._session_db.agent_kwargs() if self._session_db else {}),
             max_iterations=resolve_turn_limit(agent_config.get("max_turns", 90)),
             reasoning_config=reasoning_config,
             fallback_model=fallback,
@@ -1066,9 +1069,7 @@ You are running on **{os_name} {os_release}**.
         # its own "agent_close"; the first reason recorded wins)
         if self._session_db and self.session_id:
             try:
-                # Positional: the parameter is ``end_reason`` (not ``reason``)
-                # in the current core and in the last-known-good one.
-                self._session_db.end_session(self.session_id, "new_chat")
+                self._session_db.end(self.session_id, "new_chat")
             except Exception:
                 pass
 
@@ -1096,7 +1097,7 @@ You are running on **{os_name} {os_release}**.
         db = getattr(self, "_session_db", None)
         if db:
             try:
-                db.reopen_session(session_id)
+                db.reopen(session_id)
             except Exception:
                 import logging
                 logging.getLogger("hermes.bridge").warning(

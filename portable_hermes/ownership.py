@@ -165,6 +165,7 @@ REQUIRED_RELEASE_FILES = frozenset({
     "portable_hermes/ownership.py",
     "portable_hermes/recovery.py",
     "portable_hermes/runtime.py",
+    "portable_hermes/session_store.py",
     "portable_hermes/verify.py",
     "portable_hermes/wrapper.py",
     "portable_hermes/launch/cli.cmd",

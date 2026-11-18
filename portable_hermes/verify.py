@@ -319,7 +319,9 @@ def verify(root: Path, *, gui: bool = True) -> dict:
 
     def core_imports():
         import importlib
-        for name in ("hermes_constants", "hermes_cli.config", "hermes_state",
+        # The session store is reached through portable_hermes.session_store
+        # (storage interface or the older hermes_state), checked by session_store.
+        for name in ("hermes_constants", "hermes_cli.config",
                      "tools.registry", "toolsets", "model_tools"):
             importlib.import_module(name)
         from run_agent import AIAgent  # noqa: F401
@@ -327,7 +329,7 @@ def verify(root: Path, *, gui: bool = True) -> dict:
         origin = Path(run_agent.__file__).resolve()
         if root not in origin.parents:
             return False, f"run_agent imported from {origin}, not from the tree under test"
-        return True, "run_agent.AIAgent, model_tools, toolsets, hermes_cli.config, hermes_state"
+        return True, "run_agent.AIAgent, model_tools, toolsets, hermes_cli.config"
 
     if not checks.run("core_imports", core_imports):
         return _result(root, checks)
