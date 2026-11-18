@@ -894,7 +894,7 @@ class LMStudioPanel(tk.Toplevel):
         self._cancel_btn = ttk.Button(self.load_btn.master, text=t("lmstudio.cancel_load"),
                                        style="Danger.TButton",
                                        command=self._cancel_load)
-        self._cancel_btn.pack(side="left", padx=(0, 8))
+        self._cancel_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
         self._loading = True
 
         def _do():
@@ -947,7 +947,8 @@ class LMStudioPanel(tk.Toplevel):
         if hasattr(self, '_cancel_btn'):
             self._cancel_btn.destroy()
             del self._cancel_btn
-        self.load_btn.pack(side="left", padx=(0, 8))
+        # Back in its original slot: [Load Model][Unload][Refresh Models]
+        self.load_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
 
     def _on_load_success(self, model_id):
         self._restore_load_btn()

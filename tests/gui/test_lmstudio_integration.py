@@ -252,3 +252,41 @@ def test_load_success_refreshes_with_the_loaded_model_selected():
     lm.LMStudioPanel._on_load_success(panel, "gemma-4-e4b-it")
 
     refresh.assert_called_once_with(select_id="gemma-4-e4b-it")
+
+
+def _tk_root_or_skip():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    return root
+
+
+def test_load_and_restore_keep_the_button_order():
+    """[Load Model][Unload][Refresh] -> [Cancel][Unload][Refresh] -> back again."""
+    from tkinter import ttk
+
+    root = _tk_root_or_skip()
+    try:
+        row = ttk.Frame(root)
+        load_btn, unload_btn, refresh_btn = (ttk.Button(row) for _ in range(3))
+        for button in (load_btn, unload_btn, refresh_btn):
+            button.pack(side="left")
+        panel = SimpleNamespace(
+            model_list=Mock(curselection=lambda: (0,)),
+            models=[{"id": "gemma-4-e4b-it"}],
+            ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
+            gpu_var=Mock(get=lambda: "CPU"),
+            _set_status=Mock(), status_dot=Mock(), _cancel_load=Mock(),
+            client=Mock(), _post_ui=Mock(),
+            load_btn=load_btn, unload_btn=unload_btn)
+
+        lm.LMStudioPanel._load_model(panel)
+        assert row.pack_slaves() == [panel._cancel_btn, unload_btn, refresh_btn]
+
+        lm.LMStudioPanel._restore_load_btn(panel)
+        assert row.pack_slaves() == [load_btn, unload_btn, refresh_btn]
+    finally:
+        root.destroy()
