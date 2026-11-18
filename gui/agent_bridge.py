@@ -60,7 +60,6 @@ class AgentBridge:
     agent = None
     is_running = False
     _running_agent = None
-    _rebuild_pending = False
     _closing = False
     _interrupted = False
     _resume_session_id = None
@@ -89,7 +88,6 @@ class AgentBridge:
         # only on the Tk thread while no turn is running.
         self.is_running = False
         self._running_agent = None     # the running turn's agent (Stop reaches it)
-        self._rebuild_pending = False  # settings saved mid-turn: rebuild after it
         self._closing = False
         self._shutdown_once = threading.Lock()   # one-shot latch, see _shutdown
         self._agent_thread: Optional[threading.Thread] = None
@@ -177,16 +175,17 @@ class AgentBridge:
     def rebuild_agent(self) -> bool:
         """Drop the agent so the next turn builds a new one; the chat goes on.
 
-        During a turn nothing changes now: the rebuild is marked pending and
-        applied when the turn ends (settings already saved to disk, e.g.
-        permissions or API keys, apply from the next turn).
+        Only ever called with no turn in progress: the dialogs that save
+        settings cannot be opened during a reply, and while they are open
+        (modal) no reply can start. Refused (logged) if it happens anyway.
 
         A rebuilt agent always gets a new session id (model switch, saved
         permissions or API keys start a new session, history kept), so a
         resumed session that has not been continued yet is not continued
         either. Returns True when such a pending resume was dropped."""
         if self.is_running:
-            self._rebuild_pending = True
+            import logging
+            logging.getLogger("hermes.bridge").warning("rebuild_agent refused: a turn is running")
             return False
         dropped_resume = bool(self._resume_session_id)
         self._resume_session_id = None
@@ -196,7 +195,6 @@ class AgentBridge:
     def _discard_agent(self, *, conversation_over: bool) -> None:
         """Drop and release the agent. Only while no turn runs (Tk thread),
         or from _shutdown once the turn is over."""
-        self._rebuild_pending = False   # the next agent is built fresh anyway
         agent, self.agent = self.agent, None
         if agent is not None:
             history = list(getattr(self, "conversation_history", None) or [])
@@ -818,9 +816,10 @@ You are running on **{os_name} {os_release}**.
     # no turn is running. send_message sets is_running (Tk thread) before the
     # worker starts, so it also covers building the agent; the worker clears
     # it as its very last step (_end_turn). Model switches and session
-    # changes are refused meanwhile; saved settings mark a pending rebuild.
-    # The worker therefore sees one consistent set of settings, and only it
-    # touches self.agent during the turn. The one exception is close().
+    # changes are refused meanwhile, and the GUI does not open the dialogs
+    # that save settings (they are modal, so no turn starts while one is
+    # open). The worker therefore sees one consistent set of settings, and
+    # only it touches self.agent during the turn. The one exception is close().
 
     def _run_agent(self, message: str, image_paths: list = None):
         """Worker thread body. Whatever happens (log setup, config, imports,
@@ -854,13 +853,6 @@ You are running on **{os_name} {os_release}**.
         self.is_running = False
         if self._closing:
             self._shutdown()
-        else:
-            self._post(self._after_turn)
-
-    def _after_turn(self):
-        """Tk thread, after a turn: apply a rebuild requested during it."""
-        if self._rebuild_pending:
-            self.rebuild_agent()
 
     def _bridge_log(self):
         import logging as _log
@@ -969,6 +961,10 @@ You are running on **{os_name} {os_release}**.
         self._closing = True
         if self.is_running:
             self.interrupt()
+            # A worker waiting for a clarify/approval answer would wait for a
+            # window that is gone: answer it (approval denied) so it ends.
+            self._clarify_queue.put("")
+            self._approval_queue.put(False)
         if not self.is_running:
             self._shutdown()
 

@@ -22,11 +22,18 @@ def test_context_selection_obeys_core_floor():
     assert lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
 
 
+def _panel_with(**attributes):
+    """A real LMStudioPanel instance (its helper methods work) without Tk."""
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(attributes)
+    return panel
+
+
 def test_too_small_model_is_rejected_before_loading(monkeypatch):
     warning = Mock()
     monkeypatch.setattr(lm.messagebox, "showwarning", warning)
-    panel = SimpleNamespace(model_list=Mock(curselection=lambda: (0,)),
-                            models=[{"id": "small", "context_length": lm.MINIMUM_CONTEXT_LENGTH // 2}])
+    panel = _panel_with(model_list=Mock(curselection=lambda: (0,)),
+                        models=[{"id": "small", "context_length": lm.MINIMUM_CONTEXT_LENGTH // 2}])
     lm.LMStudioPanel._load_model(panel)
     warning.assert_called_once()
 
@@ -315,7 +322,7 @@ def test_load_and_restore_keep_the_button_order():
         load_btn, unload_btn, refresh_btn = (ttk.Button(row) for _ in range(3))
         for button in (load_btn, unload_btn, refresh_btn):
             button.pack(side="left")
-        panel = SimpleNamespace(
+        panel = _panel_with(
             model_list=Mock(curselection=lambda: (0,)),
             models=[{"id": "gemma-4-e4b-it"}],
             ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
@@ -587,7 +594,8 @@ def test_panel_loads_with_the_placement_behind_the_chosen_label(monkeypatch):
     monkeypatch.setattr(lm.threading, "Thread", InlineThread)
     choices = lm.gpu_choices(OWNER_NVIDIA)
     split_label = dict(choices)["split"]
-    panel = SimpleNamespace(
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(
         model_list=Mock(curselection=lambda: (0,)),
         models=[{"id": "gemma-4-e4b-it"}],
         ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
@@ -601,3 +609,74 @@ def test_panel_loads_with_the_placement_behind_the_chosen_label(monkeypatch):
     lm.LMStudioPanel._load_model(panel)
 
     assert panel.client.load_model.call_args.kwargs["gpu_placement"] == "split"
+
+
+def _working_panel(monkeypatch, client, reply_running=False):
+    """A panel whose load/cancel workers really run in threads; *tracked*
+    collects the threads the app would treat as "a model is loading"."""
+    tracked, posted = [], []
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(
+        model_list=Mock(curselection=lambda: (0,)), models=[{"id": "gemma-4-e4b-it"}],
+        ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH), gpu_var=Mock(get=lambda: ""),
+        _gpu_label_to_placement={}, _set_status=Mock(), status_dot=Mock(),
+        load_btn=Mock(), unload_btn=Mock(), client=client,
+        _post_ui=lambda name, *a: posted.append(name),
+        can_change_model=lambda: not reply_running, track_model_work=tracked.append)
+    monkeypatch.setattr(lm.ttk, "Button", Mock())
+    return panel, tracked, posted
+
+
+def _all_done(tracked):
+    for worker in tracked:
+        worker.join(10)
+    return tracked and not any(w.is_alive() for w in tracked)
+
+
+def test_panel_load_and_unload_are_refused_during_a_reply(monkeypatch):
+    info = Mock()
+    monkeypatch.setattr(lm.messagebox, "showinfo", info)
+    client = Mock()
+    panel, tracked, _posted = _working_panel(monkeypatch, client, reply_running=True)
+
+    lm.LMStudioPanel._load_model(panel)
+    lm.LMStudioPanel._unload_model(panel)
+
+    client.load_model.assert_not_called()
+    client.unload_model.assert_not_called()
+    assert tracked == [] and info.call_count == 2
+    assert info.call_args.args[1] == lm.t("chat.busy_stop_first", stop=lm.t("chat.stop"))
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "closed"])
+def test_panel_model_work_ends_on_every_path(monkeypatch, outcome):
+    import threading
+    gate = threading.Event()
+    loaded = Mock()
+    client = Mock(last_loaded_identifier="gemma-4-e4b-it", last_gpu_plan=None)
+    client._sdk_client.llm.list_loaded.return_value = [loaded]
+
+    def load_model(*a, **k):
+        gate.wait(10)
+        if outcome == "failure":
+            raise RuntimeError("unknown model architecture")
+
+    client.load_model.side_effect = load_model
+    panel, tracked, posted = _working_panel(monkeypatch, client)
+
+    lm.LMStudioPanel._load_model(panel)
+    assert len(tracked) == 1 and tracked[0].is_alive()        # sending waits now
+    if outcome == "cancel":
+        lm.LMStudioPanel._cancel_load(panel)                   # second worker
+    if outcome == "closed":
+        panel._closed = True                                   # window closed mid-load
+    gate.set()
+
+    assert _all_done(tracked)                                  # busy over on every path
+    if outcome == "failure":                                   # unloaded inside the worker
+        loaded.unload.assert_called_once_with()
+        assert posted == ["_on_load_error"]
+    if outcome == "cancel":
+        assert len(tracked) == 2 and posted == ["_on_cancel_done"]
+    if outcome == "success":
+        assert posted == ["_on_load_success"]

@@ -427,12 +427,15 @@ class Sidebar(tk.Frame):
 
     def __init__(self, parent, on_new=None, on_model_change=None,
                  on_session_select=None, on_local_models=None,
-                 on_auto_load=None, can_delete_session=None, can_change_model=None, **kw):
+                 on_auto_load=None, can_delete_session=None, can_change_model=None,
+                 track_model_work=None, **kw):
         super().__init__(parent, bg=C["bg_sidebar"], width=S(260), **kw)
         self.pack_propagate(False)
         self.on_new = on_new
         # callback() -> bool; False refuses a model pick (it explains why)
         self.can_change_model = can_change_model
+        # callback(thread): a thread loading a model (sending waits for it)
+        self.track_model_work = track_model_work
         # callback(session_id) -> bool; False refuses the delete (it explains why)
         self.can_delete_session = can_delete_session
         self.on_model_change = on_model_change
@@ -824,20 +827,23 @@ class Sidebar(tk.Frame):
         self._loading_placement = settings.get("gpu_placement")  # for the result line
 
         def _load():
-            import logging as _log
-            _dbg = _log.getLogger("hermes.autoload")
-            if not _dbg.handlers:
-                _log_dir = get_hermes_home() / "logs"
-                _log_dir.mkdir(parents=True, exist_ok=True)
-                _fh = _log.FileHandler(str(_log_dir / "bridge.log"), encoding="utf-8")
-                _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
-                _dbg.addHandler(_fh)
-                _dbg.setLevel(_log.DEBUG)
+            success, error_msg, loaded_id = False, "", None
+            try:
+                import logging as _log
+                _dbg = _log.getLogger("hermes.autoload")
+                if not _dbg.handlers:
+                    _log_dir = get_hermes_home() / "logs"
+                    _log_dir.mkdir(parents=True, exist_ok=True)
+                    _fh = _log.FileHandler(str(_log_dir / "bridge.log"), encoding="utf-8")
+                    _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                    _dbg.addHandler(_fh)
+                    _dbg.setLevel(_log.DEBUG)
 
-            _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
-                       model_id, settings.get("gpu_placement"), settings["context_length"])
-            success, error_msg, loaded_id = _auto_load_local_model(model_id, settings, _dbg)
-
+                _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
+                           model_id, settings.get("gpu_placement"), settings["context_length"])
+                success, error_msg, loaded_id = _auto_load_local_model(model_id, settings, _dbg)
+            except Exception as exc:  # always report back, so _loading_model ends
+                error_msg = str(exc)
             # Back to main thread
             try:
                 self.after(0, lambda: self._on_auto_load_complete(
@@ -845,7 +851,11 @@ class Sidebar(tk.Frame):
             except Exception:
                 pass
 
-        threading.Thread(target=_load, daemon=True).start()
+        worker = threading.Thread(target=_load, daemon=True)
+        worker.start()
+        track = getattr(self, "track_model_work", None)
+        if track:
+            track(worker)   # sending waits while it runs
 
     def _on_auto_load_complete(self, model_id: str, success: bool, error: str,
                                loaded_id: Optional[str] = None):
@@ -1208,14 +1218,7 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     content += f"\n{key}={val}\n"
         model = self.model_var.get().strip()
-        if self.bridge.is_running:
-            # During a reply: the saved keys apply from the next turn; a model
-            # change is refused (the model shown elsewhere stays in effect).
-            self.bridge.rebuild_agent()
-            if model and model != self.bridge.get_model():
-                messagebox.showinfo(t("app.title"), t("chat.busy_stop_first", stop=t("chat.stop")),
-                                    parent=self)
-        elif model:
+        if model:  # never during a reply: the dialog is not opened then (modal)
             self.bridge.set_model(model)
         env_path.write_text(content, encoding="utf-8")
 
@@ -1628,7 +1631,8 @@ class HermesGUI:
                                on_local_models=self._on_local_models_discovered,
                                on_auto_load=self._on_auto_load_status,
                                can_delete_session=self._can_delete_session,
-                               can_change_model=lambda: not self._refuse_while_running())
+                               can_change_model=lambda: not self._refuse_while_running(),
+                               track_model_work=self._track_model_work)
         self.sidebar.pack(side="left", fill="y")
 
         # Vertical separator
@@ -1810,6 +1814,9 @@ class HermesGUI:
     def _send(self):
         msg = self.input_text.get("1.0", "end-1c").strip()
         if not msg or self.bridge.is_running:
+            return
+        if self._model_work_running():  # the message stays in the input box
+            self._add_msg(t("chat.model_loading_wait"), "system")
             return
         self.input_text.delete("1.0", "end")
 
@@ -2079,7 +2086,14 @@ class HermesGUI:
             self._add_msg(t("chat.generation_stopped", "Generation stopped."), "system")
             self.status_bar.set_ready()
 
+    # Settings, Permissions and the API-key wizard are modal (grab_set): while
+    # one is open no message can be sent. They are not opened during a reply,
+    # so a save never happens under a running turn (the worker reads these
+    # files and env vars while it builds the agent).
+
     def _open_settings(self):
+        if self._refuse_while_running():
+            return
         d = SettingsDialog(self.root, self.bridge)
         self.root.wait_window(d)
         m = self.bridge.get_model()
@@ -2090,26 +2104,36 @@ class HermesGUI:
         SkillsBrowser(self.root)
 
     def _open_permissions(self):
+        if self._refuse_while_running():
+            return
         PermissionsPanel(self.root, on_save=self._on_permissions_saved)
-
-    def _rebuild_for_saved_settings(self):
-        """Settings already saved to disk: rebuild the agent now, or, during a
-        reply, after it (the bridge marks the rebuild pending)."""
-        if self.bridge.is_running:
-            self.bridge.rebuild_agent()
-            self._add_msg(t("chat.applies_after_reply"), "system")
-        else:
-            self._note_dropped_resume(self.bridge.rebuild_agent())
 
     def _on_permissions_saved(self, perms):
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
-        self._rebuild_for_saved_settings()
+        self._note_dropped_resume(self.bridge.rebuild_agent())
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
 
     def _open_lm_studio(self):
-        LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready)
+        LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
+                      can_change_model=lambda: not self.bridge.is_running,
+                      track_model_work=self._track_model_work)
+
+    # -- model loading is "busy" too -------------------------------------------
+    # A load or unload in LM Studio (sidebar auto-load, panel load/cancel) runs
+    # in a worker thread; while any such thread is alive, sending is refused
+    # (the load would unload the model the new turn uses). Tracking the
+    # threads themselves means "busy" ends on every exit path, also when the
+    # panel is closed mid-load.
+
+    def _track_model_work(self, thread):
+        self._model_work = [w for w in getattr(self, "_model_work", []) if w.is_alive()]
+        self._model_work.append(thread)
+
+    def _model_work_running(self) -> bool:
+        self._model_work = [w for w in getattr(self, "_model_work", []) if w.is_alive()]
+        return bool(self._model_work)
 
     def _on_lm_studio_ready(self, base_url, model_id):
         """Switch Hermes to use LM Studio as the LLM provider (refused during
@@ -2129,12 +2153,16 @@ class HermesGUI:
         self._note_dropped_resume(dropped)
 
     def _show_api_setup(self):
+        # Also reached from the first-run timer: never during a reply.
+        if self._refuse_while_running():
+            return
+
         def on_done(saved_keys):
             if saved_keys:
                 names = ", ".join(saved_keys.keys())
                 self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
-                self._rebuild_for_saved_settings()
+                self._note_dropped_resume(self.bridge.rebuild_agent())
             m = self.bridge.get_model()
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)

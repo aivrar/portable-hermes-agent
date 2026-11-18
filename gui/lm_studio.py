@@ -528,9 +528,15 @@ def estimate_context_length(model_id: str) -> int:
 class LMStudioPanel(tk.Toplevel):
     """Full LM Studio management panel — model browser, GPU selector, context slider."""
 
-    def __init__(self, parent, on_model_ready=None):
+    def __init__(self, parent, on_model_ready=None, can_change_model=None,
+                 track_model_work=None):
         super().__init__(parent)
         self.on_model_ready = on_model_ready
+        # can_change_model() -> False while a chat reply runs (Load/Unload
+        # would unload the model it uses); track_model_work(thread) tells the
+        # app a load is running (sending waits for it).
+        self.can_change_model = can_change_model
+        self.track_model_work = track_model_work
         self.title(t("lmstudio.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
@@ -934,7 +940,26 @@ class LMStudioPanel(tk.Toplevel):
         self.ctx_var.set(v)
         self.ctx_label.configure(text=f"{v:,}")
 
+    def _refuse_during_reply(self) -> bool:
+        """True (and says why) while a chat reply is running."""
+        can_change = getattr(self, "can_change_model", None)
+        if can_change is None or can_change():
+            return False
+        messagebox.showinfo(t("lmstudio.title"), t("chat.busy_stop_first", stop=t("chat.stop")),
+                            parent=self)
+        return True
+
+    def _start_model_work(self, target):
+        """Run a load/unload worker; the app knows while it is alive."""
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        track = getattr(self, "track_model_work", None)
+        if track:
+            track(worker)
+
     def _load_model(self):
+        if self._refuse_during_reply():
+            return
         sel = self.model_list.curselection()
         if not sel:
             messagebox.showwarning(t("lmstudio.no_model_title"),
@@ -993,29 +1018,34 @@ class LMStudioPanel(tk.Toplevel):
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
+                    # Unload to stop JIT retry loops - here, so the model work
+                    # (and the app's "busy") ends only after it.
+                    self._unload_all()
                     err = t("lmstudio.load_error_details", model=model_path, context=ctx,
                             gpu=gpu_label, error=e)
                     self._post_ui("_on_load_error", err, model_id)
 
-        threading.Thread(target=_do, daemon=True).start()
+        self._start_model_work(_do)
+
+    def _unload_all(self):
+        try:
+            if self.client._sdk_client:
+                for m in list(self.client._sdk_client.llm.list_loaded()):
+                    try:
+                        m.unload()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _cancel_load(self):
         """Cancel an in-progress model load by unloading all models."""
         self._loading = False
         self._set_status("lmstudio.cancelling")
         def _do():
-            try:
-                # Unload whatever was loaded
-                loaded = list(self.client._sdk_client.llm.list_loaded())
-                for m in loaded:
-                    try:
-                        m.unload()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            self._unload_all()   # whatever was loaded
             self._post_ui("_on_cancel_done")
-        threading.Thread(target=_do, daemon=True).start()
+        self._start_model_work(_do)
 
     def _on_cancel_done(self):
         self._restore_load_btn()
@@ -1055,26 +1085,18 @@ class LMStudioPanel(tk.Toplevel):
 
     def _on_load_error(self, error, model_id=None):
         """*model_id*: the row the user tried to load; it stays selected when
-        the list is refreshed (the unload below changes what is loaded)."""
+        the list is refreshed (the load worker unloaded everything)."""
         self._restore_load_btn()
         self.status_dot.configure(fg=C["danger"])
         self._set_status("lmstudio.load_failed")
-        # Unload to stop JIT retry loops
-        try:
-            if self.client._sdk_client:
-                for m in list(self.client._sdk_client.llm.list_loaded()):
-                    try:
-                        m.unload()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
         # The unload changed what is loaded: refresh so no row still shows
         # [LOADED], keeping the user's selection.
         self._refresh_models(select_ids=(model_id,) if model_id else ())
         messagebox.showerror(t("lmstudio.load_error_title"), error, parent=self)
 
     def _unload_model(self):
+        if self._refuse_during_reply():
+            return
         sel = self.model_list.curselection()
         if not sel:
             return

@@ -743,7 +743,8 @@ def _new_chat_bridge(agent, history):
     bridge = object.__new__(AgentBridge)
     bridge.__dict__.update(agent=agent, conversation_history=list(history),
                            session_id="gui_old", _session_db=None, is_running=False,
-                           _resume_session_id=None, _shutdown_once=threading.Lock())
+                           _resume_session_id=None, _shutdown_once=threading.Lock(),
+                           _clarify_queue=queue.Queue(), _approval_queue=queue.Queue())
     return bridge
 
 
@@ -853,18 +854,17 @@ def test_gui_bridge_refuses_a_model_switch_during_a_turn(switch):
 
 
 @pytest.mark.needs_core
-def test_gui_rebuild_requested_during_a_turn_is_applied_when_it_ends():
+def test_gui_rebuild_agent_discards_directly_when_idle_and_refuses_mid_turn():
     agent = _ReleasableAgent()
     bridge = _new_chat_bridge(agent, HISTORY)
     bridge.is_running = True
 
-    assert bridge.rebuild_agent() is False
+    assert bridge.rebuild_agent() is False                 # refused (logged)
     assert bridge.agent is agent and agent.calls == []     # nothing under the turn
 
     bridge.is_running = False
-    bridge._after_turn()                                   # Tk thread, turn over
+    bridge.rebuild_agent()                                 # idle: discarded at once
     assert agent.calls == ["release_clients"] and bridge.agent is None
-    assert bridge._rebuild_pending is False
 
 
 @pytest.mark.needs_core
@@ -1216,7 +1216,7 @@ def _wait_for(condition):
 
 
 @pytest.mark.needs_core
-def test_gui_stop_reaches_the_running_agent_and_saved_settings_wait(monkeypatch):
+def test_gui_stop_reaches_the_running_agent_and_nothing_changes_it_mid_turn(monkeypatch):
     import threading
     from gui.agent_bridge import TurnInProgress
 
@@ -1232,16 +1232,15 @@ def test_gui_stop_reaches_the_running_agent_and_saved_settings_wait(monkeypatch)
 
     with pytest.raises(TurnInProgress):           # model switch refused mid-turn
         bridge.set_cloud_mode("other/model")
-    bridge.rebuild_agent()                        # e.g. permissions saved mid-turn
+    assert bridge.rebuild_agent() is False        # refused too
     assert bridge.agent is running and running.calls == ["run_conversation"]
 
     bridge.interrupt()                            # Stop
     bridge._agent_thread.join(10)
 
     assert running.interrupted == [""]
-    # The pending rebuild ran after the turn (Tk thread): soft release only.
-    assert running.calls == ["run_conversation", "release_clients"]
-    assert bridge.agent is None and bridge.is_running is False
+    assert running.calls == ["run_conversation"]  # kept for the next turn
+    assert bridge.agent is running and bridge.is_running is False
     assert events["error"] == []
 
 
@@ -1286,6 +1285,8 @@ def test_gui_close_during_a_turn_closes_the_agent_once_after_it():
 
     bridge.close()                                    # Stop + leave it to the worker
     assert running.interrupted == [""] and running.calls == []
+    # A worker waiting for an answer is not left waiting for a closed window.
+    assert bridge._clarify_queue.get_nowait() == "" and bridge._approval_queue.get_nowait() is False
     bridge._end_turn()                                # the worker's last step
     bridge.close()                                    # and again: still once
     assert running.calls == ["close"] and bridge.agent is None
@@ -1339,16 +1340,92 @@ def test_gui_model_switch_is_refused_while_a_reply_runs():
 
 
 @pytest.mark.needs_core
-def test_gui_saved_settings_during_a_reply_apply_after_it():
+@pytest.mark.parametrize("opener, dialog", [("_open_settings", "SettingsDialog"),
+                                            ("_open_permissions", "PermissionsPanel"),
+                                            ("_show_api_setup", "APISetupWizard")])
+def test_gui_settings_dialogs_are_not_opened_during_a_reply(monkeypatch, opener, dialog):
+    from unittest.mock import Mock
+    from gui import app
+    from gui.i18n import t
+
+    built = Mock()
+    monkeypatch.setattr(app, dialog, built)
+    bridge = Mock(is_running=True)
+    gui = _gui_with_bridge(bridge)
+    gui.root = Mock()
+
+    getattr(gui, opener)()                            # menu, Ctrl+comma, first-run timer
+
+    built.assert_not_called()
+    bridge.rebuild_agent.assert_not_called()
+    assert gui._add_msg.call_args_list == [((t("chat.busy_stop_first", stop=t("chat.stop")),
+                                             "system"),)]
+
+    bridge.is_running = False                         # idle: opens as before
+    getattr(gui, opener)()
+    built.assert_called_once()
+
+
+@pytest.mark.needs_core
+def test_gui_saved_settings_rebuild_the_agent_directly():
+    from unittest.mock import Mock
+
+    bridge = Mock(is_running=False)
+    bridge.rebuild_agent.return_value = False
+    gui = _gui_with_bridge(bridge)
+    gui._on_permissions_saved({})
+    bridge.rebuild_agent.assert_called_once_with()
+
+
+@pytest.mark.needs_core
+def test_gui_send_is_refused_while_a_model_loads():
+    import threading
     from unittest.mock import Mock
     from gui.i18n import t
 
-    bridge = Mock(is_running=True)
-    gui = _gui_with_bridge(bridge)
-    gui._on_permissions_saved({})
+    gui = _gui_with_bridge(Mock(is_running=False))
+    gui.input_text.get.return_value = "hello"
+    release = threading.Event()
+    loader = threading.Thread(target=release.wait, args=(10,), daemon=True)
+    loader.start()
+    gui._track_model_work(loader)                     # e.g. the sidebar auto-load
 
-    bridge.rebuild_agent.assert_called_once_with()    # the bridge marks it pending
-    assert gui._add_msg.call_args_list[-1].args == (t("chat.applies_after_reply"), "system")
+    gui._send()
+
+    gui._add_msg.assert_called_once_with(t("chat.model_loading_wait"), "system")
+    gui.input_text.delete.assert_not_called()         # the message stays in the box
+    gui.bridge.send_message.assert_not_called()
+
+    release.set()
+    loader.join(10)
+    assert gui._model_work_running() is False         # busy ends with the thread
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("outcome", ["ok", "error", "crash"])
+def test_gui_sidebar_auto_load_is_tracked_and_always_reports(monkeypatch, outcome):
+    from unittest.mock import Mock
+    from gui import app
+
+    def fake_load(model_id, settings, log):
+        if outcome == "crash":
+            raise RuntimeError("log dir unwritable")
+        return (outcome == "ok", "" if outcome == "ok" else "boom", None)
+
+    monkeypatch.setattr(app, "_auto_load_local_model", fake_load)
+    tracked, done = [], []
+    sidebar = object.__new__(app.Sidebar)
+    sidebar.__dict__.update(
+        _loading_model=False, _show_load_status=Mock(), model_combo=Mock(),
+        get_local_settings=lambda: {"gpu_placement": "auto", "context_length": 4096},
+        track_model_work=tracked.append, after=lambda _ms, fn: fn(),
+        _on_auto_load_complete=lambda *a: done.append(a))
+
+    sidebar._auto_load_model("m")
+    tracked[0].join(10)
+
+    assert len(tracked) == 1 and not tracked[0].is_alive()
+    assert done and done[0][1] is (outcome == "ok")
 
 
 @pytest.mark.needs_core
