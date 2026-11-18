@@ -329,11 +329,12 @@ def check_session_store(home: Path) -> tuple:
     return True, f"{kind}: create, list, read, end, reopen and delete a session"
 
 
-def verify(root: Path, *, gui: bool = True) -> dict:
+def verify(root: Path, *, home: Path, gui: bool = True) -> dict:
+    """*home* is a throw-away folder that becomes HERMES_HOME, replacing any
+    inherited one: building an agent and the session check write into the
+    Hermes home, and that must never be the user's."""
     root = Path(root).resolve()
-    # Never the user's Hermes home, even when HERMES_HOME is set: building an
-    # agent and the session check write into the Hermes home.
-    os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="portable-verify-home-")
+    os.environ["HERMES_HOME"] = str(home)
     _isolate(root)
     checks = Checks()
 
@@ -478,17 +479,17 @@ def main(argv=None) -> int:
     parser.add_argument("--no-gui", action="store_true")
     args = parser.parse_args(argv)
     # Tool modules print to stdout while importing; keep the JSON channel clean.
+    # Only the folder made here is ever removed (never one decided by name,
+    # never an inherited HERMES_HOME).
+    made = tempfile.mkdtemp(prefix="portable-verify-home-")
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        result = verify(Path(args.root), gui=not args.no_gui)
+        result = verify(Path(args.root), home=Path(made), gui=not args.no_gui)
     finally:
         sys.stdout = real_stdout
-        # verify() made this home; files still open in this process stay behind.
-        home = os.environ.get("HERMES_HOME", "")
-        if Path(home).name.startswith("portable-verify-home-"):
-            import shutil
-            shutil.rmtree(home, ignore_errors=True)
+        import shutil
+        shutil.rmtree(made, ignore_errors=True)
     if args.json:
         print("PORTABLE_VERIFY_RESULT " + json.dumps(result))
     else:

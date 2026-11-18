@@ -306,8 +306,8 @@ def test_core_check_refuses_an_agent_that_cannot_take_the_store(monkeypatch, tmp
 
 
 def test_verify_never_uses_the_hermes_home_it_was_given(monkeypatch, tmp_path):
-    """Before anything is imported from the tree, HERMES_HOME is a new
-    throw-away folder, whatever it was."""
+    """Before anything is imported from the tree, HERMES_HOME is the
+    throw-away folder verify was given, whatever it was."""
     from portable_hermes import verify
 
     seen = {}
@@ -322,7 +322,54 @@ def test_verify_never_uses_the_hermes_home_it_was_given(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user-home"))
     monkeypatch.setattr(verify, "_isolate", isolate)
     with pytest.raises(Stop):
-        verify.verify(tmp_path)
-    assert Path(seen["home"]).name.startswith("portable-verify-home-")
-    assert Path(seen["home"]) != tmp_path / "user-home" and Path(seen["home"]).is_dir()
-    Path(seen["home"]).rmdir()
+        verify.verify(tmp_path, home=tmp_path / "throwaway")
+    assert seen["home"] == str(tmp_path / "throwaway")
+
+
+def _main_with_fake_verify(monkeypatch, seen):
+    from portable_hermes import verify
+
+    def fake(root, *, home, gui=True):
+        seen.append(home)
+        assert home.is_dir()
+        (home / "state.db").write_bytes(b"x")
+        return {"ok": True, "checks": []}
+
+    monkeypatch.setattr(verify, "verify", fake)
+    return verify
+
+
+def test_verify_command_removes_only_the_home_it_made(monkeypatch, tmp_path):
+    """An inherited HERMES_HOME is never removed, even one whose name looks
+    like a verify home."""
+    inherited = tmp_path / "portable-verify-home-mine"
+    inherited.mkdir()
+    (inherited / "state.db").write_bytes(b"the user's sessions")
+    monkeypatch.setenv("HERMES_HOME", str(inherited))
+    seen = []
+    verify = _main_with_fake_verify(monkeypatch, seen)
+
+    assert verify.main(["--root", str(tmp_path), "--json"]) == 0
+    assert seen[0] != inherited and not seen[0].exists()          # its own, removed
+    assert (inherited / "state.db").read_bytes() == b"the user's sessions"
+
+
+def test_verify_command_touches_nothing_when_it_cannot_make_a_home(monkeypatch, tmp_path):
+    import tempfile
+    inherited = tmp_path / "portable-verify-home-mine"
+    inherited.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(inherited))
+    seen = []
+    verify = _main_with_fake_verify(monkeypatch, seen)
+
+    def no_space(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(tempfile, "mkdtemp", no_space)
+    try:
+        verify.main(["--root", str(tmp_path), "--json"])
+    except OSError:
+        pass
+    else:
+        raise AssertionError("expected the OSError")
+    assert seen == [] and inherited.is_dir()
