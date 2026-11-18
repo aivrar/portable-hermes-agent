@@ -438,19 +438,41 @@ class StreamingBubble(tk.Frame):
         most every 100 ms, with all of it in one insert."""
         if self.activity is None:
             return
+        state = self.activity.state
         self.activity.add_thinking(text)
-        if self._refresh_id is None:
+        # With Show Thinking off only the change to "Thinking..." needs a
+        # redraw; the clock redraws the line every second anyway.
+        changed = self.activity.keep_thinking or self.activity.state != state
+        if changed and self._refresh_id is None:
             self._refresh_id = self.after(100, self.refresh_activity)
+
+    def _cancel_timers(self, names=("_refresh_id", "_blink_id")):
+        """Cancel the Tk after() calls this bubble has pending (all by default)."""
+        for name in names:
+            after_id = getattr(self, name, None)
+            setattr(self, name, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+
+    def destroy(self):
+        """Stop, New Chat, an error or a tool call can destroy a bubble with
+        a redraw or a cursor blink still pending."""
+        self._cursor_on = False
+        self._cancel_timers()
+        super().destroy()
 
     def refresh_activity(self):
         """Redraw the activity line (the clock calls this every second)."""
-        if self._refresh_id is not None:
-            try:
-                self.after_cancel(self._refresh_id)
-            except tk.TclError:
-                pass
-            self._refresh_id = None
+        self._cancel_timers(("_refresh_id",))
         if self._activity_view is None:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
             return
         try:
             if self.activity.header() is not None and not self._activity_view.winfo_ismapped():
@@ -480,6 +502,7 @@ class StreamingBubble(tk.Frame):
             self.activity.finish()
             self.refresh_activity()
         self._cursor_on = False
+        self._cancel_timers()
         try:
             self._cursor_lbl.destroy()
         except tk.TclError:
@@ -499,13 +522,14 @@ class StreamingBubble(tk.Frame):
         self._body.configure(state="disabled")
 
     def _blink(self):
+        self._blink_id = None
         if not self._cursor_on:
             return
         try:
             cur = self._cursor_lbl.cget("fg")
             self._cursor_lbl.configure(
                 fg=self._bg if cur != self._bg else C["info"])
-            self.after(500, self._blink)
+            self._blink_id = self.after(500, self._blink)
         except tk.TclError:
             pass
 

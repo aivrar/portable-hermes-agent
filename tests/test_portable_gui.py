@@ -574,6 +574,46 @@ def test_gui_streamed_reply_shows_exactly_the_whole_reply_styling_for_any_split(
 
 
 @pytest.mark.needs_core
+@pytest.mark.parametrize("keep_thinking", [True, False])
+def test_gui_destroying_a_bubble_cancels_its_pending_redraws(keep_thinking):
+    import time
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    errors = []
+    root.report_callback_exception = lambda *exc: errors.append(exc)
+    try:
+        def pending():
+            return set(root.tk.splitlist(root.tk.call("after", "info")))
+
+        bubble = app.StreamingBubble(root, ReplyActivity(keep_thinking=keep_thinking))
+        bubble.add_thinking("Let me check")             # waiting -> thinking: one redraw
+        owned = {bubble._refresh_id, bubble._blink_id}
+        assert None not in owned and owned <= pending()
+
+        bubble.refresh_activity()
+        bubble.add_thinking(" the cards")
+        # Off: nothing new to show (the clock moves the line); on: the text.
+        assert (bubble._refresh_id is not None) is keep_thinking
+
+        bubble.destroy()                                  # e.g. Stop within 100 ms
+        assert not (owned | {bubble._refresh_id}) & pending()
+        time.sleep(0.6)
+        root.update()
+        assert errors == []
+        bubble.refresh_activity()                         # a late call on a dead bubble
+        assert errors == []
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 def test_gui_reply_bubbles_show_bold_and_code_with_tags():
     import tkinter as tk
     from gui import app
