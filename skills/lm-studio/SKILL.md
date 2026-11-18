@@ -100,7 +100,7 @@ if results:
 
 ### Load a Model with GPU Selection
 ```python
-import lmstudio, time
+import lmstudio
 from lmstudio import LlmLoadModelConfig
 from lmstudio._sdk_models import GpuSetting
 
@@ -118,13 +118,14 @@ config = LlmLoadModelConfig(
     context_length=8192,     # Adjust based on model + VRAM
 )
 
+# No instance identifier: LM Studio names the instance after the model key,
+# so it shows (and is addressed) by its real name. handle.identifier has it.
 handle = client.llm.load_new_instance(
     "model-path-from-list-downloaded",
-    f"hermes-{int(time.time())}",
     config=config,
     ttl=3600,  # Auto-unload after 1 hour idle
 )
-print(f"Loaded! Context: {handle.get_context_length()}")
+print(f"Loaded {handle.identifier}! Context: {handle.get_context_length()}")
 ```
 
 ### Unload a Model (Free GPU Memory)

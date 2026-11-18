@@ -260,17 +260,20 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
             context_length=context_length,
         )
 
-        # Generate instance identifier (matches AgentNate's naming)
-        instance_id = f"hermes-{int(time.time())}"
-
-        logger.info("Loading model via SDK: %s (instance: %s)", model_path, instance_id)
+        # No instance identifier: LM Studio names the instance after the model
+        # key ("key:2" for a second copy), like the GUI's LM Studio panel, so
+        # the agent and the user see the real model name. Report the id LM
+        # Studio actually used; chat/unload/info take that id.
+        logger.info("Loading model via SDK: %s", model_path)
 
         handle = client.llm.load_new_instance(
             model_path,
-            instance_id,
             config=load_config,
             ttl=3600,  # 1 hour auto-unload
         )
+        instance_id = getattr(handle, "identifier", None)
+        if not isinstance(instance_id, str) or not instance_id:
+            instance_id = model_path
 
         # Store handle for later unload
         _sdk_handles[instance_id] = handle
