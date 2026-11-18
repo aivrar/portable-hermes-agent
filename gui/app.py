@@ -201,6 +201,7 @@ class MessageBubble(tk.Frame):
             img_data = resp.content
 
             img = Image.open(io.BytesIO(img_data))
+            img.load()                       # decode here, not on the Tk thread
 
             # Resize to fit chat area (max 400px wide, maintain aspect ratio)
             max_w = 400
@@ -208,12 +209,10 @@ class MessageBubble(tk.Frame):
                 ratio = max_w / img.width
                 img = img.resize((max_w, int(img.height * ratio)), Image.LANCZOS)
 
-            # Convert to tkinter-compatible image
-            tk_img = ImageTk.PhotoImage(img)
-
-            # Must update GUI from main thread
+            # Tk objects (the PhotoImage too) are made on the Tk thread only.
             def _show():
                 try:
+                    tk_img = ImageTk.PhotoImage(img)
                     loading_label.destroy()
                     img_label = tk.Label(frame, image=tk_img, bg=bg, cursor="hand2")
                     img_label.pack()

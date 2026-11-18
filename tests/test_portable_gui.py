@@ -2146,6 +2146,40 @@ def test_gui_callbacks_after_the_turn_ended_change_nothing(monkeypatch, exit_pat
     assert "late" not in _FakeReplyBubble.made[0].text
 
 
+@pytest.mark.needs_core
+def test_gui_inline_image_is_loaded_in_the_worker_and_shown_on_the_tk_thread(monkeypatch):
+    import io
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from gui import app, theme
+
+    if not app.HAS_PIL:
+        pytest.skip("requires Pillow")
+    png = io.BytesIO()
+    app.Image.new("RGB", (800, 200), "red").save(png, "PNG")
+    monkeypatch.setattr(app.httpx, "get", lambda *a, **k: SimpleNamespace(
+        content=png.getvalue(), raise_for_status=lambda: None))
+    made_on = []
+    monkeypatch.setattr(app.ImageTk, "PhotoImage",
+                        lambda img: made_on.append((threading.current_thread(), img.size)))
+    monkeypatch.setattr(app.tk, "Label", Mock())
+    monkeypatch.setattr(theme, "Tooltip", Mock())
+    posted = []
+    frame = SimpleNamespace(after=lambda ms, fn: posted.append(fn))
+    bubble = object.__new__(app.MessageBubble)
+    bubble._images = []
+
+    worker = threading.Thread(target=bubble._load_image,
+                              args=(frame, Mock(), "http://x/a.png", "alt", "#000"))
+    worker.start()
+    worker.join()
+    assert made_on == [] and len(posted) == 1          # nothing Tk made in the worker
+    posted[0]()                                         # what Tk runs on its own thread
+    assert made_on == [(threading.current_thread(), (400, 100))]   # resized in the worker
+    assert len(bubble._images) == 1
+
+
 def test_status_bar_clock_text():
     from types import SimpleNamespace
     from gui import app
