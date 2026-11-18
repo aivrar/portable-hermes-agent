@@ -7,6 +7,7 @@ closing the sign-in dialog cancels the sign-in.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -19,28 +20,39 @@ from gui.i18n import t
 from gui.reply_activity import clock
 from gui.theme import C, FONTS, S, SF, center_window, set_dark_title_bar
 
+_log = logging.getLogger("hermes.bridge")    # the GUI's log (bridge.log)
+
 
 class _Worker:
-    """Runs fn on a thread; the Tk thread gets on_done(result) via after().
+    """Runs fn on a thread; the Tk thread gets on_done(result), or
+    on_error(message) when fn raised (the traceback goes to the log, only
+    the message to the GUI), via after(). Every run ends in one of the two.
     stop() cancels the pending timer (the result is then dropped)."""
 
     def __init__(self, widget):
         self._widget = widget
         self._after_id = None
 
-    def run(self, fn, on_done):
+    def run(self, fn, on_done, on_error):
         self.stop()
         results = queue.SimpleQueue()
-        threading.Thread(target=lambda: results.put(fn()), daemon=True).start()
+
+        def work():
+            try:
+                results.put((True, fn()))
+            except Exception as exc:
+                _log.warning("accounts: a background step failed", exc_info=True)
+                results.put((False, str(exc) or type(exc).__name__))
+        threading.Thread(target=work, daemon=True).start()
 
         def check():
             try:
-                result = results.get_nowait()
+                ok, value = results.get_nowait()
             except queue.Empty:
                 self._after_id = self._widget.after(100, check)
                 return
             self._after_id = None
-            on_done(result)
+            (on_done if ok else on_error)(value)
         self._after_id = self._widget.after(100, check)
 
     @property
@@ -96,10 +108,16 @@ class AccountsWindow(tk.Toplevel):
 
     def refresh(self):
         self._draw()
-        self._worker.run(lambda: {p: core.status(p) for p in self.names}, self._statuses)
+        self._worker.run(lambda: {p: core.status(p) for p in self.names}, self._statuses,
+                         self._failed)
 
     def _statuses(self, connected):
         self.connected = connected
+        self._draw()
+
+    def _failed(self, message):
+        self.connected = {p: False for p in self.names}
+        self.note.configure(text=t("accounts.error", error=message))
         self._draw()
 
     def _draw(self):
@@ -142,9 +160,10 @@ class AccountsWindow(tk.Toplevel):
         if self.active_account() == provider:
             self.note.configure(text=t("accounts.disconnect_in_use", name=name))
             return
-        core.disconnect(provider)
-        self.note.configure(text=t("accounts.disconnected", name=name))
-        self.refresh()
+        def done(_cleared):
+            self.note.configure(text=t("accounts.disconnected", name=name))
+            self.refresh()
+        self._worker.run(lambda: core.disconnect(provider), done, self._failed)
 
 
 class _Start:
@@ -238,7 +257,8 @@ class SignInDialog(tk.Toplevel):
         self._label(t("accounts.starting", name=self.name))
         self._buttons((t("accounts.cancel"), self.destroy))
         self._signing_in = _Start(self.provider)
-        self._worker.run(self._signing_in.run, self._started)
+        self._worker.run(self._signing_in.run, self._started,
+                         lambda message: self._show_failed(t("accounts.failed", error=message)))
 
     def _started(self, result):
         if not result.get("session"):
@@ -276,7 +296,12 @@ class SignInDialog(tk.Toplevel):
         self._tick_id = None
         left = max(0.0, self.deadline - self.now())
         self.waiting.configure(text=t("accounts.waiting", time=clock(left)))
-        state, message = core.poll(self.session)
+        try:
+            state, message = core.poll(self.session)
+        except Exception as exc:    # the wait ends; the sign-in is cancelled
+            _log.warning("accounts: polling the sign-in failed", exc_info=True)
+            core.cancel(self.session)
+            state, message = "error", str(exc) or type(exc).__name__
         if state == "pending" and left <= 0:
             core.cancel(self.session)
             state = "expired"
@@ -309,7 +334,8 @@ class SignInDialog(tk.Toplevel):
         self._label(heading, fg=C["success"], pady=(0, 12))
         self._label(t("accounts.loading_models"), font=FONTS["small"], fg=C["text_hint"])
         self._buttons((t("accounts.close"), self.destroy))
-        self._worker.run(lambda: self._load_models(self.provider), self._models_loaded)
+        self._worker.run(lambda: self._load_models(self.provider), self._models_loaded,
+                         lambda _message: self._models_loaded(([], "")))
 
     @staticmethod
     def _load_models(provider):

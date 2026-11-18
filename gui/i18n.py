@@ -81,6 +81,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.account_rejected": "{name} cannot use {model}: {error}",
         "chat.model_save_failed": "Could not switch to {model}: {error}",
         "accounts.busy": "Wait until the reply or the model change has finished.",
+        "accounts.error": "Something went wrong: {error}",
         "wizard.accounts_hint": "Have a ChatGPT or Grok subscription? Use {menu} instead of a key.",
 
         # Sidebar
@@ -547,6 +548,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.account_rejected": "{name} 無法使用 {model}：{error}",
         "chat.model_save_failed": "無法切換至 {model}：{error}",
         "accounts.busy": "請等待回覆或模型切換完成。",
+        "accounts.error": "發生錯誤：{error}",
         "wizard.accounts_hint": "擁有 ChatGPT 或 Grok 訂閱？請改用 {menu}，無需金鑰。",
 
         # Sidebar
@@ -1013,6 +1015,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.account_rejected": "{name} 无法使用 {model}：{error}",
         "chat.model_save_failed": "无法切换到 {model}：{error}",
         "accounts.busy": "请等待回复或模型切换完成。",
+        "accounts.error": "出现错误：{error}",
         "wizard.accounts_hint": "拥有 ChatGPT 或 Grok 订阅？请改用 {menu}，无需密钥。",
 
         # Sidebar
@@ -1479,6 +1482,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "chat.account_rejected": "{name} no puede usar {model}: {error}",
         "chat.model_save_failed": "No se pudo cambiar a {model}: {error}",
         "accounts.busy": "Espera a que terminen la respuesta o el cambio de modelo.",
+        "accounts.error": "Algo salió mal: {error}",
         "wizard.accounts_hint": "¿Tienes una suscripción de ChatGPT o Grok? Usa {menu} en lugar de una clave.",
 
         # Sidebar

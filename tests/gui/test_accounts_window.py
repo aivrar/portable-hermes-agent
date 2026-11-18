@@ -110,7 +110,8 @@ def test_window_rows_follow_the_status(tk_root, monkeypatch):
     window._disconnect("openai-codex")                  # in use for chat: refused
     assert ("disconnect", "openai-codex") not in fake_core.calls
     assert "in use for chat" in window.note.cget("text")
-    window._disconnect("xai-oauth")
+    window._disconnect("xai-oauth")                      # on the worker, not the Tk thread
+    pump(tk_root, lambda: "disconnected" in window.note.cget("text"))
     assert ("disconnect", "xai-oauth") in fake_core.calls
     window.destroy()
     assert not window._worker.busy
@@ -221,7 +222,7 @@ def test_accounts_strings_exist_in_every_language():
     keys = {k for k in TRANSLATIONS["en"] if k.startswith("accounts.")} | {
         "menu.accounts", "chat.account_in_use", "chat.account_rejected", "wizard.accounts_hint",
         "chat.model_save_failed"}
-    assert len(keys) == 33
+    assert len(keys) == 34
     for lang, table in TRANSLATIONS.items():
         for key in keys:
             fields = [f for f in ("{name}", "{model}", "{time}", "{error}", "{command}", "{menu}")
@@ -265,4 +266,51 @@ def test_disconnect_is_refused_while_a_reply_or_model_work_runs(tk_root, monkeyp
     window._disconnect("xai-oauth")
     assert ("disconnect", "xai-oauth") not in fake_core.calls
     assert window.note.cget("text") == "Wait until the reply or the model change has finished."
+    window.destroy()
+
+
+def _boom(*_args):
+    raise RuntimeError("core changed its mind")
+
+
+def test_a_failing_step_ends_the_wait_with_a_plain_message(tk_root, monkeypatch):
+    fake_core = FakeCore(monkeypatch, states=[("approved", "")])
+    monkeypatch.setattr(core, "default_model", _boom)              # after sign-in, models step fails
+    dialog, used, _ = _dialog(tk_root)
+    pump(tk_root, lambda: "Try again" in texts(dialog) and dialog.state == "models")
+    shown = " ".join(texts(dialog))
+    assert "Could not load the model list" in shown and "Traceback" not in shown
+    assert not dialog._worker.busy and dialog._tick_id is None and used == []
+    dialog.destroy()
+
+    monkeypatch.setattr(core, "start_sign_in", _boom)              # the start itself fails
+    dialog, _, _ = _dialog(tk_root)
+    pump(tk_root, lambda: dialog.state == "failed")
+    assert "Sign-in failed: core changed its mind" in texts(dialog) and not dialog._worker.busy
+    dialog.destroy()
+
+
+def test_a_failing_poll_cancels_and_stops_polling(tk_root, monkeypatch):
+    fake_core = FakeCore(monkeypatch)
+    dialog, _, _ = _dialog(tk_root)
+    pump(tk_root, lambda: dialog.state == "waiting")
+    monkeypatch.setattr(core, "poll", _boom)
+    dialog._stop_tick()
+    dialog._tick()
+    assert dialog.state == "failed" and dialog._tick_id is None
+    assert ("cancel", "s1") in fake_core.calls
+    assert "Sign-in failed: core changed its mind" in texts(dialog)
+    dialog.destroy()
+
+
+def test_a_failing_disconnect_says_so(tk_root, monkeypatch):
+    from gui.accounts_window import AccountsWindow
+    FakeCore(monkeypatch)
+    monkeypatch.setattr(core, "disconnect", _boom)
+    window = AccountsWindow(tk_root, on_use=lambda p, m: None)
+    pump(tk_root, lambda: window.connected)
+    window._disconnect("openai-codex")
+    pump(tk_root, lambda: window.note.cget("text"))
+    assert window.note.cget("text") == "Something went wrong: core changed its mind"
+    assert not window._worker.busy
     window.destroy()
