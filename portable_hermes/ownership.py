@@ -147,6 +147,7 @@ REQUIRED_RELEASE_FILES = frozenset({
     "assets/SOUL.md",
     "docs/hermes-guide.md",
     "gui/__init__.py",
+    "gui/accounts_core.py",
     "gui/agent_bridge.py",
     "gui/api_setup_wizard.py",
     "gui/app.py",
