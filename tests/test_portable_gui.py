@@ -325,11 +325,25 @@ def test_gui_sidebar_hides_sessions_without_messages():
     assert [s["id"] for s in sidebar._sessions_data] == ["chat_session"]
 
 
+def _installed_core_is_legacy():
+    """True on cores without persistence_assembly (the last-known-good core
+    the required CI runs against); False on current cores."""
+    import importlib.util
+    return importlib.util.find_spec("persistence_assembly") is None
+
+
 @pytest.mark.needs_core
-def test_gui_current_core_is_opened_through_the_storage_interface():
+def test_gui_opens_the_installed_core_store_the_way_its_agent_takes_it():
+    import inspect
+    from run_agent import AIAgent
+
+    legacy = _installed_core_is_legacy()
+    print("installed core shape:", "SessionDB" if legacy else "storage interface")
     with _store() as store:
-        assert store.legacy is False
-        assert set(store.agent_kwargs()) == {"persistence"}
+        assert store.legacy is legacy
+        keyword, = store.agent_kwargs()
+        assert keyword == ("session_db" if legacy else "persistence")
+        assert keyword in inspect.signature(AIAgent.__init__).parameters
 
 
 def _legacy_core(monkeypatch, session_db_class):
@@ -967,10 +981,12 @@ def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_pat
         with pytest.raises(RuntimeError):
             bridge._create_agent()
 
-        # The agent gets the id and the store (persistence= on this core), and
-        # creates the row on its first turn.
+        # The agent gets the id and the store (persistence= on current cores,
+        # session_db= on older ones), and creates the row on its first turn.
         assert captured["session_id"] == bridge.session_id
-        assert captured["persistence"] is db.handle and "session_db" not in captured
+        keyword, other = (("session_db", "persistence") if _installed_core_is_legacy()
+                          else ("persistence", "session_db"))
+        assert captured[keyword] is db.handle and other not in captured
         assert captured["platform"] == "gui"
         assert _row(db, bridge.session_id) is None
     finally:

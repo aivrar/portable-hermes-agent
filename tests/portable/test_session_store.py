@@ -103,6 +103,129 @@ def test_a_broken_storage_interface_is_not_mistaken_for_an_older_core(monkeypatc
         session_store.open_store()
 
 
+class OldCoreSessionDB:
+    """In-memory hermes_state.SessionDB with the exact signatures of the
+    last-known-good core (8d285687): hermes_state.py:584 (__init__),
+    1510/1523/1527 (__enter__/__exit__/close); hermes_state_sessions.py:418
+    create_session, 479 end_session, 521 reopen_session, 836 get_session,
+    1309 list_sessions_rich, 1713 delete_session; hermes_state_messages.py:397
+    append_message, 1522 get_messages_as_conversation. Results have the
+    shapes those methods return (rows with "id" and "message_count", bool
+    from delete_session, OpenAI-format messages)."""
+
+    instances: list = []
+
+    def __init__(self, db_path=None, read_only=False):
+        self.db_path, self.sessions, self.closed = db_path, {}, False
+        OldCoreSessionDB.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
+    def close(self):
+        self.closed = True
+
+    def create_session(self, session_id, source, **kwargs):
+        self.sessions[session_id] = {"id": session_id, "source": source, "messages": [],
+                                     "ended_at": None, "end_reason": None, **kwargs}
+        return session_id
+
+    def end_session(self, session_id, end_reason):
+        self.sessions[session_id].update(ended_at=1.0, end_reason=end_reason)
+
+    def reopen_session(self, session_id):
+        self.sessions[session_id].update(ended_at=None, end_reason=None)
+
+    def get_session(self, session_id):
+        row = self.sessions.get(session_id)
+        return None if row is None else {k: v for k, v in row.items() if k != "messages"}
+
+    def list_sessions_rich(self, source=None, sources=None, exclude_sources=None,
+                           cwd_prefix=None, limit=20, offset=0, include_children=False,
+                           min_message_count=0, project_compression_tips=True,
+                           order_by_last_active=False, include_archived=False,
+                           archived_only=False, id_query=None, search_query=None,
+                           compact_rows=False, include_pinned=False, session_key=None,
+                           include_hidden=False, include_subagents=False,
+                           local_created_sources=None, workspace_key=None):
+        rows = [dict(self.get_session(sid), message_count=len(row["messages"]))
+                for sid, row in reversed(list(self.sessions.items()))]
+        return [r for r in rows if r["message_count"] >= min_message_count][offset:offset + limit]
+
+    def delete_session(self, session_id, sessions_dir=None, expected_delete_ids=None,
+                       expected_display_messages=None, exclude_active_write_guards=False,
+                       include_compression_chain=False):
+        return self.sessions.pop(session_id, None) is not None
+
+    def append_message(self, session_id, role, content=None, tool_name=None, tool_calls=None,
+                       tool_call_id=None, token_count=None, finish_reason=None, reasoning=None,
+                       reasoning_content=None, reasoning_details=None,
+                       codex_reasoning_items=None, codex_message_items=None,
+                       platform_message_id=None, observed=False, effect_disposition=None,
+                       _compressed_summary=False, timestamp=None, api_content=None,
+                       display_kind=None, display_metadata=None, compression_lock_holder=None,
+                       turn_lease_holder=None, turn_lease_ttl_seconds=300.0, message_uid=None):
+        self.sessions[session_id]["messages"].append({"role": role, "content": content})
+        return len(self.sessions[session_id]["messages"])
+
+    def get_messages_as_conversation(self, session_id, include_ancestors=False,
+                                     include_inactive=False, repair_alternation=False,
+                                     include_row_ids=False, include_compacted=False):
+        row = self.sessions.get(session_id)
+        return [] if row is None else [dict(m) for m in row["messages"]]
+
+
+class OldCoreAgent:
+    """run_agent.AIAgent.__init__ of the last-known-good core as the check sees
+    it: it takes session_db=, has no persistence= and no **kwargs
+    (run_agent.py:236, 88 named parameters, abridged here)."""
+
+    def __init__(self, base_url=None, api_key=None, model="", session_id=None,
+                 session_db=None, parent_session_id=None, platform=None):
+        pass
+
+
+@pytest.fixture
+def old_core(monkeypatch):
+    """A core shaped like the last-known-good one: no persistence_assembly."""
+    monkeypatch.setitem(sys.modules, "persistence_assembly", None)
+    _module(monkeypatch, "hermes_state", SessionDB=OldCoreSessionDB)
+    _module(monkeypatch, "run_agent", AIAgent=OldCoreAgent)
+    OldCoreSessionDB.instances = []
+
+
+def test_core_check_passes_on_a_core_shaped_like_the_last_known_good_one(old_core, tmp_path):
+    from portable_hermes import verify
+
+    ok, detail = verify.check_session_store(tmp_path)[:2]
+
+    assert ok, detail
+    assert detail == "SessionDB: create, list, read, end, reopen and delete a session"
+    db, = OldCoreSessionDB.instances
+    assert db.db_path == tmp_path / "state.db" and db.closed and db.sessions == {}
+
+
+def test_gui_operations_on_a_core_shaped_like_the_last_known_good_one(old_core, tmp_path):
+    import inspect
+    with session_store.open_store(tmp_path) as store:
+        assert store.legacy and set(store.agent_kwargs()) == {"session_db"}
+        assert set(store.agent_kwargs()) <= set(inspect.signature(OldCoreAgent).parameters)
+        store.create("empty", "gui", model="m")
+        store.create("chat", "gui", model="m")
+        store.append("chat", "user", "hello")
+        assert [s["id"] for s in store.list_with_messages(limit=20)] == ["chat"]
+        assert store.conversation("chat") == [{"role": "user", "content": "hello"}]
+        store.end("chat", "new_chat")
+        assert store.handle.get_session("chat")["end_reason"] == "new_chat"
+        store.reopen("chat")
+        assert store.handle.get_session("chat")["ended_at"] is None
+        assert store.delete("chat") is True and store.delete("chat") is False
+
+
 # -- current core: persistence_assembly ------------------------------------------
 
 class FakeHandle:
@@ -221,6 +344,14 @@ def _snapshot(folder):
             for p in folder.rglob("*")}
 
 
+def _installed_core_shape():
+    """"storage interface" (current cores) or "SessionDB" (older cores, such
+    as the last-known-good one the required CI runs against)."""
+    import importlib.util
+    return ("storage interface" if importlib.util.find_spec("persistence_assembly")
+            else "SessionDB")
+
+
 @pytest.mark.needs_core
 def test_core_check_runs_a_whole_session_on_the_installed_core(monkeypatch, tmp_path):
     """The real core, run the way verify() runs it: HERMES_HOME and the store
@@ -242,8 +373,10 @@ def test_core_check_runs_a_whole_session_on_the_installed_core(monkeypatch, tmp_
     ok, detail = verify.check_session_store(throwaway)[:2]
     elapsed = time.perf_counter() - started
 
+    shape = _installed_core_shape()
+    print(f"installed core shape: {shape}")
     assert ok, detail
-    assert detail.startswith("storage interface:")      # this core has persistence_assembly
+    assert detail.startswith(f"{shape}:")
     assert (throwaway / "state.db").is_file()
     with session_store.open_store(throwaway) as store:
         assert store.list_with_messages() == []
@@ -252,7 +385,7 @@ def test_core_check_runs_a_whole_session_on_the_installed_core(monkeypatch, tmp_
 
 
 class _BrokenStore:
-    """A store that writes but cannot read the session back."""
+    """A storage-interface store that writes but cannot read the session back."""
 
     legacy = False
 
@@ -281,11 +414,21 @@ class _BrokenStore:
         return []
 
 
+class _CurrentAgent:
+    """AIAgent.__init__ of a core with the storage interface (the parameters
+    the check looks at), so these tests do not depend on the installed core."""
+
+    def __init__(self, model=None, session_db=None, persistence=None):
+        pass
+
+
 @pytest.mark.needs_core
 def test_core_check_refuses_a_store_that_loses_sessions(monkeypatch, tmp_path):
+    import run_agent
     from portable_hermes import verify
 
     monkeypatch.setattr(session_store, "open_store", _BrokenStore)
+    monkeypatch.setattr(run_agent, "AIAgent", _CurrentAgent)
     ok, detail = verify.check_session_store(tmp_path)[:2]
     assert not ok and detail == "storage interface: a new session with messages is not listed"
 
