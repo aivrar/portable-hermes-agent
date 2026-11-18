@@ -1080,6 +1080,73 @@ def test_gui_turn_survives_an_agent_build_that_yields_nothing(monkeypatch):
     assert bridge.is_running is False and bridge.conversation_history == HISTORY
 
 
+def _core_context_refusal():
+    """The core's own error for a 32K LM Studio window (agent construction)."""
+    from agent import agent_init
+    agent = SimpleNamespace(
+        model="gemma-4-e4b-it", provider="custom", base_url="http://127.0.0.1:1234/v1",
+        context_compressor=SimpleNamespace(context_length=32768),
+        _ollama_num_ctx=None, _config_context_length=None)
+    try:
+        agent_init._enforce_minimum_context(agent)
+    except ValueError as e:
+        return e
+    raise AssertionError("the core accepted a 32K window")
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("provider, hint", [("local", True), ("cloud", False)])
+def test_gui_error_bubble_shows_the_message_and_logs_the_traceback(monkeypatch, provider, hint):
+    import logging
+    from gui import agent_bridge
+    from gui.i18n import t
+    from gui.lm_studio import MINIMUM_CONTEXT_LENGTH
+    import tools.terminal_tool as terminal_tool
+
+    refusal = _core_context_refusal()
+
+    def build():
+        raise refusal
+
+    errors, records = [], []
+    bridge = _new_chat_bridge(None, HISTORY)
+    bridge.__dict__.update(root=SimpleNamespace(after=lambda _ms, fn: fn()),
+                           on_error=errors.append, _interrupted=False,
+                           _is_model_configured=lambda: True, _create_agent=build,
+                           get_model=lambda: "gemma-4-e4b-it", _active_provider=provider)
+    monkeypatch.setattr(terminal_tool, "set_approval_callback", lambda cb: None)
+    capture = logging.Handler()
+    capture.emit = records.append
+    logging.getLogger("hermes.bridge").addHandler(capture)
+    try:
+        bridge.is_running = True
+        agent_bridge.AgentBridge._run_agent(bridge, "hi")
+    finally:
+        logging.getLogger("hermes.bridge").removeHandler(capture)
+
+    bubble = errors[0]
+    assert bubble.startswith(f"Error: {refusal}")
+    assert "Traceback" not in bubble and "File \"" not in bubble
+    log_path = str(agent_bridge.get_hermes_home() / "logs" / "bridge.log")
+    assert bubble.endswith(t("chat.error_details_in_log", path=log_path))
+    reload_hint = t("chat.error_reload_with_context", tokens=f"{MINIMUM_CONTEXT_LENGTH:,}")
+    assert (reload_hint in bubble) is hint
+    logged = [r for r in records if r.exc_info]
+    assert logged and logged[0].exc_info[1] is refusal       # the traceback is in bridge.log
+    assert bridge.is_running is False
+
+
+@pytest.mark.needs_core
+def test_gui_reload_hint_needs_the_core_minimum_not_just_any_value_error():
+    from gui import agent_bridge
+    bridge = _new_chat_bridge(None, HISTORY)
+    bridge._active_provider = "local"
+    assert agent_bridge.AgentBridge._context_too_small(bridge, _core_context_refusal())
+    assert not agent_bridge.AgentBridge._context_too_small(bridge, ValueError("bad model name"))
+    assert not agent_bridge.AgentBridge._context_too_small(
+        bridge, RuntimeError(str(_core_context_refusal())))
+
+
 @pytest.mark.needs_core
 @pytest.mark.parametrize("switch", ["set_cloud_mode", "set_local_mode"])
 def test_gui_model_switch_drops_a_pending_resume(switch):

@@ -9,7 +9,6 @@ import re
 import uuid
 import queue
 import threading
-import traceback
 import time
 from pathlib import Path
 from datetime import datetime
@@ -828,13 +827,7 @@ You are running on **{os_name} {os_release}**.
         try:
             self._run_agent_turn(message, image_paths)
         except Exception as e:
-            error_msg = f"Error: {e}\n{traceback.format_exc()}"
-            try:
-                import logging
-                logging.getLogger("hermes.bridge").error("run_agent EXCEPTION: %s", error_msg)
-            except Exception:
-                pass
-            self._post(self.on_error, error_msg)
+            self._post(self.on_error, self._error_text(e))
         finally:
             try:
                 from tools.terminal_tool import set_approval_callback
@@ -842,6 +835,37 @@ You are running on **{os_name} {os_release}**.
             except Exception:
                 pass
             self._end_turn()
+
+    def _error_text(self, error):
+        """The chat bubble for a failed turn: the message only. The traceback
+        goes to bridge.log, and the bubble ends by saying where it is."""
+        from gui.i18n import t
+        log_path = "bridge.log"
+        try:
+            self._bridge_log().error("run_agent EXCEPTION: %s", error, exc_info=error)
+            log_path = str(get_hermes_home() / "logs" / "bridge.log")
+        except Exception:
+            pass
+        parts = [f"Error: {error}"]
+        minimum = self._context_too_small(error)
+        if minimum:
+            parts.append(t("chat.error_reload_with_context", tokens=f"{minimum:,}"))
+        parts.append(t("chat.error_details_in_log", path=log_path))
+        return "\n\n".join(parts)
+
+    def _context_too_small(self, error):
+        """The minimum context if *error* is the core refusing to build an
+        agent for LM Studio because the loaded window is below it, else None.
+
+        The core raises a plain ValueError quoting MINIMUM_CONTEXT_LENGTH
+        (agent_init._enforce_minimum_context), so match on that number while
+        no agent could be built, not on the wording."""
+        if self._active_provider != "local" or self.agent is not None:
+            return None
+        if not isinstance(error, ValueError):
+            return None
+        from gui.lm_studio import MINIMUM_CONTEXT_LENGTH
+        return MINIMUM_CONTEXT_LENGTH if f"{MINIMUM_CONTEXT_LENGTH:,}" in str(error) else None
 
     def _end_turn(self):
         """Last step of the worker: hand the agent back to the Tk thread.
