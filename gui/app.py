@@ -1730,7 +1730,8 @@ class HermesGUI:
     _chat_title_kind = "new"     # "new" or "resumed": the header until a title is known
     _chat_title_text = None      # the session's title once it has one
     _turn_clock_id = None        # the running reply's per-second clock (Tk after id)
-    _follow_reply = True         # keep the running reply's bottom in view
+    _follow_reply = True         # keep the chat's bottom in view (the user did not scroll up)
+    _scroll_id = None            # the one pending _do_scroll
 
     def __init__(self):
         self.root = tk.Tk()
@@ -2158,7 +2159,9 @@ class HermesGUI:
     def _add_msg(self, text, msg_type, tool_name=None):
         w = MessageBubble(self.msg_frame, text, msg_type=msg_type, tool_name=tool_name)
         w.pack(fill="x")
-        self._scroll_bottom()
+        # The user's own message always shows; anything else (a refusal
+        # notice during a reply...) only if they did not scroll up.
+        self._scroll_bottom(force=msg_type == "user")
 
     def _scrollbar_moved(self, *args):
         self.msg_canvas.yview(*args)
@@ -2177,12 +2180,21 @@ class HermesGUI:
         if self._stream_bubble is not None and self._follow_reply:
             self.msg_canvas.yview_moveto(1.0)
 
-    def _scroll_bottom(self):
-        def _do_scroll():
-            self.msg_canvas.update_idletasks()
-            self.msg_canvas.configure(scrollregion=self.msg_canvas.bbox("all"))
-            self.msg_canvas.yview_moveto(1.0)
-        self.root.after(10, _do_scroll)
+    def _scroll_bottom(self, force=False):
+        """Scroll to the bottom shortly, once however often asked, and only
+        if the user is still following when it runs (force: follow again)."""
+        if force:
+            self._follow_reply = True
+        if self._scroll_id is None:
+            self._scroll_id = self.root.after(10, self._do_scroll)
+
+    def _do_scroll(self):
+        self._scroll_id = None
+        if not self._follow_reply:       # the user scrolled up meanwhile
+            return
+        self.msg_canvas.update_idletasks()
+        self.msg_canvas.configure(scrollregion=self.msg_canvas.bbox("all"))
+        self.msg_canvas.yview_moveto(1.0)
 
     # ---- Callbacks ----
 
@@ -2405,6 +2417,7 @@ class HermesGUI:
         self._stream_bubble = None
         for w in self.msg_frame.winfo_children():
             w.destroy()
+        self._follow_reply = True            # an empty chat: nothing scrolled up
         self._set_chat_title("new")
         self.status_bar.set_ready()
         self._add_msg(t("chat.session_started", "New session started."), "system")
@@ -2467,6 +2480,7 @@ class HermesGUI:
             # Clear current chat
             for w in self.msg_frame.winfo_children():
                 w.destroy()
+            self._follow_reply = True        # show the loaded session's end
 
             self._show_session_title(session_id, "resumed")
 

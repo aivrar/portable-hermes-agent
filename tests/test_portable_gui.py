@@ -2296,6 +2296,47 @@ def test_gui_a_reply_without_a_line_keeps_no_activity_widget(monkeypatch):
         root.destroy()
 
 
+def _run_queued_scrolls(gui):
+    """Run the delayed scrolls now (the 10 ms after() calls)."""
+    for after_id in [i for i, (ms, _fn) in gui.root.pending.items() if ms == 10]:
+        gui.root.run(after_id)
+
+
+@pytest.mark.needs_core
+def test_gui_a_queued_scroll_rechecks_that_the_user_still_follows(monkeypatch):
+    gui = _replying_gui(monkeypatch)
+    canvas = gui.msg_canvas
+    _run_queued_scrolls(gui)
+    canvas.yview.return_value = (0.7, 1.0)
+
+    def queued():
+        return [ms for ms, _fn in gui.root.pending.values() if ms == 10]
+
+    def moved_on_run():
+        canvas.yview_moveto.reset_mock()
+        _run_queued_scrolls(gui)
+        return canvas.yview_moveto.call_args_list == [((1.0,),)]
+
+    for token in ("a", "b", "c"):
+        gui._on_stream_delta(token)
+    assert queued() == [10]                            # one pending scroll, not one per token
+    assert moved_on_run()
+
+    gui._on_stream_delta("d")                          # queued while following...
+    canvas.yview.return_value = (0.2, 0.6)             # ...then the user scrolls up
+    gui._note_user_scroll()
+    assert not moved_on_run()                          # it does not pull them down
+
+    from unittest.mock import Mock
+    from gui import app
+    monkeypatch.setattr(app, "MessageBubble", Mock())
+    add_msg = app.HermesGUI._add_msg                   # the fixture stubs gui._add_msg
+    add_msg(gui, "Wait for this reply to finish first.", "system")   # a refusal notice
+    assert not moved_on_run()
+    add_msg(gui, "my next question", "user")           # their own message always shows
+    assert moved_on_run() and gui._follow_reply
+
+
 @pytest.mark.needs_core
 def test_gui_a_running_reply_stays_in_view_unless_the_user_scrolled_up(monkeypatch):
     gui = _replying_gui(monkeypatch)
@@ -2314,7 +2355,7 @@ def test_gui_a_running_reply_stays_in_view_unless_the_user_scrolled_up(monkeypat
     canvas.yview.return_value = (0.2, 0.6)           # the user scrolls up to read
     gui._note_user_scroll()
     assert not followed()
-    gui.root.pending.clear()
+    _run_queued_scrolls(gui)
     gui._on_stream_delta("more answer")
     gui._on_tool_call("gpu_info", "{}")
     assert scrolls_queued() == []                     # not pulled back down
