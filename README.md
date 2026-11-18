@@ -8,9 +8,46 @@
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Language-Urdu-green?style=for-the-badge" alt="Urdu"></a>
 </p>
 
-**Portable AI agent desktop for Windows** — 100 tools, GUI, local models via LM Studio, TTS, Music, ComfyUI, workflows, tool maker. No install. No Docker. No admin rights.
+<p align="center">
+  <b>An AI agent with a desktop app, in one folder, for Windows.</b><br>
+  Unzip, double-click <code>START.bat</code>, chat. No installer, no Docker, no admin rights.
+</p>
 
-Built on [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT License) with extensive customization for non-technical users.
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/releases/latest"><img src="https://img.shields.io/github/v/release/aivrar/portable-hermes-agent?label=download" alt="Latest release"></a>
+  <a href="https://github.com/aivrar/portable-hermes-agent/actions/workflows/portable-integrity.yml"><img src="https://img.shields.io/github/actions/workflow/status/aivrar/portable-hermes-agent/portable-integrity.yml?branch=main&label=tests" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6" alt="Windows 10 and 11">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki"><img src="https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/hero.gif" alt="Portable Hermes Agent: chat with tools, the LM Studio panel, GPU choices, permissions, extensions and the API key wizard" width="900"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/aivrar/portable-hermes-agent/releases/latest"><b>Download</b></a> ·
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki/Getting-Started">Getting started</a> ·
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki">Wiki</a> ·
+  <a href="https://github.com/aivrar/portable-hermes-agent/wiki/Troubleshooting">Troubleshooting</a> ·
+  <a href="https://github.com/aivrar/portable-hermes-agent/discussions">Discussions</a>
+</p>
+
+Portable Hermes Agent is [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) (MIT License) packaged for people who do not want to set up Python: a desktop GUI, 100 tools, local models through LM Studio, speech, music and image generation, workflows and a tool maker. Everything lives in the folder you extract; delete the folder and it is gone.
+
+## Start in three steps
+
+1. **Download** `portable-hermes-agent-v*.zip` from the [latest release](https://github.com/aivrar/portable-hermes-agent/releases/latest) and extract it to a normal folder such as `C:\PortableHermes`. Use that file, not the green **Code > Download ZIP** button.
+2. **Double-click `START.bat`.** The first start downloads Python and the newest Hermes Agent into the folder (internet needed, typically a few minutes), then opens the app.
+3. **Connect a model.** Paste a free [OpenRouter](https://openrouter.ai) key in the setup wizard, or open **Tools > LM Studio** to use a model on your own GPU.
+
+To update later, close Hermes and double-click `UPDATE.bat`. Your keys, settings, chats and files are not touched. Details are under [Quick Start](#quick-start) and in the [wiki](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated).
+
+## What it looks like
+
+| | |
+|---|---|
+| [![Chat with a tool call](https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/main-chat.png)](https://github.com/aivrar/portable-hermes-agent/wiki/The-Interface)<br>**Chat.** Hermes answers and uses tools (here `gpu_info`). Sessions are kept in the sidebar. | [![LM Studio panel with the GPU choices](https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/gpu-choices.png)](https://github.com/aivrar/portable-hermes-agent/wiki/LM-Studio-Guide)<br>**Local models.** Load a model from LM Studio on one card, across all cards, or in RAM. |
+| [![Permissions panel](https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/permissions.png)](https://github.com/aivrar/portable-hermes-agent/wiki/Permissions)<br>**Permissions.** You set how far the agent may read, write, install, run and delete. | [![Extensions manager](https://raw.githubusercontent.com/wiki/aivrar/portable-hermes-agent/images/extensions.png)](https://github.com/aivrar/portable-hermes-agent/wiki/Extensions-Overview)<br>**Extensions.** One-click speech, music and image servers, also portable. |
 
 ---
 
@@ -95,6 +132,9 @@ From PowerShell, run `.\START.bat` (or `.\install.bat` for setup only). Upstream
 
 On first launch, `START.bat` runs the portable setup automatically. It downloads embedded Python 3.14, the **latest Hermes Agent core from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)**, its exact pinned dependencies, and the LM Studio SDK into this folder only. No admin rights are needed. The new core is checked in a separate process (portable tools, CLI and GUI tool selection, GUI modules) before setup reports success.
 
+<details>
+<summary><b>Setup options</b> (manual and unattended setup, pinning a core version)</summary>
+
 Manual setup:
 ```batch
 install.bat
@@ -106,6 +146,8 @@ install.bat --yes
 ```
 
 A first-time setup installs only exact, hash-checked dependency versions from the core's `uv.lock`. If the newest upstream core has no usable lock or cannot run in the portable runtime, setup falls back to the last upstream version this release has verified. To pin a specific upstream version, set `HERMES_PORTABLE_CORE_REF` (a branch, tag, or commit) or `HERMES_PORTABLE_CORE_ZIP` (a downloaded upstream source ZIP) before running `install.bat`.
+
+</details>
 
 If setup is interrupted (window closed, network lost), the next `START.bat`, `hermes.bat` or `hermes_gui.bat` runs setup again before starting Hermes.
 
@@ -134,6 +176,11 @@ UPDATE.bat
 
 1. **Wrapper:** downloads the latest Portable Hermes release, checks the hash of every file, replaces only wrapper files, checks that the result starts, and rolls back if anything fails.
 2. **Core:** shows how many upstream commits behind your core is and asks `Update the Hermes core now? [y/N]`.
+
+Never touched by either update: `.env`, `cli-config.yaml`, your Hermes home folder (chats, settings, custom tools), `extensions\`, `workflows\` and `workspace\`. If an update fails, it is rolled back. Coming from v1.4.18 or older, run `UPDATE.bat` twice: the first run installs the new launchers and asks for the second. The full guide is [Keeping Portable Hermes Updated](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated).
+
+<details>
+<summary><b>Update details</b> (unattended options, the Python upgrade, how an update protects your install, git clones)</summary>
 
 Unattended: `UPDATE.bat --yes` updates the wrapper only; `UPDATE.bat --yes --core` updates both; `UPDATE.bat --yes --no-core` never touches the core. `hermes.bat update ...` accepts the same options.
 
@@ -169,6 +216,8 @@ Most users do not need daily updates. Run `UPDATE.bat` when a release, fix, or s
 
 **Git clones** (developers): this repository holds only the portable wrapper. Run `START.bat` in a clone to install the Hermes core into it (git ignores the core, the portable Python and your data at the paths Hermes uses); then `git pull` updates the wrapper and `UPDATE.bat` the core. Those ignored files live inside the git folder, so never run `git clean -x` (it deletes them) or `git clean -fd` (it deletes untracked files in the wrapper folders) in a clone you use; for a pristine tree, make a second clone. To run the tests, see [Developing from a clone](docs/portable-release-checklist.md#developing-from-a-clone).
 
+</details>
+
 ### 4. Connect an AI Model
 
 **Cloud (2 minutes, free):**
@@ -196,7 +245,21 @@ Most users do not need daily updates. Run `UPDATE.bat` when a release, fix, or s
 
 ## Documentation
 
-A searchable user guide is built into the agent — ask it anything or use the `search_guide` tool. The [PDF manual](https://github.com/aivrar/portable-hermes-agent/releases/latest) is included in every release; its setup and update chapters describe older releases (see `START_HERE.txt` and this README for the current flow).
+The [wiki](https://github.com/aivrar/portable-hermes-agent/wiki) is the current manual:
+
+| I want to... | Page |
+|---|---|
+| Install and connect a first model | [Getting Started](https://github.com/aivrar/portable-hermes-agent/wiki/Getting-Started) |
+| Find my way around the app | [The Interface](https://github.com/aivrar/portable-hermes-agent/wiki/The-Interface) |
+| Run models on my own GPU | [LM Studio Guide](https://github.com/aivrar/portable-hermes-agent/wiki/LM-Studio-Guide) |
+| Decide what the agent may do | [Permissions](https://github.com/aivrar/portable-hermes-agent/wiki/Permissions) |
+| Add speech, music or images | [Extensions Overview](https://github.com/aivrar/portable-hermes-agent/wiki/Extensions-Overview) |
+| Update safely | [Keeping Portable Hermes Updated](https://github.com/aivrar/portable-hermes-agent/wiki/Keeping-Portable-Hermes-Updated) |
+| Fix a problem | [Troubleshooting](https://github.com/aivrar/portable-hermes-agent/wiki/Troubleshooting) |
+
+Questions and ideas are welcome in [Discussions](https://github.com/aivrar/portable-hermes-agent/discussions); bugs in [Issues](https://github.com/aivrar/portable-hermes-agent/issues).
+
+A searchable user guide is also built into the agent — ask it anything or use the `search_guide` tool. The [PDF manual](https://github.com/aivrar/portable-hermes-agent/releases/latest) is included in every release; its setup and update chapters describe older releases (see `START_HERE.txt` and this README for the current flow).
 
 Key topics: getting started, API setup, the interface, permissions, LM Studio local models, extensions (TTS/Music/ComfyUI), all 100 tools, custom tool creation, workflows, and a glossary of AI terms.
 
