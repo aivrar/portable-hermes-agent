@@ -778,8 +778,8 @@ class LMStudioPanel(tk.Toplevel):
         self.client = LMStudioClient(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         self._connect()
 
-    def _refresh_models(self):
-        """Refresh model list."""
+    def _refresh_models(self, select_id=None):
+        """Refresh model list; *select_id* is the model to select afterwards."""
         def _do():
             models = self.client.list_models_api()
             if HAS_SDK and self.client._sdk_client:
@@ -797,12 +797,16 @@ class LMStudioPanel(tk.Toplevel):
                             })
                 except Exception:
                     pass
-            self._post_ui("_display_models", models)
+            self._post_ui("_display_models", models, select_id)
 
         threading.Thread(target=_do, daemon=True).start()
 
-    def _display_models(self, models):
+    def _display_models(self, models, select_id=None):
+        # Keep the selection on the same model (by id, not row: a refresh can
+        # add, drop or reorder rows), or move it to *select_id* if given.
         selected = self.model_list.curselection()
+        previous_id = (self.models[selected[0]]["id"]
+                       if selected and selected[0] < len(self.models) else None)
         self.models = models
         self.model_list.delete(0, "end")
         for m in models:
@@ -816,8 +820,13 @@ class LMStudioPanel(tk.Toplevel):
             if ctx:
                 label += f"  {t('lmstudio.context_suffix', count=f'{ctx:,}')}"
             self.model_list.insert("end", label)
-        if selected and selected[0] < len(models):
-            self.model_list.selection_set(selected[0])
+        ids = [m["id"] for m in models]
+        for wanted in (select_id, previous_id):
+            if wanted is not None and wanted in ids:
+                row = ids.index(wanted)
+                self.model_list.selection_set(row)
+                self.model_list.see(row)
+                break
 
     def _on_model_select(self, event):
         sel = self.model_list.curselection()
@@ -945,7 +954,7 @@ class LMStudioPanel(tk.Toplevel):
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         self.status_dot.configure(fg=C["success"])
         self._set_status("lmstudio.loaded_model", model=short)
-        self._refresh_models()
+        self._refresh_models(select_id=model_id)
 
     def _on_load_error(self, error):
         self._restore_load_btn()

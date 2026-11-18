@@ -187,3 +187,68 @@ def test_model_list_shows_a_loaded_model_once():
     ])
     assert rows == [{"id": "qwen", "state": "not-loaded"},
                     {"id": "gemma-4-e4b-it", "state": "loaded"}]
+
+
+class FakeListbox:
+    def __init__(self):
+        self.rows, self.selected = [], ()
+
+    def curselection(self):
+        return self.selected
+
+    def delete(self, first, last):
+        self.rows, self.selected = [], ()
+
+    def insert(self, _index, label):
+        self.rows.append(label)
+
+    def selection_set(self, row):
+        self.selected = (row,)
+
+    def see(self, _row):
+        pass
+
+
+def _listed_panel(ids, selected_id):
+    panel = SimpleNamespace(model_list=FakeListbox(), models=[])
+    lm.LMStudioPanel._display_models(panel, [{"id": i} for i in ids])
+    panel.model_list.selection_set(ids.index(selected_id))
+    return panel
+
+
+def test_refresh_keeps_selection_on_the_same_model_when_rows_shift():
+    panel = _listed_panel(["gemma-4-e4b-it", "qwen3.6-27b-mtp"], "gemma-4-e4b-it")
+
+    lm.LMStudioPanel._display_models(panel, [
+        {"id": "new-row", "state": "loaded"},
+        {"id": "gemma-4-e4b-it"}, {"id": "qwen3.6-27b-mtp"}])
+
+    assert panel.model_list.curselection() == (1,)
+
+
+def test_refresh_after_load_selects_the_loaded_model():
+    panel = _listed_panel(["qwen3.6-27b-mtp", "gemma-4-e4b-it"], "qwen3.6-27b-mtp")
+
+    lm.LMStudioPanel._display_models(panel, [
+        {"id": "gemma-4-e4b-it", "state": "loaded"}, {"id": "qwen3.6-27b-mtp"}],
+        "gemma-4-e4b-it")
+
+    assert panel.model_list.curselection() == (0,)
+
+
+def test_refresh_without_the_selected_model_selects_nothing():
+    panel = _listed_panel(["gone", "other"], "gone")
+
+    lm.LMStudioPanel._display_models(panel, [{"id": "other"}])
+
+    assert panel.model_list.curselection() == ()
+
+
+def test_load_success_refreshes_with_the_loaded_model_selected():
+    refresh = Mock()
+    panel = SimpleNamespace(_restore_load_btn=Mock(), status_dot=Mock(),
+                            _set_status=Mock(), _refresh_models=refresh)
+
+    lm.LMStudioPanel._on_load_success(panel, "gemma-4-e4b-it")
+
+    refresh.assert_called_once_with(select_id="gemma-4-e4b-it")
