@@ -556,3 +556,41 @@ def test_gui_new_chat_ends_the_previous_session_in_the_database():
         assert bridge.session_id is None
     finally:
         db.close()
+
+
+@pytest.mark.needs_core
+def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_path):
+    """No row before the first turn: a failing agent build must not leave an empty session."""
+    from gui import agent_bridge
+    import run_agent
+    from hermes_cli import runtime_provider
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        bridge = _bridge_shell(agent_bridge, tmp_path)
+        bridge._session_db = db
+        captured = {}
+
+        class FailingAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                raise RuntimeError("agent build failed")
+
+        monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kw: {
+            "provider": "custom", "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:9/v1", "api_key": "k"})
+        monkeypatch.setattr(run_agent, "AIAgent", FailingAgent)
+        monkeypatch.setattr(subprocess, "run",
+                            lambda *a, **kw: subprocess.CompletedProcess(a[0], 1, "", ""))
+
+        with pytest.raises(RuntimeError):
+            bridge._create_agent()
+
+        # The agent gets the id and the database, and creates the row on its first turn.
+        assert captured["session_id"] == bridge.session_id
+        assert captured["session_db"] is db
+        assert captured["platform"] == "gui"
+        assert db.get_session(bridge.session_id) is None
+    finally:
+        db.close()

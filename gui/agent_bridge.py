@@ -201,19 +201,11 @@ class AgentBridge:
             api_key = runtime.get("api_key")
             credential_pool = runtime.get("credential_pool")
 
-        # Generate session ID
+        # Generate session ID. The core creates the session row itself when the
+        # first turn starts (source "gui" from platform="gui", with model,
+        # system prompt, model config and profile): creating it here first
+        # left an empty row whenever building the agent failed.
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
-
-        # Create session in database
-        if self._session_db:
-            try:
-                self._session_db.create_session(
-                    session_id=self.session_id,
-                    source="gui",
-                    model=model,
-                )
-            except Exception:
-                pass
 
         # Provider routing from config
         routing = self.config.get("provider_routing", {})
