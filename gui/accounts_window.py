@@ -142,6 +142,31 @@ class AccountsWindow(tk.Toplevel):
         self.refresh()
 
 
+class _Start:
+    """One sign-in start. The core starts its poller before it returns the
+    session, so a cancel that comes earlier is remembered and applied (on the
+    worker thread) the moment the session is known; never touches Tk."""
+
+    def __init__(self, provider):
+        self.provider, self.lock = provider, threading.Lock()
+        self.cancelled, self.session = False, None
+
+    def run(self):
+        result = core.start_sign_in(self.provider)
+        with self.lock:
+            self.session = result.get("session")
+            cancel_now = self.cancelled and self.session
+        if cancel_now:
+            core.cancel(self.session)
+        return result
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled, session = True, self.session
+        if session:
+            core.cancel(session)
+
+
 class SignInDialog(tk.Toplevel):
     """Sign-in (address, code, live countdown, Cancel), then the model to use.
     connected=True skips straight to the model choice."""
@@ -153,6 +178,7 @@ class SignInDialog(tk.Toplevel):
         self.on_signed_in, self.now = on_signed_in, now
         self.session = None
         self.state = ""
+        self._signing_in = None     # the _Start whose sign-in may still be pending
         self._tick_id = None
         self._worker = _Worker(self)
         _toplevel(self, parent, name, 520, 340)
@@ -169,8 +195,9 @@ class SignInDialog(tk.Toplevel):
         """Every exit path: timers stop and a running sign-in is cancelled."""
         self._stop_tick()
         self._worker.stop()
-        if self.session is not None and self.state == "waiting":
-            core.cancel(self.session)
+        if self._signing_in is not None:    # also before the session is known
+            self._signing_in.cancel()
+            self._signing_in = None
         self.session = None
         super().destroy()
 
@@ -205,9 +232,12 @@ class SignInDialog(tk.Toplevel):
         self._clear()
         self._label(t("accounts.starting", name=self.name))
         self._buttons((t("accounts.cancel"), self.destroy))
-        self._worker.run(lambda: core.start_sign_in(self.provider), self._started)
+        self._signing_in = _Start(self.provider)
+        self._worker.run(self._signing_in.run, self._started)
 
     def _started(self, result):
+        if not result.get("session"):
+            self._signing_in = None
         if result.get("unavailable"):
             return self._show_failed(t("accounts.unavailable", command=result["command"]), retry=False)
         if "error" in result:
@@ -248,7 +278,7 @@ class SignInDialog(tk.Toplevel):
         if state == "pending":
             self._tick_id = self.after(1000, self._tick)
             return
-        self.state, self.session = state, None
+        self.state, self.session, self._signing_in = state, None, None
         if state == "approved":
             if self.on_signed_in:
                 self.on_signed_in()

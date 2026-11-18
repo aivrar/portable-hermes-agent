@@ -56,7 +56,11 @@ class FakeCore:
     def status(self, p):
         return p == "openai-codex"
 
+    gate = None
+
     def start_sign_in(self, p):
+        if self.gate is not None:
+            self.gate.wait(5)
         self.calls.append(("start", p))
         return self.start_result
 
@@ -232,3 +236,22 @@ def test_the_key_wizard_points_subscribers_to_accounts(tk_root):
                 "instead of a key.") in texts(wizard)
     finally:
         wizard.destroy()
+
+
+def test_closing_before_the_session_exists_still_cancels_it(tk_root, monkeypatch):
+    import threading
+    fake_core = FakeCore(monkeypatch)
+    fake_core.gate = threading.Event()
+    dialog, used, _ = _dialog(tk_root)
+    shown_before = []
+    monkeypatch.setattr(dialog, "_started", shown_before.append)   # must never run
+    dialog.destroy()                                   # the core has not answered yet
+    assert fake_core.calls == []
+    fake_core.gate.set()                               # now the core returns session s1
+    deadline = time.monotonic() + 5
+    while ("cancel", "s1") not in fake_core.calls:
+        assert time.monotonic() < deadline, fake_core.calls
+        time.sleep(0.01)
+    tk_root.update()
+    assert fake_core.calls == [("start", "xai-oauth"), ("cancel", "s1")]
+    assert shown_before == [] and used == [] and fake_core.opened == []
