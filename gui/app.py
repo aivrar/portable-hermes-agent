@@ -2128,9 +2128,8 @@ class HermesGUI:
         self._add_msg(display, "user")
 
         # Streaming bubble — shows tokens as they arrive, below its activity line
-        first_local_turn = (not self.bridge.conversation_history
-                            and self.bridge._is_local_model())
-        self._new_reply_bubble(first_local_turn=first_local_turn)
+        # A session's first turn (any provider) sends Hermes's instructions.
+        self._new_reply_bubble(first_turn=not self.bridge.conversation_history)
         self._has_streamed = False
 
         self._start_turn_clock()
@@ -2157,11 +2156,11 @@ class HermesGUI:
 
     # ---- Callbacks ----
 
-    def _new_reply_bubble(self, tool=None, first_local_turn=False):
+    def _new_reply_bubble(self, tool=None, first_turn=False):
         """A streaming bubble whose activity line waits for the model (or
         shows *tool* running)."""
         activity = ReplyActivity(keep_thinking=self._show_thinking,
-                                 first_local_turn=first_local_turn, tool=tool)
+                                 first_turn=first_turn, tool=tool)
         self._stream_bubble = StreamingBubble(self.msg_frame, activity, self._thinking_open,
                                               self._remember_thinking_open)
         self._stream_bubble.pack(fill="x")

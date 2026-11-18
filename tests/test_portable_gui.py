@@ -2086,7 +2086,7 @@ def test_gui_reply_bubble_follows_waiting_thinking_tool_and_answer(monkeypatch):
     monkeypatch.setattr(i18n, "_current_language", "en")
     gui = _replying_gui(monkeypatch, local=True, history=())
     first, = _FakeReplyBubble.made
-    assert first.activity.first_local_turn and first.activity.state == "waiting"
+    assert first.activity.first_turn and first.activity.state == "waiting"
 
     gui._on_reasoning("Need the GPU list.")
     assert first.activity.state == "thinking"
@@ -2097,17 +2097,18 @@ def test_gui_reply_bubble_follows_waiting_thinking_tool_and_answer(monkeypatch):
     second = _FakeReplyBubble.made[-1]
     assert second.activity.header().startswith("Running gpu_info...")
     gui._on_step(2, ["gpu_info"])                      # the model is called again
-    assert second.activity.state == "waiting" and not second.activity.first_local_turn
+    assert second.activity.state == "waiting" and not second.activity.first_turn
     gui._on_stream_delta("Your RTX 3060")
     assert second.activity.state == "done"
 
 
 @pytest.mark.needs_core
-def test_gui_later_turns_and_cloud_models_get_no_first_turn_note(monkeypatch):
-    gui = _replying_gui(monkeypatch, local=True, history=[{"role": "user", "content": "x"}])
-    assert not _FakeReplyBubble.made[-1].activity.first_local_turn
-    gui = _replying_gui(monkeypatch, local=False, history=())
-    assert not _FakeReplyBubble.made[-1].activity.first_local_turn
+def test_gui_the_first_turn_of_a_session_gets_the_note_for_any_provider(monkeypatch):
+    _replying_gui(monkeypatch, local=True, history=[{"role": "user", "content": "x"}])
+    assert not _FakeReplyBubble.made[-1].activity.first_turn     # a later turn
+    for local in (True, False):                                   # local or cloud
+        _replying_gui(monkeypatch, local=local, history=())
+        assert _FakeReplyBubble.made[-1].activity.first_turn
 
 
 @pytest.mark.needs_core

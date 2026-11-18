@@ -31,14 +31,21 @@ def test_clock_format():
     assert [clock(s) for s in (0, 9.9, 42, 65, 3723)] == ["0:00", "0:09", "0:42", "1:05", "1:02:03"]
 
 
-def test_waiting_ticks_and_the_first_local_turn_says_why():
+def test_waiting_ticks_and_the_first_turn_says_why():
     activity, now = _activity()
     now.now += 42
     assert activity.header() == "Waiting for the model... 0:42"
-    first, now = _activity(first_local_turn=True)
-    now.now += 105
+    first, now = _activity(first_turn=True)
+    now.now += 7.9
+    assert first.header() == "Waiting for the model... 0:07"     # a fast first reply: no note
+    now.now += 0.1
+    assert first.header().endswith("  The first message takes longest: "
+                                   "the model first reads Hermes's instructions.")
+    now.now += 97
     assert first.header() == ("Waiting for the model... 1:45  The first message takes longest: "
                               "the model first reads Hermes's instructions.")
+    first.add_thinking("x")
+    assert "first message" not in first.header()                  # only while waiting
 
 
 def test_thinking_shows_the_latest_text_on_one_line():

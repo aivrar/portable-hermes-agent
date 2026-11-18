@@ -17,6 +17,9 @@ from gui.i18n import t
 QUIET_SECONDS = 3
 #: "Thought for 4 s" adds "· waited 55 s" when the wait before thinking was this long.
 LONG_WAIT_SECONDS = 10
+#: On a session's first turn, the "first message takes longest" sentence
+#: appears once the wait is this long (fast first replies never show it).
+FIRST_TURN_NOTE_SECONDS = 8
 #: How much of the latest thinking text the closed line shows.
 PREVIEW_CHARS = 60
 
@@ -31,11 +34,11 @@ def clock(seconds: float) -> str:
 class ReplyActivity:
     """State of one reply segment: "waiting", "thinking", "tool" or "done"."""
 
-    def __init__(self, *, keep_thinking: bool = True, first_local_turn: bool = False,
+    def __init__(self, *, keep_thinking: bool = True, first_turn: bool = False,
                  tool: str | None = None, now=time.monotonic):
         self._now = now
         self.keep_thinking = keep_thinking
-        self.first_local_turn = first_local_turn
+        self.first_turn = first_turn
         self.state = "tool" if tool else "waiting"
         self.tool = tool
         self.phase_started = now()
@@ -114,7 +117,8 @@ class ReplyActivity:
         """The line to show now, or None for no line."""
         if self.state != "done":
             text = self._phase_text(clock(self._seconds()))
-            if self.state == "waiting" and self.first_local_turn:
+            if (self.state == "waiting" and self.first_turn
+                    and self._seconds() >= FIRST_TURN_NOTE_SECONDS):
                 return text + "  " + t("reply.first_turn_note")
             preview = self.preview() if self.state == "thinking" else ""
             return f"{text}  {preview}" if preview else text
