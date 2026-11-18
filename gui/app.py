@@ -1731,6 +1731,22 @@ class HermesGUI:
     _turn_clock_id = None        # the running reply's per-second clock (Tk after id)
     _follow_reply = True         # keep the chat's bottom in view (the user did not scroll up)
     _scroll_id = None            # the one pending _do_scroll
+    _current_turn = None         # the bridge's id of the reply running now
+
+    def _bridge_callbacks(self):
+        return dict(
+            on_response=self._on_response, on_tool_call=self._on_tool_call,
+            on_thinking=self._on_thinking, on_error=self._on_error,
+            on_step=self._on_step, on_clarify=self._on_clarify,
+            on_complete=self._on_complete, on_approval=self._on_approval,
+            on_reasoning=self._on_reasoning, on_stream_delta=self._on_stream_delta,
+            on_worker_done=self._on_worker_done, accept_turn=self._is_current_turn)
+
+    def _is_current_turn(self, turn) -> bool:
+        """The bridge delivers a turn's callbacks only while that turn is the
+        one running: not after Stop, New Chat, a session switch, window close
+        or its own end, and never into a later turn."""
+        return turn is not None and turn == self._current_turn
 
     def __init__(self):
         self.root = tk.Tk()
@@ -1751,19 +1767,7 @@ class HermesGUI:
         self.root.deiconify()
 
         # Agent bridge
-        self.bridge = AgentBridge(
-            self.root,
-            on_response=self._on_response,
-            on_tool_call=self._on_tool_call,
-            on_thinking=self._on_thinking,
-            on_error=self._on_error,
-            on_step=self._on_step,
-            on_clarify=self._on_clarify,
-            on_complete=self._on_complete,
-            on_approval=self._on_approval,
-            on_reasoning=self._on_reasoning,
-            on_stream_delta=self._on_stream_delta,
-        )
+        self.bridge = AgentBridge(self.root, **self._bridge_callbacks())
         self._stream_bubble = None  # Active streaming bubble
         self._has_streamed = False   # True once any stream delta arrived
         # Reply activity: the View > Show Thinking and open-or-closed
@@ -2141,6 +2145,9 @@ class HermesGUI:
 
         # Streaming bubble — shows tokens as they arrive, below its activity line
         # A session's first turn (any provider) sends Hermes's instructions.
+        # A previous turn whose end has not been delivered yet keeps what it
+        # showed; its late callbacks are dropped (_is_current_turn).
+        self._cleanup_stream_bubble()
         self._new_reply_bubble(first_turn=not self.bridge.conversation_history)
         self._follow_reply = True        # the user just sent: show the reply
         self._has_streamed = False
@@ -2152,7 +2159,7 @@ class HermesGUI:
         self._attached_images.clear()
         self._update_attach_preview()
 
-        self.bridge.send_message(msg, image_paths=images)
+        self._current_turn = self.bridge.send_message(msg, image_paths=images)
         self._scroll_bottom()
 
     def _add_msg(self, text, msg_type, tool_name=None):
@@ -2234,7 +2241,9 @@ class HermesGUI:
         self.status_bar.set_activity(text, seconds, tool=activity.state == "tool")
 
     def _stop_turn_clock(self):
-        """Every way a turn ends: reply done, error, Stop, New Chat, window close."""
+        """Every way a turn ends: reply done, error, Stop, New Chat, window
+        close. Callbacks the worker still posts for it are dropped."""
+        self._current_turn = None
         if self._turn_clock_id is not None:
             try:
                 self.root.after_cancel(self._turn_clock_id)
@@ -2263,15 +2272,7 @@ class HermesGUI:
             # Only show full response if we never streamed (non-streaming model/fallback)
             self._add_msg(text, "ai")
 
-    def _turn_live(self) -> bool:
-        """A reply runs: the turn clock runs from Send to its end (done, error,
-        Stop, New Chat, window close). Activity callbacks the worker posted
-        for a turn that has ended (a late token after Stop) are ignored."""
-        return self._turn_clock_id is not None
-
     def _on_tool_call(self, name, preview):
-        if not self._turn_live():
-            return
         # Finalize any in-progress streaming bubble before showing the tool call
         self._cleanup_stream_bubble()
         w = ToolCallWidget(self.msg_frame, name, preview)
@@ -2285,8 +2286,6 @@ class HermesGUI:
 
     def _on_stream_delta(self, text):
         """Append a token to the streaming bubble."""
-        if not self._turn_live():
-            return
         if text is None:
             # End-of-turn signal — finalize the current bubble
             if self._stream_bubble and self._stream_bubble.has_content():
@@ -2313,13 +2312,10 @@ class HermesGUI:
             self._stream_bubble = None
 
     def _on_thinking(self, text):
-        """The core's spinner phrase: not shown. During a reply the status bar
-        follows the reply bubble's line; after it (a late call after Stop)
-        it must not say "Thinking..." again."""
+        """The core's spinner phrase: not shown, the status bar follows the
+        reply bubble's line."""
 
     def _on_step(self, n, _):
-        if not self._turn_live():
-            return
         self.status_bar.set_iter(n)
         if self._stream_bubble is not None and self._stream_bubble.activity is not None:
             self._stream_bubble.activity.model_called()     # a tool ran; waiting again
@@ -2348,7 +2344,7 @@ class HermesGUI:
     def _on_reasoning(self, text):
         """Thinking text: into the reply bubble's activity line (and, when
         open, its thinking pane); the status bar says the model is thinking."""
-        if not text or not self._turn_live():
+        if not text:
             return
         if self._stream_bubble is not None:
             self._stream_bubble.add_thinking(text)
@@ -2358,7 +2354,10 @@ class HermesGUI:
         self._stop_turn_clock()
         self._cleanup_stream_bubble()
         self.status_bar.set_ready()
-        # Update token display if available
+
+    def _on_worker_done(self):
+        """A worker ended, whatever its turn (done, failed or stopped): what
+        it saved shows in the token count, session list and header."""
         tokens = self.bridge.get_token_usage()
         if tokens.get("total"):
             total = tokens["total"]
@@ -2488,6 +2487,7 @@ class HermesGUI:
             # Clear current chat
             for w in self.msg_frame.winfo_children():
                 w.destroy()
+            self._stop_turn_clock()          # no earlier turn's callback lands here
             self._follow_reply = True        # show the loaded session's end
 
             self._show_session_title(session_id, "resumed")

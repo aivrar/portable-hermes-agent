@@ -1819,18 +1819,18 @@ def test_gui_header_shows_the_session_title_once_it_has_one():
     sessions = [{"id": "s0", "title": "Other chat"}, {"id": "s1", "title": None, "preview": "hi"}]
     gui.sidebar._sessions_data = sessions
 
-    gui._on_complete({})                                   # no title yet
+    gui._on_worker_done()                                  # no title yet
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
 
     sessions[1]["title"] = "General assistance capabilities"
-    gui._on_complete({})
+    gui._on_worker_done()
     gui.chat_title.configure.assert_called_with(text="General assistance capabilities")
 
     # A model or settings change rebuilds the agent with a new session id;
     # until that session has a title, the header says New Chat again.
     bridge.session_id = "s2"
     sessions.insert(0, {"id": "s2", "title": None, "preview": "next"})
-    gui._on_complete({})
+    gui._on_worker_done()
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
     assert gui._chat_title_text is None
 
@@ -2115,35 +2115,158 @@ def test_gui_status_bar_says_what_the_reply_line_says(monkeypatch):
     agree("Waiting for the model...")
 
 
-@pytest.mark.needs_core
-@pytest.mark.parametrize("exit_path", ["Stop", "reply done"])
-def test_gui_callbacks_after_the_turn_ended_change_nothing(monkeypatch, exit_path):
+def _bridged_gui(monkeypatch):
+    """A HermesGUI wired (as in __init__) to a real AgentBridge whose turns
+    run on real worker threads; Tk's after() queue is run by hand."""
+    from unittest.mock import Mock
     from gui import app
-    gui = _replying_gui(monkeypatch)
-    gui._on_reasoning("Need the GPU list.")
-    gui._on_stream_delta("Partial")
-    if exit_path == "Stop":
-        gui._interrupt()
-    else:
-        gui.bridge.is_running = False
-        gui._on_complete({})
+    from gui.agent_bridge import AgentBridge
+
+    _FakeReplyBubble.made = []
+    monkeypatch.setattr(app, "StreamingBubble", _FakeReplyBubble)
+    monkeypatch.setattr(app, "ToolCallWidget", Mock())
+    bridge = object.__new__(AgentBridge)
+    gui = _gui_with_bridge(bridge)
+    gui.__dict__.update(root=_FakeRoot(), _stream_bubble=None, _has_streamed=False,
+                        _turn_clock_id=None, _show_thinking=True, _thinking_open=False,
+                        _attached_images=[], _update_attach_preview=Mock(),
+                        msg_canvas=Mock())
+    bridge.__dict__.update(gui._bridge_callbacks(), root=gui.root, conversation_history=[],
+                           session_id=None, get_token_usage=lambda: {})
+    gui.input_text.get.return_value = "hi"
+    return gui, bridge
+
+
+def _deliver_posted(root):
+    """Run what the worker posted (after(0, ...)), in order."""
+    while True:
+        posted = sorted(i for i, (ms, _fn) in root.pending.items() if ms == 0)
+        if not posted:
+            return
+        root.run(posted[0])
+
+
+def _late_callbacks(bridge):
+    """Everything a worker can post for its turn."""
+    bridge._on_thinking("(¬‿¬) pondering...")
+    bridge._on_reasoning("late thoughts")
+    bridge._on_tool_progress("tool.started", "gpu_info", None, {})
+    bridge._on_step(3, ["gpu_info"])
+    bridge._on_stream_delta(" late token")
+    bridge._on_stream_delta(None)
+    bridge._post(bridge.on_response, "A late full answer")
+    bridge._post(bridge.on_error, "Error: late")
+    bridge._post(bridge.on_complete, {})
+
+
+@pytest.mark.needs_core
+def test_gui_stop_then_late_callbacks_of_the_stopped_turn_change_nothing(monkeypatch):
+    import threading
+    from gui import app
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    started, go = threading.Event(), threading.Event()
+
+    def stopped_turn(message, image_paths):       # the core, on the worker thread
+        bridge._on_stream_delta("Partial")
+        started.set()
+        go.wait(10)                               # still running when Stop is pressed
+        _late_callbacks(bridge)
+
+    bridge._run_agent_turn = stopped_turn
+    gui._send()
+    assert started.wait(10)
+    _deliver_posted(gui.root)
+    bubble, = _FakeReplyBubble.made
+    assert bubble.text == "Partial"
+
+    gui._interrupt()
+    assert bubble.finalized                       # the partial answer stays as it is
+    gui._send()                                   # refused: the stopped worker still runs
+    assert len(_FakeReplyBubble.made) == 1 and bridge.is_running
     bar = gui.status_bar
+    bar.set_ready.assert_called()
     bar.reset_mock()
-    made, pending = len(_FakeReplyBubble.made), dict(gui.root.pending)
+    gui._add_msg.reset_mock()
 
-    # What the worker had already posted when the turn ended.
-    gui._on_thinking("(¬‿¬) pondering...")
-    gui._on_reasoning("more thoughts")
-    gui._on_tool_call("gpu_info", "{}")
-    gui._on_step(3, ["gpu_info"])
-    gui._on_stream_delta("late token")
-    gui._on_stream_delta(None)
+    go.set()
+    bridge._agent_thread.join(10)
+    assert not bridge.is_running                  # the bridge's own state: reset by its worker
+    _deliver_posted(gui.root)
 
-    assert bar.method_calls == []                      # the bar still says Ready
-    assert len(_FakeReplyBubble.made) == made and gui._stream_bubble is None
-    app.ToolCallWidget.assert_not_called()             # no tool bubble either
-    assert gui.root.pending == pending                 # no clock, no scroll queued
-    assert "late" not in _FakeReplyBubble.made[0].text
+    assert bar.method_calls == []                 # still Ready: no Thinking, no error
+    gui._add_msg.assert_not_called()              # no late answer or error bubble
+    app.ToolCallWidget.assert_not_called()
+    assert len(_FakeReplyBubble.made) == 1 and bubble.text == "Partial"
+    gui.sidebar.refresh_sessions.assert_called_once()   # the worker's end still refreshes
+    gui._send()                                   # and the next message can be sent
+    assert len(_FakeReplyBubble.made) == 2 and gui._current_turn == 2
+    bridge._agent_thread.join(10)
+
+
+@pytest.mark.needs_core
+def test_gui_an_old_turns_end_delivered_after_a_new_send_leaves_the_new_turn_alone(monkeypatch):
+    import threading
+
+    gui, bridge = _bridged_gui(monkeypatch)
+    go = threading.Event()
+
+    def first_turn(message, image_paths):
+        bridge._on_stream_delta("First")
+        go.wait(10)
+        _late_callbacks(bridge)
+
+    bridge._run_agent_turn = first_turn
+    gui._send()
+    gui._interrupt()
+    go.set()
+    bridge._agent_thread.join(10)                 # its end is posted, not yet delivered
+
+    second_go = threading.Event()
+
+    def second_turn(message, image_paths):
+        second_go.wait(10)
+        bridge._on_stream_delta("Second answer")
+        bridge._on_stream_delta(None)
+        bridge._post(bridge.on_response, "Second answer")
+        bridge._post(bridge.on_complete, {})
+
+    bridge._run_agent_turn = second_turn
+    gui._send()                                   # the new turn starts first
+    new = _FakeReplyBubble.made[-1]
+    clock = gui._turn_clock_id
+    gui._add_msg.reset_mock()                     # the user's messages and the Stop notice
+    _deliver_posted(gui.root)                   # then the old turn's callbacks arrive
+
+    assert gui._stream_bubble is new and not new.finalized and not new.destroyed
+    assert gui._turn_clock_id == clock and gui._current_turn == 2
+    assert new.text == "" and gui.root.clock_ticks() == [clock]
+    gui._add_msg.assert_not_called()
+
+    second_go.set()
+    bridge._agent_thread.join(10)
+    _deliver_posted(gui.root)                     # the new turn completes normally
+    assert new.text == "Second answer" and new.finalized
+    assert gui._turn_clock_id is None and gui._stream_bubble is None
+    gui.status_bar.set_ready.assert_called()
+
+
+@pytest.mark.needs_core
+def test_gui_an_error_of_the_current_turn_is_still_shown(monkeypatch):
+    gui, bridge = _bridged_gui(monkeypatch)
+
+    def failing_turn(message, image_paths):
+        raise RuntimeError("provider offline")
+
+    bridge._run_agent_turn = failing_turn
+    bridge._error_text = lambda error: f"Error: {error}"
+    gui._send()
+    bridge._agent_thread.join(10)
+    _deliver_posted(gui.root)
+
+    gui._add_msg.assert_any_call("Error: provider offline", "error")
+    gui.status_bar.set_error.assert_called_once()
+    assert gui._current_turn is None and gui._turn_clock_id is None
 
 
 @pytest.mark.needs_core

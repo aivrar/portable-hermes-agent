@@ -92,12 +92,22 @@ class AgentBridge:
     _closing = False
     _interrupted = False
     _resume_session_id = None
+    _turn = 0                     # the latest turn's id (send_message)
+    on_worker_done = None
+
+    def accept_turn(self, turn) -> bool:
+        """Whether a callback of turn *turn* is still wanted (the GUI's check)."""
+        return True
 
     def __init__(self, root, on_response=None, on_tool_call=None,
                  on_thinking=None, on_error=None, on_step=None,
                  on_clarify=None, on_complete=None, on_approval=None,
-                 on_reasoning=None, on_stream_delta=None):
+                 on_reasoning=None, on_stream_delta=None,
+                 on_worker_done=None, accept_turn=None):
         self.root = root
+        self.on_worker_done = on_worker_done   # every worker's end, whatever its turn
+        if accept_turn is not None:
+            self.accept_turn = accept_turn
         self.on_response = on_response
         self.on_tool_call = on_tool_call
         self.on_thinking = on_thinking
@@ -522,13 +532,25 @@ You are running on **{os_name} {os_release}**.
         if resume_id and getattr(self, "_resume_session_id", None) == resume_id:
             self._resume_session_id = None
 
-    def _post(self, callback, *args):
-        """Post a callback to the tkinter main thread (nothing after close())."""
+    def _post(self, callback, *args, any_turn=False):
+        """Post a callback to the tkinter main thread (nothing after close()).
+
+        It carries the id of the turn it belongs to and runs only if the GUI
+        still accepts that turn when Tk delivers it (accept_turn): a Stop or
+        a turn's end on the Tk thread can come before callbacks the worker
+        already posted. Turns never overlap here (send_message refuses while
+        one runs), so the id read now is the posting worker's. any_turn:
+        prompts the worker waits on, and the worker-finished signal."""
         if callback and not self._closing:
+            turn = None if any_turn else self._turn
             try:
-                self.root.after(0, lambda: callback(*args))
+                self.root.after(0, lambda: self._deliver(turn, callback, args))
             except Exception:
                 pass
+
+    def _deliver(self, turn, callback, args):
+        if turn is None or self.accept_turn(turn):
+            callback(*args)
 
     # Current cores call tool_progress_callback(event_type, tool_name, preview,
     # args, **extra), e.g. ("tool.started", "gpu_info", None, {}); older ones
@@ -568,7 +590,7 @@ You are running on **{os_name} {os_release}**.
 
     def _on_clarify(self, question, choices=None):
         """Called from agent thread. Posts to GUI and blocks until response."""
-        self._post(self.on_clarify, question, choices)
+        self._post(self.on_clarify, question, choices, any_turn=True)   # the worker waits
         try:
             return self._clarify_queue.get(timeout=300)
         except queue.Empty:
@@ -576,7 +598,7 @@ You are running on **{os_name} {os_release}**.
 
     def _approval_callback(self, command, description="", **kwargs):
         """Called when agent wants to run a dangerous command. Blocks until user approves."""
-        self._post(self.on_approval, command, description)
+        self._post(self.on_approval, command, description, any_turn=True)   # the worker waits
         try:
             return "once" if self._approval_queue.get(timeout=60) else "deny"
         except queue.Empty:
@@ -594,15 +616,20 @@ You are running on **{os_name} {os_release}**.
         Args:
             message: Text message from the user.
             image_paths: Optional list of local image file paths to attach.
+
+        Returns the new turn's id (its callbacks carry it), or None if a turn
+        is still running (the stopped one's worker included).
         """
         if self.is_running:
-            return
+            return None
         self.is_running = True
         self._interrupted = False
+        self._turn += 1
         self._agent_thread = threading.Thread(
             target=self._run_agent, args=(message, image_paths), daemon=True
         )
         self._agent_thread.start()
+        return self._turn
 
     @staticmethod
     def _encode_image(path: str) -> Optional[str]:
@@ -869,6 +896,9 @@ You are running on **{os_name} {os_release}**.
             except Exception:
                 pass
             self._end_turn()
+            # Not tied to a turn: a stopped turn's own complete/error is
+            # dropped, but the worker has now saved what it saved.
+            self._post(self.on_worker_done, any_turn=True)
 
     def _error_text(self, error):
         """The chat bubble for a failed turn: the message only. The traceback
