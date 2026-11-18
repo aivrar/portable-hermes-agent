@@ -20,8 +20,12 @@ from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
 from gui.i18n import t, register_listener, unregister_listener
 from hermes_constants import get_hermes_home
 from portable_hermes import lmstudio_gpu as gpu_place
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+try:
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+except ImportError:          # an older core without the minimum
+    MINIMUM_CONTEXT_LENGTH = 64000
 
+# The panel and the sidebar load models with this window by default.
 DEFAULT_CONTEXT_LENGTH = max(65536, MINIMUM_CONTEXT_LENGTH)
 
 try:
@@ -419,6 +423,26 @@ class LMStudioClient:
         except ValueError as e:
             raise RuntimeError(f"Failed to load model: {e}")
         self.last_gpu_plan = plan
+        import logging
+        _log = logging.getLogger("hermes.lmstudio")
+        try:
+            # Find the SDK model object by model_key, path or display name.
+            downloaded = list(self._sdk_client.llm.list_downloaded())
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model: {e}")
+        _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
+        target = next((m for m in downloaded if model_key in (
+            getattr(m, "model_key", ""), getattr(m, "path", ""), getattr(m, "display_name", ""))), None)
+        # Hermes cannot chat with a window below the core's minimum: raise a
+        # smaller request to it, and refuse a model that cannot go that far,
+        # before anything is unloaded.
+        context_length = max(MINIMUM_CONTEXT_LENGTH, int(context_length))
+        max_ctx = getattr(getattr(target, "info", None), "max_context_length", None)
+        if isinstance(max_ctx, int) and max_ctx > 0:
+            if max_ctx < MINIMUM_CONTEXT_LENGTH:
+                raise RuntimeError(t("lmstudio.context_too_small_msg", supported=f"{max_ctx:,}",
+                                     required=f"{MINIMUM_CONTEXT_LENGTH:,}"))
+            context_length = min(context_length, max_ctx)
         try:
             # Unload all existing instances to ensure clean GPU placement.
             try:
@@ -441,23 +465,8 @@ class LMStudioClient:
                 **plan.load,
             )
 
-            import logging
-            _log = logging.getLogger("hermes.lmstudio")
             _log.info("GPU placement %s -> %r (LM Studio GPU %r, mapping %s)",
                       plan.placement, plan.gpu, plan.lmstudio_gpu, plan.mapping)
-
-            # Find the actual SDK model object by matching model_key or path
-            downloaded = list(self._sdk_client.llm.list_downloaded())
-            _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
-            target = None
-            for m in downloaded:
-                mk = getattr(m, 'model_key', '')
-                mp = getattr(m, 'path', '')
-                dn = getattr(m, 'display_name', '')
-                if model_key in (mk, mp, dn):
-                    target = m
-                    _log.info("Found match: model_key=%r path=%r", mk, mp)
-                    break
 
             # No instance_identifier: LM Studio then names the instance after
             # the model key (e.g. "gemma-4-e4b-it"; "key:2" only if another

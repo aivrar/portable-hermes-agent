@@ -186,6 +186,82 @@ def test_panel_string_load_fallback_passes_no_identifier():
     assert "instance_identifier" not in call.kwargs
 
 
+def _model_with_max_context(max_ctx):
+    return Mock(model_key="gemma-4-e4b-it", path="lmstudio-community/gemma-4-e4b-it",
+                display_name="Gemma 4 E4B", info=SimpleNamespace(max_context_length=max_ctx))
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+@pytest.mark.parametrize("requested, model_max, used", [
+    (32768, 262144, lm.MINIMUM_CONTEXT_LENGTH),         # the old sidebar default
+    (131072, lm.MINIMUM_CONTEXT_LENGTH + 4096, lm.MINIMUM_CONTEXT_LENGTH + 4096),
+    (lm.DEFAULT_CONTEXT_LENGTH, 262144, lm.DEFAULT_CONTEXT_LENGTH),
+])
+def test_load_uses_a_window_hermes_can_chat_with(requested, model_max, used):
+    target = _model_with_max_context(model_max)
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model("gemma-4-e4b-it", context_length=requested)
+
+    assert target.load_new_instance.call_args.kwargs["config"].context_length == used
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_model_whose_window_is_too_small_is_refused_before_unloading():
+    target = _model_with_max_context(32768)
+    current = Mock()
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    client._sdk_client.llm.list_loaded.return_value = [current]
+
+    try:
+        client.load_model("gemma-4-e4b-it", context_length=lm.DEFAULT_CONTEXT_LENGTH)
+        raise AssertionError("loaded a model Hermes cannot chat with")
+    except RuntimeError as err:
+        message = str(err)
+
+    assert message == lm.t("lmstudio.context_too_small_msg", supported="32,768",
+                                  required=f"{lm.MINIMUM_CONTEXT_LENGTH:,}")
+    current.unload.assert_not_called()
+    target.load_new_instance.assert_not_called()
+
+
+def test_panel_and_sidebar_share_the_context_window():
+    import gui.app as app
+    assert app.MINIMUM_CONTEXT_LENGTH == lm.MINIMUM_CONTEXT_LENGTH
+    assert app.DEFAULT_CONTEXT_LENGTH == lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
+
+
+class _Var:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        if isinstance(self.value, str):
+            import tkinter
+            raise tkinter.TclError("expected integer")
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+@pytest.mark.parametrize("typed, used", [
+    (32768, lm.MINIMUM_CONTEXT_LENGTH),
+    (lm.MINIMUM_CONTEXT_LENGTH, lm.MINIMUM_CONTEXT_LENGTH),
+    (131072, 131072),
+    ("abc", lm.DEFAULT_CONTEXT_LENGTH),
+])
+def test_sidebar_raises_a_typed_context_to_the_minimum(typed, used):
+    import gui.app as app
+    sidebar = object.__new__(app.Sidebar)
+    sidebar._ctx_var = _Var(typed)
+
+    assert app.Sidebar._context_length(sidebar) == used
+    assert sidebar._ctx_var.value == used          # the box shows what is used
+
+
 def test_model_list_shows_a_loaded_model_once():
     rows = lm._one_row_per_model([
         {"id": "qwen", "state": "not-loaded"},

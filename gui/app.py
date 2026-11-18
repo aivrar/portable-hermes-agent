@@ -30,7 +30,7 @@ from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center
 from gui.agent_bridge import AgentBridge
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
-from gui.lm_studio import LMStudioPanel
+from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
 from gui.permissions_panel import PermissionsPanel
 from gui.permissions import load_permissions, get_permissions_summary
 from gui.i18n import (
@@ -605,8 +605,10 @@ class Sidebar(tk.Frame):
         self._local_ctx_label = tk.Label(ctx_row, text=t("sidebar.context_short"), font=FONTS["small"],
                                          fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
         self._local_ctx_label.pack(side="left")
-        self._ctx_var = tk.IntVar(value=32768)
-        ctx_spin = ttk.Spinbox(ctx_row, from_=32768, to=131072, increment=4096,
+        # Same window as the LM Studio panel: Hermes cannot chat below the minimum.
+        self._ctx_var = tk.IntVar(value=DEFAULT_CONTEXT_LENGTH)
+        ctx_spin = ttk.Spinbox(ctx_row, from_=MINIMUM_CONTEXT_LENGTH,
+                               to=max(131072, DEFAULT_CONTEXT_LENGTH), increment=4096,
                                textvariable=self._ctx_var, font=FONTS["small"], width=8)
         ctx_spin.pack(side="left")
         ctx_spin.bind("<FocusOut>", lambda e: self._save_local_settings())
@@ -713,12 +715,25 @@ class Sidebar(tk.Frame):
                 pass
         return None
 
+    def _context_length(self) -> int:
+        """The Ctx box value, raised to the minimum Hermes can chat with (the
+        box accepts typed values below it); the box then shows what is used."""
+        try:
+            ctx = int(self._ctx_var.get())
+        except (tk.TclError, ValueError):
+            ctx = DEFAULT_CONTEXT_LENGTH
+            self._ctx_var.set(ctx)
+        if ctx < MINIMUM_CONTEXT_LENGTH:
+            ctx = MINIMUM_CONTEXT_LENGTH
+            self._ctx_var.set(ctx)
+        return ctx
+
     def get_local_settings(self) -> dict:
         """Return current local model settings."""
         return {
             "gpu_placement": self._get_gpu_placement(),
             "gpu_index": self._get_gpu_index(),
-            "context_length": self._ctx_var.get(),
+            "context_length": self._context_length(),
             "temperature": self._temp_var.get(),
             "top_p": self._topp_var.get(),
             "flash_attention": self._flash_attn_var.get(),

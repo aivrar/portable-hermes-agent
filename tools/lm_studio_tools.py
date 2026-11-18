@@ -21,6 +21,13 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+try:
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+except ImportError:          # an older core without the minimum
+    MINIMUM_CONTEXT_LENGTH = 64000
+# Same default window as the GUI's LM Studio panel and sidebar.
+DEFAULT_CONTEXT_LENGTH = max(65536, MINIMUM_CONTEXT_LENGTH)
+
 
 def _resolve_lms_base() -> str:
     """Derive LM Studio base URL from env vars or default.
@@ -234,7 +241,7 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
     if not model_path:
         return json.dumps({"error": "model_path is required"})
 
-    context_length = int(args.get("context_length", 4096))
+    context_length = int(args.get("context_length") or DEFAULT_CONTEXT_LENGTH)
     placement, problem = _gpu_placement_for(args)
     if problem:
         return json.dumps({"error": problem})
@@ -287,6 +294,11 @@ def lm_studio_load_handler(args: dict, **kwargs) -> str:
         _sdk_handles[instance_id] = handle
 
         extra = {"gpu_note": plan.note} if plan.note else {}
+        if context_length < MINIMUM_CONTEXT_LENGTH:
+            extra["context_warning"] = (
+                f"Loaded with a {context_length:,}-token window, below the {MINIMUM_CONTEXT_LENGTH:,} "
+                "tokens Hermes needs: Hermes cannot use this instance as its own chat model. "
+                f"Reload with context_length of at least {MINIMUM_CONTEXT_LENGTH} for that.")
         return json.dumps({
             **extra,
             "loaded": True,
@@ -884,7 +896,10 @@ LOAD_SCHEMA = {
             },
             "context_length": {
                 "type": "integer",
-                "description": "Context window size (default 4096).",
+                "description": (
+                    f"Context window size (default {DEFAULT_CONTEXT_LENGTH}). Hermes needs at least "
+                    f"{MINIMUM_CONTEXT_LENGTH} to use the model as its own chat model."
+                ),
             },
         },
         "required": ["model_path"],

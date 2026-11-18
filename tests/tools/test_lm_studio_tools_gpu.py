@@ -102,6 +102,20 @@ def test_gpu_index_without_nvidia_gpus_falls_back_to_auto_as_before(sdk, monkeyp
     assert config.gpu is None and result["gpu_placement"] == "auto"
 
 
+def test_default_context_is_one_hermes_can_chat_with(sdk):
+    result, config = _load(sdk)
+    assert config.context_length == tool.DEFAULT_CONTEXT_LENGTH >= tool.MINIMUM_CONTEXT_LENGTH
+    assert result["context_length"] == tool.DEFAULT_CONTEXT_LENGTH
+    assert "context_warning" not in result
+
+
+def test_a_smaller_context_loads_but_tells_the_agent_hermes_cannot_chat_with_it(sdk):
+    result, config = _load(sdk, context_length=4096)
+    assert config.context_length == 4096 and result["loaded"] is True
+    assert f"{tool.MINIMUM_CONTEXT_LENGTH:,}" in result["context_warning"]
+    assert "cannot use this instance as its own chat model" in result["context_warning"]
+
+
 def test_schema_keeps_gpu_index_and_offers_the_modes():
     props = tool.LOAD_SCHEMA["parameters"]["properties"]
     assert props["gpu_index"]["type"] == "integer"
