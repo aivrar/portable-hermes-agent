@@ -838,19 +838,21 @@ You are running on **{os_name} {os_release}**.
 
     def _error_text(self, error):
         """The chat bubble for a failed turn: the message only. The traceback
-        goes to bridge.log, and the bubble ends by saying where it is."""
+        goes to bridge.log, and the bubble ends by saying where it is; if it
+        cannot be logged, the bubble carries it instead, so it is not lost."""
         from gui.i18n import t
-        log_path = "bridge.log"
         try:
             self._bridge_log().error("run_agent EXCEPTION: %s", error, exc_info=error)
-            log_path = str(get_hermes_home() / "logs" / "bridge.log")
+            details = t("chat.error_details_in_log",
+                        path=str(get_hermes_home() / "logs" / "bridge.log"))
         except Exception:
-            pass
+            import traceback
+            details = "".join(traceback.format_exception(error)).rstrip()
         parts = [f"Error: {error}"]
         minimum = self._context_too_small(error)
         if minimum:
             parts.append(t("chat.error_reload_with_context", tokens=f"{minimum:,}"))
-        parts.append(t("chat.error_details_in_log", path=log_path))
+        parts.append(details)
         return "\n\n".join(parts)
 
     def _context_too_small(self, error):

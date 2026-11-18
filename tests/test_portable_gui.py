@@ -1160,6 +1160,29 @@ def test_gui_error_bubble_shows_the_message_and_logs_the_traceback(monkeypatch, 
 
 
 @pytest.mark.needs_core
+def test_gui_error_bubble_keeps_the_traceback_when_it_cannot_be_logged():
+    from gui import agent_bridge
+    from gui.i18n import t
+
+    def broken_log():
+        raise OSError("logs folder is read-only")
+
+    try:
+        raise RuntimeError("model server went away")
+    except RuntimeError as e:
+        failure = e
+    bridge = _new_chat_bridge(None, HISTORY)
+    bridge.__dict__.update(_bridge_log=broken_log, _active_provider="cloud")
+
+    bubble = agent_bridge.AgentBridge._error_text(bridge, failure)
+
+    assert bubble.startswith("Error: model server went away")
+    assert "Traceback (most recent call last)" in bubble
+    assert "test_gui_error_bubble_keeps_the_traceback" in bubble   # the frame is there
+    assert t("chat.error_details_in_log", path="X").split("X")[0] not in bubble
+
+
+@pytest.mark.needs_core
 def test_gui_reload_hint_needs_the_core_minimum_not_just_any_value_error():
     from gui import agent_bridge
     bridge = _new_chat_bridge(None, HISTORY)
