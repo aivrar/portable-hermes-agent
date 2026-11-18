@@ -295,10 +295,45 @@ def check_agent_keywords(root: Path, agent_class) -> tuple:
     return False, "AIAgent.__init__ does not accept: " + ", ".join(unknown)
 
 
+def check_session_store(home: Path) -> tuple:
+    """A GUI session's life through portable_hermes.session_store, in the
+    store of *home* (a throw-away folder, never the user's): create it with
+    messages the way the agent does, list it, read it back, end, reopen and
+    delete it. Also checks AIAgent takes the store the way the GUI passes it."""
+    import uuid
+    from portable_hermes.session_store import open_store
+    from run_agent import AIAgent
+
+    session_id = "portable_verify_" + uuid.uuid4().hex[:12]
+    with open_store(home) as store:
+        kind = "SessionDB" if store.legacy else "storage interface"
+        params = inspect.signature(AIAgent.__init__).parameters
+        for name in store.agent_kwargs():
+            if name not in params and not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+                return False, f"{kind}: AIAgent.__init__ does not accept {name}="
+        store.create(session_id, "gui", model="portable-verify")
+        store.append(session_id, "user", "portable verify")
+        store.append(session_id, "assistant", "ok")
+        if not any(s.get("id") == session_id for s in store.list_with_messages(limit=20)):
+            return False, f"{kind}: a new session with messages is not listed"
+        read = [m.get("content") for m in store.conversation(session_id)]
+        if read != ["portable verify", "ok"]:
+            return False, f"{kind}: reading the session back gave {read!r}"
+        store.end(session_id, "portable_verify")
+        store.reopen(session_id)
+        if not store.delete(session_id):
+            return False, f"{kind}: deleting the session removed nothing"
+        if store.conversation(session_id) or any(
+                s.get("id") == session_id for s in store.list_with_messages(limit=20)):
+            return False, f"{kind}: the deleted session is still there"
+    return True, f"{kind}: create, list, read, end, reopen and delete a session"
+
+
 def verify(root: Path, *, gui: bool = True) -> dict:
     root = Path(root).resolve()
-    if not os.environ.get("HERMES_HOME"):
-        os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="portable-verify-home-")
+    # Never the user's Hermes home, even when HERMES_HOME is set: building an
+    # agent and the session check write into the Hermes home.
+    os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="portable-verify-home-")
     _isolate(root)
     checks = Checks()
 
@@ -342,6 +377,10 @@ def verify(root: Path, *, gui: bool = True) -> dict:
 
     if (root / "gui" / "agent_bridge.py").is_file():
         checks.run("gui_agent_arguments", gui_agent_arguments)
+
+    # verify()'s own throw-away home: the core also writes its media cache and
+    # home folders under HERMES_HOME, whatever store home it is given.
+    checks.run("session_store", lambda: check_session_store(Path(os.environ["HERMES_HOME"])))
 
     expected = set(bridge.PORTABLE_TOOLS)
 
@@ -445,6 +484,11 @@ def main(argv=None) -> int:
         result = verify(Path(args.root), gui=not args.no_gui)
     finally:
         sys.stdout = real_stdout
+        # verify() made this home; files still open in this process stay behind.
+        home = os.environ.get("HERMES_HOME", "")
+        if Path(home).name.startswith("portable-verify-home-"):
+            import shutil
+            shutil.rmtree(home, ignore_errors=True)
     if args.json:
         print("PORTABLE_VERIFY_RESULT " + json.dumps(result))
     else:

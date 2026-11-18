@@ -2,6 +2,7 @@
 shapes (storage interface, or the older hermes_state.SessionDB)."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -211,3 +212,117 @@ def test_the_store_closes_when_its_block_ends(current_core):
     with session_store.open_store() as store:
         handle = store.handle
     assert handle.closed
+
+
+# -- the core check in portable_hermes.verify --------------------------------------
+
+def _snapshot(folder):
+    return {p.relative_to(folder): (p.stat().st_size, p.stat().st_mtime_ns)
+            for p in folder.rglob("*")}
+
+
+@pytest.mark.needs_core
+def test_core_check_runs_a_whole_session_on_the_installed_core(monkeypatch, tmp_path):
+    """The real core, run the way verify() runs it: HERMES_HOME and the store
+    are the same throw-away folder (verify() always makes its own, see
+    test_verify_never_uses_the_hermes_home_it_was_given). Another home with
+    a state.db is not touched, and the check leaves no session behind."""
+    import time
+    from portable_hermes import verify
+
+    user_home = tmp_path / "user-home"
+    user_home.mkdir()
+    (user_home / "state.db").write_bytes(b"the user's sessions")
+    before = _snapshot(user_home)
+    throwaway = tmp_path / "throwaway"
+    throwaway.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(throwaway))
+
+    started = time.perf_counter()
+    ok, detail = verify.check_session_store(throwaway)[:2]
+    elapsed = time.perf_counter() - started
+
+    assert ok, detail
+    assert detail.startswith("storage interface:")      # this core has persistence_assembly
+    assert (throwaway / "state.db").is_file()
+    with session_store.open_store(throwaway) as store:
+        assert store.list_with_messages() == []
+    assert _snapshot(user_home) == before
+    print(f"session check took {elapsed:.2f}s")
+
+
+class _BrokenStore:
+    """A store that writes but cannot read the session back."""
+
+    legacy = False
+
+    def __init__(self, home=None):
+        self.home = home
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def agent_kwargs(self):
+        return {"persistence": object()}
+
+    def create(self, *a, **kw):
+        pass
+
+    def append(self, *a, **kw):
+        pass
+
+    def list_with_messages(self, limit=20):
+        return []
+
+    def conversation(self, session_id):
+        return []
+
+
+@pytest.mark.needs_core
+def test_core_check_refuses_a_store_that_loses_sessions(monkeypatch, tmp_path):
+    from portable_hermes import verify
+
+    monkeypatch.setattr(session_store, "open_store", _BrokenStore)
+    ok, detail = verify.check_session_store(tmp_path)[:2]
+    assert not ok and detail == "storage interface: a new session with messages is not listed"
+
+
+@pytest.mark.needs_core
+def test_core_check_refuses_an_agent_that_cannot_take_the_store(monkeypatch, tmp_path):
+    import run_agent
+    from portable_hermes import verify
+
+    class OldAgent:
+        def __init__(self, model=None, session_db=None):
+            pass
+
+    monkeypatch.setattr(session_store, "open_store", _BrokenStore)
+    monkeypatch.setattr(run_agent, "AIAgent", OldAgent)
+    ok, detail = verify.check_session_store(tmp_path)[:2]
+    assert not ok and detail == "storage interface: AIAgent.__init__ does not accept persistence="
+
+
+def test_verify_never_uses_the_hermes_home_it_was_given(monkeypatch, tmp_path):
+    """Before anything is imported from the tree, HERMES_HOME is a new
+    throw-away folder, whatever it was."""
+    from portable_hermes import verify
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def isolate(root):
+        seen["home"] = os.environ["HERMES_HOME"]
+        raise Stop
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "user-home"))
+    monkeypatch.setattr(verify, "_isolate", isolate)
+    with pytest.raises(Stop):
+        verify.verify(tmp_path)
+    assert Path(seen["home"]).name.startswith("portable-verify-home-")
+    assert Path(seen["home"]) != tmp_path / "user-home" and Path(seen["home"]).is_dir()
+    Path(seen["home"]).rmdir()
