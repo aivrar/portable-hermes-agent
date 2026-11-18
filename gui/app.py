@@ -427,10 +427,12 @@ class Sidebar(tk.Frame):
 
     def __init__(self, parent, on_new=None, on_model_change=None,
                  on_session_select=None, on_local_models=None,
-                 on_auto_load=None, can_delete_session=None, **kw):
+                 on_auto_load=None, can_delete_session=None, can_change_model=None, **kw):
         super().__init__(parent, bg=C["bg_sidebar"], width=S(260), **kw)
         self.pack_propagate(False)
         self.on_new = on_new
+        # callback() -> bool; False refuses a model pick (it explains why)
+        self.can_change_model = can_change_model
         # callback(session_id) -> bool; False refuses the delete (it explains why)
         self.can_delete_session = can_delete_session
         self.on_model_change = on_model_change
@@ -788,6 +790,12 @@ class Sidebar(tk.Frame):
 
     def _on_model_selected(self, event):
         idx = self.model_combo.current()
+        can_change = getattr(self, "can_change_model", None)
+        if can_change and not can_change():
+            # Refused before anything happens (an auto-load would unload the
+            # model the running reply uses): show the model still in effect.
+            self._select_model_in_combo(self.model_var.get())
+            return
         if 0 <= idx < len(self._all_models):
             model_id = self._all_models[idx][0]
             self.model_var.set(model_id)
@@ -868,6 +876,8 @@ class Sidebar(tk.Frame):
             short_err = error[:80] if error else t("sidebar.unknown_error")
             self._show_load_status("sidebar.load_failed", prefix="\u2717 ", error=short_err)
             self.after(5000, lambda: self._show_load_status(""))
+            # The load unloads existing instances first: refresh the states.
+            self.after(500, self.refresh_models)
 
         # Notify HermesGUI of load result
         if self.on_auto_load:
@@ -1193,7 +1203,14 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     content += f"\n{key}={val}\n"
         model = self.model_var.get().strip()
-        if model:
+        if self.bridge.is_running:
+            # During a reply: the saved keys apply from the next turn; a model
+            # change is refused (the model shown elsewhere stays in effect).
+            self.bridge.rebuild_agent()
+            if model and model != self.bridge.get_model():
+                messagebox.showinfo(t("app.title"), t("chat.busy_stop_first", stop=t("chat.stop")),
+                                    parent=self)
+        elif model:
             self.bridge.set_model(model)
         env_path.write_text(content, encoding="utf-8")
 
@@ -1605,7 +1622,8 @@ class HermesGUI:
                                on_session_select=self._on_session_select,
                                on_local_models=self._on_local_models_discovered,
                                on_auto_load=self._on_auto_load_status,
-                               can_delete_session=self._can_delete_session)
+                               can_delete_session=self._can_delete_session,
+                               can_change_model=lambda: not self._refuse_while_running())
         self.sidebar.pack(side="left", fill="y")
 
         # Vertical separator
@@ -1975,7 +1993,12 @@ class HermesGUI:
             self._add_msg(t("chat.auto_load_failed", model=model_id, error=error), "error")
 
     def _on_model_change(self, model_id):
-        """Called when user picks a model from the sidebar dropdown."""
+        """Called when user picks a model from the sidebar dropdown (also after
+        a sidebar auto-load). Refused during a reply: the dropdown goes back
+        to the model still in effect."""
+        if self._refuse_while_running():
+            self.sidebar.set_model(self.bridge.get_model())
+            return
         # Detect if this is a local model (known from LM Studio discovery)
         if model_id in self.bridge._known_local_models:
             url = self.bridge._resolve_lm_studio_url()
@@ -2064,10 +2087,18 @@ class HermesGUI:
     def _open_permissions(self):
         PermissionsPanel(self.root, on_save=self._on_permissions_saved)
 
+    def _rebuild_for_saved_settings(self):
+        """Settings already saved to disk: rebuild the agent now, or, during a
+        reply, after it (the bridge marks the rebuild pending)."""
+        if self.bridge.is_running:
+            self.bridge.rebuild_agent()
+            self._add_msg(t("chat.applies_after_reply"), "system")
+        else:
+            self._note_dropped_resume(self.bridge.rebuild_agent())
+
     def _on_permissions_saved(self, perms):
-        dropped = self.bridge.rebuild_agent()  # Force agent recreation with new permissions
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
-        self._note_dropped_resume(dropped)
+        self._rebuild_for_saved_settings()
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
@@ -2076,7 +2107,10 @@ class HermesGUI:
         LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready)
 
     def _on_lm_studio_ready(self, base_url, model_id):
-        """Switch Hermes to use LM Studio as the LLM provider."""
+        """Switch Hermes to use LM Studio as the LLM provider (refused during
+        a reply; the model stays loaded in LM Studio for later)."""
+        if self._refuse_while_running():
+            return
         dropped = False
         if model_id:
             dropped = self.bridge.set_local_mode(base_url, model_id)
@@ -2095,7 +2129,7 @@ class HermesGUI:
                 names = ", ".join(saved_keys.keys())
                 self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
-                self._note_dropped_resume(self.bridge.rebuild_agent())
+                self._rebuild_for_saved_settings()
             m = self.bridge.get_model()
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)

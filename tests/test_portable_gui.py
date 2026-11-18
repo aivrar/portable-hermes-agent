@@ -239,14 +239,18 @@ def test_gui_bridge_close_releases_owned_session_database():
         def close(self):
             self.closed = True
 
+    import threading
+
     bridge = object.__new__(AgentBridge)
     bridge.agent = None
     bridge.is_running = False
-    bridge._session_db = FakeDB()
+    bridge._shutdown_once = threading.Lock()
+    db = bridge._session_db = FakeDB()
 
     bridge.close()
+    bridge.close()                     # a second close is harmless
 
-    assert bridge._session_db is None
+    assert bridge._session_db is None and db.closed
 
 
 @pytest.mark.needs_core
@@ -718,10 +722,12 @@ def test_gui_new_chat_ends_the_previous_session_in_the_database():
 def _new_chat_bridge(agent, history):
     from gui.agent_bridge import AgentBridge
 
+    import threading
+
     bridge = object.__new__(AgentBridge)
     bridge.__dict__.update(agent=agent, conversation_history=list(history),
                            session_id="gui_old", _session_db=None, is_running=False,
-                           _resume_session_id=None)
+                           _resume_session_id=None, _shutdown_once=threading.Lock())
     return bridge
 
 
@@ -812,16 +818,37 @@ def test_gui_resume_and_bridge_close_close_the_previous_agent():
 
 
 @pytest.mark.needs_core
-def test_gui_agent_dropped_during_a_turn_is_released_when_the_turn_ends():
+@pytest.mark.parametrize("switch", ["set_cloud_mode", "set_local_mode", "set_model"])
+def test_gui_bridge_refuses_a_model_switch_during_a_turn(switch):
+    from gui.agent_bridge import TurnInProgress
+
+    agent = _ReleasableAgent()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.__dict__.update(_active_provider="cloud", _selected_model="old/model",
+                           _lm_studio_base_url=None, is_running=True)
+    args = ("http://127.0.0.1:1234", "local") if switch == "set_local_mode" else ("new/m",)
+
+    with pytest.raises(TurnInProgress):
+        getattr(bridge, switch)(*args)
+
+    assert (bridge._active_provider, bridge._selected_model, bridge._lm_studio_base_url) == (
+        "cloud", "old/model", None)
+    assert bridge.agent is agent and agent.calls == []
+
+
+@pytest.mark.needs_core
+def test_gui_rebuild_requested_during_a_turn_is_applied_when_it_ends():
     agent = _ReleasableAgent()
     bridge = _new_chat_bridge(agent, HISTORY)
     bridge.is_running = True
 
-    bridge.set_cloud_mode("cloud/model")
-    assert agent.calls == []                      # never under a running turn
+    assert bridge.rebuild_agent() is False
+    assert bridge.agent is agent and agent.calls == []     # nothing under the turn
 
-    bridge._finish_turn()
-    assert agent.calls == ["release_clients"] and bridge.is_running is False
+    bridge.is_running = False
+    bridge._after_turn()                                   # Tk thread, turn over
+    assert agent.calls == ["release_clients"] and bridge.agent is None
+    assert bridge._rebuild_pending is False
 
 
 @pytest.mark.needs_core
@@ -843,7 +870,7 @@ def test_gui_failing_release_never_raises_into_the_gui():
 def test_gui_permissions_and_api_keys_rebuild_through_the_bridge():
     from unittest.mock import Mock
 
-    gui = _gui_with_bridge(Mock())
+    gui = _gui_with_bridge(Mock(is_running=False))
     gui._on_permissions_saved({})
     gui.bridge.rebuild_agent.assert_called_once_with()
 
@@ -1016,7 +1043,7 @@ def test_gui_new_chat_select_and_delete_ask_to_stop_first(monkeypatch):
 
 
 @pytest.mark.needs_core
-def test_gui_turn_survives_the_agent_being_dropped_before_it_starts(monkeypatch):
+def test_gui_turn_survives_an_agent_build_that_yields_nothing(monkeypatch):
     from gui import agent_bridge
     import tools.terminal_tool as terminal_tool
 
@@ -1032,7 +1059,7 @@ def test_gui_turn_survives_the_agent_being_dropped_before_it_starts(monkeypatch)
 
     agent_bridge.AgentBridge._run_agent(bridge, "hi")
 
-    assert errors and "replaced before the turn started" in errors[0]
+    assert errors and "no agent could be prepared" in errors[0]
     assert "NoneType" not in errors[0]
     assert bridge.is_running is False and bridge.conversation_history == HISTORY
 
@@ -1056,7 +1083,7 @@ def test_gui_model_switch_says_the_resumed_session_is_not_continued():
     from unittest.mock import Mock
     from gui.i18n import t
 
-    bridge = Mock(_known_local_models=set(), _active_provider="cloud")
+    bridge = Mock(_known_local_models=set(), _active_provider="cloud", is_running=False)
     bridge.set_model.return_value = True
     gui = _gui_with_bridge(bridge)
     gui.sidebar._all_models = []
@@ -1163,52 +1190,149 @@ def _worker_bridge(monkeypatch, create_agent):
     return bridge, events
 
 
-@pytest.mark.needs_core
-def test_gui_settings_change_while_the_agent_is_built_is_not_lost(monkeypatch):
-    built = []
-
-    def create(bridge):
-        agent = _TurnAgent(bridge.get_model())
-        built.append(agent)
-        if len(built) == 1:              # the user switches model mid-build
-            bridge.model = "new-model"
-            bridge.rebuild_agent()
-        bridge.agent = agent
-
-    bridge, events = _worker_bridge(monkeypatch, create)
-    bridge.send_message("hi")
-    bridge._agent_thread.join(10)
-
-    assert [a.model for a in built] == ["old-model", "new-model"]
-    assert built[0].calls == ["release_clients"]          # stale build released, never used
-    assert events["response"] == ["answer from new-model"]
-    assert bridge.agent is built[1] and bridge.is_running is False
-
-
-@pytest.mark.needs_core
-def test_gui_stop_reaches_the_running_agent_after_a_model_switch(monkeypatch):
+def _wait_for(condition):
     import threading
+    for _ in range(250):
+        if condition():
+            return
+        threading.Event().wait(0.02)
+    raise AssertionError("condition not reached")
+
+
+@pytest.mark.needs_core
+def test_gui_stop_reaches_the_running_agent_and_saved_settings_wait(monkeypatch):
+    import threading
+    from gui.agent_bridge import TurnInProgress
+
     hold = threading.Event()
     running = _TurnAgent("old-model", hold=hold)
 
     def create(bridge):
         bridge.agent = running
 
-    bridge, _events = _worker_bridge(monkeypatch, create)
+    bridge, events = _worker_bridge(monkeypatch, create)
     bridge.send_message("long task")
-    for _ in range(100):
-        if running.calls:
-            break
-        threading.Event().wait(0.02)
+    _wait_for(lambda: running.calls)
 
-    bridge.set_cloud_mode("other/model")         # drops self.agent mid-turn
-    assert bridge.agent is None and bridge.is_running
+    with pytest.raises(TurnInProgress):           # model switch refused mid-turn
+        bridge.set_cloud_mode("other/model")
+    bridge.rebuild_agent()                        # e.g. permissions saved mid-turn
+    assert bridge.agent is running and running.calls == ["run_conversation"]
+
     bridge.interrupt()                            # Stop
-
     bridge._agent_thread.join(10)
+
     assert running.interrupted == [""]
+    # The pending rebuild ran after the turn (Tk thread): soft release only.
     assert running.calls == ["run_conversation", "release_clients"]
+    assert bridge.agent is None and bridge.is_running is False
+    assert events["error"] == []
+
+
+@pytest.mark.needs_core
+def test_gui_close_during_the_agent_build_releases_it_and_publishes_nothing(monkeypatch):
+    built = []
+
+    class FakeDB:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def create(bridge):
+        agent = _TurnAgent("old-model")
+        built.append(agent)
+        bridge.close()                    # the app exits while the agent is built
+        bridge.agent = agent
+
+    bridge, events = _worker_bridge(monkeypatch, create)
+    db = bridge._session_db = FakeDB()
+    posted = []
+    bridge.root = SimpleNamespace(after=lambda _ms, fn: posted.append(fn))
+    bridge.send_message("hi")
+    bridge._agent_thread.join(10)
+
+    assert len(built) == 1                            # no retry
+    assert built[0].calls == ["close"]                # closed, never run
+    assert bridge.agent is None and bridge._session_db is None and db.closed
+    assert posted == [] and events == {"error": [], "response": []}
     assert bridge.is_running is False
+
+
+@pytest.mark.needs_core
+def test_gui_close_during_a_turn_closes_the_agent_once_after_it():
+    import threading
+
+    hold = threading.Event()
+    running = _TurnAgent("m", hold=hold)
+    bridge = _new_chat_bridge(running, HISTORY)
+    bridge.__dict__.update(is_running=True, _running_agent=running)
+
+    bridge.close()                                    # Stop + leave it to the worker
+    assert running.interrupted == [""] and running.calls == []
+    bridge._end_turn()                                # the worker's last step
+    bridge.close()                                    # and again: still once
+    assert running.calls == ["close"] and bridge.agent is None
+
+
+@pytest.mark.needs_core
+def test_gui_interrupt_while_the_turn_finishes_is_harmless():
+    class Finished(_ReleasableAgent):
+        def interrupt(self, message=""):
+            raise RuntimeError("client already closed")
+
+    agent = Finished()
+    bridge = _new_chat_bridge(agent, HISTORY)
+    bridge.__dict__.update(is_running=True, _running_agent=agent)
+    bridge.interrupt()                                # raises inside: swallowed
+    bridge._running_agent = None                      # the worker just let go
+    bridge.interrupt()
+    bridge.is_running = False                         # turn over
+    bridge.interrupt()
+    assert agent.calls == []                          # interrupt never releases
+
+
+@pytest.mark.needs_core
+def test_gui_model_switch_is_refused_while_a_reply_runs():
+    from unittest.mock import Mock
+    from gui import app
+    from gui.i18n import t
+
+    bridge = Mock(is_running=True, _known_local_models=set())
+    bridge.get_model.return_value = "old/model"
+    gui = _gui_with_bridge(bridge)
+    busy = (t("chat.busy_stop_first", stop=t("chat.stop")), "system")
+
+    gui._on_model_change("new/model")                 # dropdown or auto-load done
+    gui._on_lm_studio_ready("http://127.0.0.1:1234", "local")   # "Use for Chat"
+
+    bridge.set_model.assert_not_called()
+    bridge.set_local_mode.assert_not_called()
+    gui.sidebar.set_model.assert_called_once_with("old/model")  # dropdown reverts
+    assert [c.args for c in gui._add_msg.call_args_list] == [busy, busy]
+
+    sidebar = object.__new__(app.Sidebar)              # refused before any auto-load
+    sidebar.__dict__.update(can_change_model=lambda: False, model_combo=Mock(),
+                            model_var=Mock(get=lambda: "old/model"),
+                            _select_model_in_combo=Mock(), _auto_load_model=Mock(),
+                            on_model_change=Mock())
+    sidebar._on_model_selected(None)
+    sidebar._select_model_in_combo.assert_called_once_with("old/model")
+    sidebar._auto_load_model.assert_not_called()
+    sidebar.on_model_change.assert_not_called()
+
+
+@pytest.mark.needs_core
+def test_gui_saved_settings_during_a_reply_apply_after_it():
+    from unittest.mock import Mock
+    from gui.i18n import t
+
+    bridge = Mock(is_running=True)
+    gui = _gui_with_bridge(bridge)
+    gui._on_permissions_saved({})
+
+    bridge.rebuild_agent.assert_called_once_with()    # the bridge marks it pending
+    assert gui._add_msg.call_args_list[-1].args == (t("chat.applies_after_reply"), "system")
 
 
 @pytest.mark.needs_core

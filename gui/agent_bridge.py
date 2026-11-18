@@ -49,8 +49,21 @@ def _load_cli_config() -> dict:
         }
 
 
+class TurnInProgress(RuntimeError):
+    """A model/provider switch was requested while a reply is running."""
+
+
 class AgentBridge:
     """Bridge between AIAgent and the GUI. Full CLI feature parity."""
+
+    # Turn state defaults (set again per instance in __init__).
+    agent = None
+    is_running = False
+    _running_agent = None
+    _rebuild_pending = False
+    _closing = False
+    _interrupted = False
+    _resume_session_id = None
 
     def __init__(self, root, on_response=None, on_tool_call=None,
                  on_thinking=None, on_error=None, on_step=None,
@@ -72,12 +85,13 @@ class AgentBridge:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_id: Optional[str] = None
         self._resume_session_id: Optional[str] = None  # set by resume_session()
+        # The one rule (see "turns" below): the agent and the session change
+        # only on the Tk thread while no turn is running.
         self.is_running = False
-        # Agents dropped while a turn was running; released when it ends.
-        self._agents_to_release: list = []
-        self._release_lock = threading.Lock()
-        self._running_agent = None    # the agent of the running turn (Stop reaches it)
-        self._agent_generation = 0    # bumped whenever the agent is dropped
+        self._running_agent = None     # the running turn's agent (Stop reaches it)
+        self._rebuild_pending = False  # settings saved mid-turn: rebuild after it
+        self._closing = False
+        self._shutdown_once = threading.Lock()   # one-shot latch, see _shutdown
         self._agent_thread: Optional[threading.Thread] = None
         self._clarify_queue = queue.Queue()
         self._approval_queue = queue.Queue()
@@ -125,8 +139,15 @@ class AgentBridge:
         """Check if the active provider is local (LM Studio)."""
         return self._active_provider == "local"
 
+    def _require_idle(self):
+        """Model/provider switches are refused during a turn (the GUI checks
+        first and tells the user to press Stop)."""
+        if self.is_running:
+            raise TurnInProgress("a reply is still running")
+
     def set_local_mode(self, base_url: str, model_id: str):
         """Switch to LM Studio as the active provider."""
+        self._require_idle()
         self._active_provider = "local"
         self._lm_studio_base_url = base_url.rstrip("/")
         self._selected_model = model_id
@@ -134,6 +155,7 @@ class AgentBridge:
 
     def set_cloud_mode(self, model: str):
         """Switch to OpenRouter as the active provider."""
+        self._require_idle()
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
@@ -155,38 +177,30 @@ class AgentBridge:
     def rebuild_agent(self) -> bool:
         """Drop the agent so the next turn builds a new one; the chat goes on.
 
+        During a turn nothing changes now: the rebuild is marked pending and
+        applied when the turn ends (settings already saved to disk, e.g.
+        permissions or API keys, apply from the next turn).
+
         A rebuilt agent always gets a new session id (model switch, saved
         permissions or API keys start a new session, history kept), so a
         resumed session that has not been continued yet is not continued
         either. Returns True when such a pending resume was dropped."""
-        dropped_resume = bool(getattr(self, "_resume_session_id", None))
+        if self.is_running:
+            self._rebuild_pending = True
+            return False
+        dropped_resume = bool(self._resume_session_id)
         self._resume_session_id = None
         self._discard_agent(conversation_over=False)
         return dropped_resume
 
-    def _release_state(self):
-        """The lock guarding is_running and the pending-release list (created
-        on first use, so partially built bridges work too)."""
-        state = self.__dict__
-        state.setdefault("_agents_to_release", [])
-        return state.setdefault("_release_lock", threading.Lock())
-
     def _discard_agent(self, *, conversation_over: bool) -> None:
-        with self._release_state():
-            # Bumped even when there is no agent yet: a worker building one
-            # right now then knows its settings are stale (_agent_for_turn).
-            self._agent_generation = self.__dict__.get("_agent_generation", 0) + 1
-            agent, self.agent = getattr(self, "agent", None), None
-        if agent is None:
-            return
-        history = list(getattr(self, "conversation_history", None) or [])
-        with self._release_state():
-            if getattr(self, "is_running", False):
-                # Never tear an agent down under a running turn; the worker
-                # releases it when the turn ends (_finish_turn).
-                self._agents_to_release.append((agent, conversation_over, history))
-                return
-        self._release_agent(agent, conversation_over, history)
+        """Drop and release the agent. Only while no turn runs (Tk thread),
+        or from _shutdown once the turn is over."""
+        self._rebuild_pending = False   # the next agent is built fresh anyway
+        agent, self.agent = self.agent, None
+        if agent is not None:
+            history = list(getattr(self, "conversation_history", None) or [])
+            self._release_agent(agent, conversation_over, history)
 
     def _release_agent(self, agent, conversation_over: bool, history) -> None:
         """Release one dropped agent. Never raises into the GUI."""
@@ -205,15 +219,6 @@ class AgentBridge:
             import logging
             logging.getLogger("hermes.bridge").warning(
                 "releasing the previous agent failed", exc_info=True)
-
-    def _finish_turn(self) -> None:
-        """End of a worker turn: clear is_running, release agents dropped meanwhile."""
-        with self._release_state():
-            pending, self._agents_to_release = self._agents_to_release, []
-            self._running_agent = None
-            self.is_running = False
-        for agent, conversation_over, history in pending:
-            self._release_agent(agent, conversation_over, history)
 
     def register_local_models(self, model_ids: list):
         """Register model IDs discovered from LM Studio so routing works correctly."""
@@ -487,8 +492,8 @@ You are running on **{os_name} {os_release}**.
             self._resume_session_id = None
 
     def _post(self, callback, *args):
-        """Post a callback to the tkinter main thread."""
-        if callback:
+        """Post a callback to the tkinter main thread (nothing after close())."""
+        if callback and not self._closing:
             try:
                 self.root.after(0, lambda: callback(*args))
             except Exception:
@@ -808,9 +813,18 @@ You are running on **{os_name} {os_release}**.
 
         return "\n\n".join(response_parts)
 
+    # -- turns ----------------------------------------------------------------
+    # One rule: the agent and the session change only on the Tk thread while
+    # no turn is running. send_message sets is_running (Tk thread) before the
+    # worker starts, so it also covers building the agent; the worker clears
+    # it as its very last step (_end_turn). Model switches and session
+    # changes are refused meanwhile; saved settings mark a pending rebuild.
+    # The worker therefore sees one consistent set of settings, and only it
+    # touches self.agent during the turn. The one exception is close().
+
     def _run_agent(self, message: str, image_paths: list = None):
         """Worker thread body. Whatever happens (log setup, config, imports,
-        agent build, the turn itself), the turn is finished and the error is
+        agent build, the turn itself), the turn is ended and the error is
         reported, so is_running can never stay stuck."""
         try:
             self._run_agent_turn(message, image_paths)
@@ -828,7 +842,25 @@ You are running on **{os_name} {os_release}**.
                 set_approval_callback(None)
             except Exception:
                 pass
-            self._finish_turn()
+            self._end_turn()
+
+    def _end_turn(self):
+        """Last step of the worker: hand the agent back to the Tk thread.
+
+        close() sets _closing and then looks at is_running; this clears
+        is_running and then looks at _closing. So at least one of them sees
+        the other and runs _shutdown (its latch makes it run only once)."""
+        self._running_agent = None
+        self.is_running = False
+        if self._closing:
+            self._shutdown()
+        else:
+            self._post(self._after_turn)
+
+    def _after_turn(self):
+        """Tk thread, after a turn: apply a rebuild requested during it."""
+        if self._rebuild_pending:
+            self.rebuild_agent()
 
     def _bridge_log(self):
         import logging as _log
@@ -842,32 +874,6 @@ You are running on **{os_name} {os_release}**.
             _dbg.addHandler(_fh)
             _dbg.setLevel(_log.DEBUG)
         return _dbg
-
-    def _agent_for_turn(self):
-        """The agent this turn runs on, built if needed.
-
-        A model or settings change that arrives while the agent is being built
-        (rebuild_agent bumps the generation) would otherwise be lost: the
-        build finishes with the old settings and later turns reuse it. Such a
-        stale agent is released and the agent is built again."""
-        for _attempt in range(3):
-            with self._release_state():
-                generation = self.__dict__.get("_agent_generation", 0)
-                agent = self.agent
-            if agent is not None:
-                return agent
-            self._create_agent()
-            with self._release_state():
-                current = self.__dict__.get("_agent_generation", 0)
-                agent = self.agent
-                if current == generation:
-                    return agent
-                # Settings changed during the build: drop what was built.
-                self.agent = None
-            if agent is not None:
-                self._release_agent(agent, False, [])
-        raise RuntimeError("the model settings kept changing while the agent was being "
-                           "prepared; please send the message again")
 
     def _run_agent_turn(self, message: str, image_paths: list = None):
         _dbg = self._bridge_log()
@@ -895,15 +901,16 @@ You are running on **{os_name} {os_release}**.
         from tools.terminal_tool import set_approval_callback
         set_approval_callback(self._approval_callback)
 
-        # This turn keeps its own reference for its whole lifetime: the GUI
-        # may drop self.agent meanwhile (the dropped agent is released after
-        # the turn), and Stop must still reach the agent that is running.
-        agent = self._agent_for_turn()
+        if self.agent is None:
+            _dbg.debug("creating agent...")
+            self._create_agent()
+        agent = self.agent
         if agent is None:
-            raise RuntimeError("the agent was replaced before the turn started; please resend")
-        with self._release_state():
-            self._running_agent = agent
-        if self._interrupted:  # Stop pressed while the agent was being built
+            raise RuntimeError("no agent could be prepared; please send the message again")
+        # Stop reaches this agent (interrupt). Stop or app exit during the
+        # build: skip the turn (on exit _end_turn closes the built agent).
+        self._running_agent = agent
+        if self._interrupted or self._closing:
             _dbg.debug("stopped before the turn started")
             return
         _dbg.debug("agent ready, base_url=%r api_key=%s",
@@ -939,13 +946,16 @@ You are running on **{os_name} {os_release}**.
         self._post(self.on_complete, result)
 
     def interrupt(self):
-        """Stop the running turn: the agent that is actually running, even if
-        the GUI has already dropped self.agent (model switch mid-turn)."""
+        """Stop the running turn.
+
+        Only signals the agent: the core's interrupt() sets flags and signals
+        tools and child agents, it releases nothing, so it is harmless on an
+        agent whose turn is finishing at the same moment. Agents are released
+        only in _discard_agent (Tk thread when idle, or _shutdown)."""
         if not self.is_running:
             return
         self._interrupted = True
-        with self._release_state():
-            agent = self.__dict__.get("_running_agent") or self.agent
+        agent = self._running_agent   # None while the agent is still being built
         if agent is not None:
             try:
                 agent.interrupt("")
@@ -953,15 +963,26 @@ You are running on **{os_name} {os_release}**.
                 pass
 
     def close(self):
-        """Release resources owned by the GUI bridge."""
-        self.interrupt()
-        # Closed now, or (if a turn is still running) when that turn ends.
+        """App exit. During a turn the turn is stopped and the worker closes
+        its agent and the database when it ends (_end_turn); it reports and
+        keeps nothing afterwards. Otherwise everything is closed now."""
+        self._closing = True
+        if self.is_running:
+            self.interrupt()
+        if not self.is_running:
+            self._shutdown()
+
+    def _shutdown(self):
+        """Close the agent (ends its session row) and then the database, once."""
+        if not self._shutdown_once.acquire(blocking=False):
+            return
         self._discard_agent(conversation_over=True)
-        if self._session_db is not None:
+        db, self._session_db = self._session_db, None
+        if db is not None:
             try:
-                self._session_db.close()
-            finally:
-                self._session_db = None
+                db.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _commit_memory(agent, history) -> None:
