@@ -79,6 +79,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "accounts.unavailable": "In-app sign-in is not available in this Hermes version. Run this in a terminal: {command}",
         "chat.account_in_use": "Now chatting through {name}: {model}.",
         "chat.account_rejected": "{name} cannot use {model}: {error}",
+        "chat.model_save_failed": "Could not switch to {model}: {error}",
+        "accounts.busy": "Wait until the reply or the model change has finished.",
         "wizard.accounts_hint": "Have a ChatGPT or Grok subscription? Use {menu} instead of a key.",
 
         # Sidebar
@@ -543,6 +545,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "accounts.unavailable": "此 Hermes 版本不支援應用程式內登入。請在終端機執行：{command}",
         "chat.account_in_use": "現在透過 {name} 對話：{model}。",
         "chat.account_rejected": "{name} 無法使用 {model}：{error}",
+        "chat.model_save_failed": "無法切換至 {model}：{error}",
+        "accounts.busy": "請等待回覆或模型切換完成。",
         "wizard.accounts_hint": "擁有 ChatGPT 或 Grok 訂閱？請改用 {menu}，無需金鑰。",
 
         # Sidebar
@@ -1007,6 +1011,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "accounts.unavailable": "此 Hermes 版本不支持应用内登录。请在终端中运行：{command}",
         "chat.account_in_use": "现在通过 {name} 对话：{model}。",
         "chat.account_rejected": "{name} 无法使用 {model}：{error}",
+        "chat.model_save_failed": "无法切换到 {model}：{error}",
+        "accounts.busy": "请等待回复或模型切换完成。",
         "wizard.accounts_hint": "拥有 ChatGPT 或 Grok 订阅？请改用 {menu}，无需密钥。",
 
         # Sidebar
@@ -1471,6 +1477,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "accounts.unavailable": "El inicio de sesión en la aplicación no está disponible en esta versión de Hermes. Ejecuta esto en una terminal: {command}",
         "chat.account_in_use": "Ahora chateas a través de {name}: {model}.",
         "chat.account_rejected": "{name} no puede usar {model}: {error}",
+        "chat.model_save_failed": "No se pudo cambiar a {model}: {error}",
+        "accounts.busy": "Espera a que terminen la respuesta o el cambio de modelo.",
         "wizard.accounts_hint": "¿Tienes una suscripción de ChatGPT o Grok? Usa {menu} en lugar de una clave.",
 
         # Sidebar

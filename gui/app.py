@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
-from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
+from gui.agent_bridge import AgentBridge, ModelSaveFailed, sync_bundled_skills_once
 from portable_hermes.session_store import open_store
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
@@ -1505,7 +1505,11 @@ class SettingsDialog(tk.Toplevel):
         # Never during a reply (the dialog is modal). Only a changed model is
         # applied: saving other settings keeps the model (or account) in use.
         if model and model != getattr(self, "_shown_model", None):
-            self.bridge.set_model(model)
+            try:
+                self.bridge.set_model(model)
+            except ModelSaveFailed as exc:     # nothing switched: say why
+                messagebox.showerror(t("settings.title"),
+                                     t("chat.model_save_failed", model=model, error=exc), parent=self)
         env_path.write_text(content, encoding="utf-8")
 
         # Save language preference
@@ -2516,14 +2520,19 @@ class HermesGUI:
             self._use_account(account, model_id)
             return
         # Detect if this is a local model (known from LM Studio discovery)
-        if model_id in self.bridge._known_local_models:
-            url = self.bridge._resolve_lm_studio_url()
-            if url:
-                dropped = self.bridge.set_local_mode(url, model_id)
+        try:
+            if model_id in self.bridge._known_local_models:
+                url = self.bridge._resolve_lm_studio_url()
+                if url:
+                    dropped = self.bridge.set_local_mode(url, model_id)
+                else:
+                    dropped = self.bridge.set_model(model_id)
             else:
                 dropped = self.bridge.set_model(model_id)
-        else:
-            dropped = self.bridge.set_model(model_id)
+        except ModelSaveFailed as exc:   # leaving an account failed: nothing switched
+            self._add_msg(t("chat.model_save_failed", model=model_id, error=exc), "error")
+            self.sidebar.set_model(self.bridge.get_model())
+            return
         # Show friendly name in status bar
         display = model_id
         for mid, name, note in self.sidebar._all_models:

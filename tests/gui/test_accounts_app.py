@@ -55,17 +55,57 @@ def test_account_mode_is_refused_during_a_reply():
     assert (bridge._account_provider, bridge._selected_model) == (None, "google/gemini-2.5-flash")
 
 
-def test_an_openrouter_pick_names_its_provider_and_lm_studio_writes_nothing(monkeypatch):
+@pytest.mark.parametrize("model_cfg", [{"provider": "deepseek", "default": "deepseek-chat"},
+                                       {"provider": "auto"}, {}, "anthropic/claude-opus-4.6"])
+def test_an_openrouter_pick_leaves_any_other_provider_untouched(monkeypatch, model_cfg):
     from gui import agent_bridge
     written = []
     monkeypatch.setattr(accounts_core, "use_openrouter", written.append)
-    monkeypatch.setattr(agent_bridge, "_load_cli_config", lambda: {"model": {"provider": "openrouter"}})
+    monkeypatch.setattr(agent_bridge, "_load_cli_config", lambda: {"model": model_cfg})
+    bridge = _bridge()
+    bridge.set_cloud_mode("google/gemini-2.5-pro")
+    assert written == [] and bridge.get_model() == "google/gemini-2.5-pro"   # as on main
+
+
+def test_leaving_an_account_writes_openrouter_and_lm_studio_writes_nothing(monkeypatch):
+    from gui import agent_bridge
+    written, config = [], {"model": {"provider": "openai-codex", "default": "gpt-6-sol"}}
+
+    def use_openrouter(model):
+        written.append(model)
+        config["model"] = {"provider": "openrouter", "default": model}
+    monkeypatch.setattr(accounts_core, "use_openrouter", use_openrouter)
+    monkeypatch.setattr(agent_bridge, "_load_cli_config", lambda: config)
     bridge = _bridge(_account_provider="openai-codex")
     bridge.set_cloud_mode("google/gemini-2.5-pro")
     assert written == ["google/gemini-2.5-pro"] and bridge._account_provider is None
+    assert bridge.config["model"]["provider"] == "openrouter"
+    config["model"] = {"provider": "openai-codex"}
     bridge.set_local_mode("http://127.0.0.1:1234", "local/m")
     bridge.set_cloud_mode("local/m")             # LM Studio not running: as before, no write
     assert written == ["google/gemini-2.5-pro"]
+
+
+def test_a_failed_write_when_leaving_an_account_switches_nothing(monkeypatch):
+    from gui import agent_bridge
+    from gui.agent_bridge import ModelSaveFailed
+
+    def use_openrouter(model):
+        raise PermissionError("config.yaml is read-only")
+    monkeypatch.setattr(accounts_core, "use_openrouter", use_openrouter)
+    monkeypatch.setattr(agent_bridge, "_load_cli_config", lambda: {"model": {"provider": "xai-oauth"}})
+    agent = object()
+    bridge = _bridge(agent=agent, _account_provider="xai-oauth", _selected_model="grok-4.6")
+    with pytest.raises(ModelSaveFailed, match="read-only"):
+        bridge.set_cloud_mode("google/gemini-2.5-pro")
+    assert (bridge.agent, bridge.get_model(), bridge._account_provider) == (agent, "grok-4.6", "xai-oauth")
+
+    gui = _gui(bridge)                            # the model box says why and keeps the model
+    gui.sidebar.account_for.return_value = None
+    gui._on_model_change("google/gemini-2.5-pro")
+    text, kind = gui._add_msg.call_args[0]
+    assert kind == "error" and "Could not switch to google/gemini-2.5-pro" in text and "read-only" in text
+    gui.sidebar.set_model.assert_called_with("grok-4.6")
 
 
 class FakeRoot:

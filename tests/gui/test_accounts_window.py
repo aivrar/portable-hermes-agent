@@ -219,8 +219,9 @@ def test_a_connected_account_goes_straight_to_the_model(tk_root, monkeypatch):
 def test_accounts_strings_exist_in_every_language():
     from gui.i18n import TRANSLATIONS
     keys = {k for k in TRANSLATIONS["en"] if k.startswith("accounts.")} | {
-        "menu.accounts", "chat.account_in_use", "chat.account_rejected", "wizard.accounts_hint"}
-    assert len(keys) == 31
+        "menu.accounts", "chat.account_in_use", "chat.account_rejected", "wizard.accounts_hint",
+        "chat.model_save_failed"}
+    assert len(keys) == 33
     for lang, table in TRANSLATIONS.items():
         for key in keys:
             fields = [f for f in ("{name}", "{model}", "{time}", "{error}", "{command}", "{menu}")
