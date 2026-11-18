@@ -144,3 +144,221 @@ def test_connection_reads_tk_variables_only_on_ui_thread(monkeypatch):
     lm.LMStudioPanel._connect(panel)
     assert complete.wait(5)
     assert client.api_key == "test-key"
+
+
+def _sdk_with_downloaded(*downloaded):
+    llm = Mock()
+    llm.list_loaded.return_value = []
+    llm.list_downloaded.return_value = list(downloaded)
+    return SimpleNamespace(llm=llm)
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_panel_load_keeps_lm_studio_default_identifier_model_key(monkeypatch):
+    """No opaque "hermes-<time>" id: LM Studio names the instance after the model key."""
+    target = Mock(model_key="gemma-4-e4b-it", path="lmstudio-community/gemma-4-e4b-it",
+                  display_name="Gemma 4 E4B")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model("gemma-4-e4b-it", context_length=65536)
+
+    target.load_new_instance.assert_called_once()
+    assert "instance_identifier" not in target.load_new_instance.call_args.kwargs
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_panel_string_load_fallback_passes_no_identifier():
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded()
+
+    assert client.load_model("unlisted-model", context_length=65536)
+
+    call = client._sdk_client.llm.load_new_instance.call_args
+    assert call.args == ("unlisted-model",)
+    assert "instance_identifier" not in call.kwargs
+
+
+def test_model_list_shows_a_loaded_model_once():
+    rows = lm._one_row_per_model([
+        {"id": "qwen", "state": "not-loaded"},
+        {"id": "gemma-4-e4b-it", "state": "not-loaded"},
+        {"id": "gemma-4-e4b-it", "state": "loaded"},
+    ])
+    assert rows == [{"id": "qwen", "state": "not-loaded"},
+                    {"id": "gemma-4-e4b-it", "state": "loaded"}]
+
+
+class FakeListbox:
+    def __init__(self):
+        self.rows, self.selected = [], ()
+
+    def curselection(self):
+        return self.selected
+
+    def delete(self, first, last):
+        self.rows, self.selected = [], ()
+
+    def insert(self, _index, label):
+        self.rows.append(label)
+
+    def selection_set(self, row):
+        self.selected = (row,)
+
+    def see(self, _row):
+        pass
+
+
+def _listed_panel(ids, selected_id):
+    panel = SimpleNamespace(model_list=FakeListbox(), models=[])
+    lm.LMStudioPanel._display_models(panel, [{"id": i} for i in ids])
+    panel.model_list.selection_set(ids.index(selected_id))
+    return panel
+
+
+def test_refresh_keeps_selection_on_the_same_model_when_rows_shift():
+    panel = _listed_panel(["gemma-4-e4b-it", "qwen3.6-27b-mtp"], "gemma-4-e4b-it")
+
+    lm.LMStudioPanel._display_models(panel, [
+        {"id": "new-row", "state": "loaded"},
+        {"id": "gemma-4-e4b-it"}, {"id": "qwen3.6-27b-mtp"}])
+
+    assert panel.model_list.curselection() == (1,)
+
+
+def test_refresh_after_load_selects_the_loaded_model():
+    panel = _listed_panel(["qwen3.6-27b-mtp", "gemma-4-e4b-it"], "qwen3.6-27b-mtp")
+
+    lm.LMStudioPanel._display_models(panel, [
+        {"id": "gemma-4-e4b-it", "state": "loaded"}, {"id": "qwen3.6-27b-mtp"}],
+        "gemma-4-e4b-it")
+
+    assert panel.model_list.curselection() == (0,)
+
+
+def test_refresh_without_the_selected_model_selects_nothing():
+    panel = _listed_panel(["gone", "other"], "gone")
+
+    lm.LMStudioPanel._display_models(panel, [{"id": "other"}])
+
+    assert panel.model_list.curselection() == ()
+
+
+VARIANT = "deepseek-r1-0528-qwen3-8b@q4_k_m"
+
+
+def _panel_refreshing_to(rows, requested):
+    """A panel with *requested* selected whose refresh shows *rows*."""
+    panel = _listed_panel([VARIANT, "deepseek-r1-0528-qwen3-8b@q6_k", "other"], requested)
+    panel._restore_load_btn = Mock()
+    panel.status_dot = Mock()
+    panel._set_status = Mock()
+    panel._refresh_models = lambda **kw: lm.LMStudioPanel._display_models(panel, rows, **kw)
+    return panel
+
+
+def _selected_id(panel):
+    (row,) = panel.model_list.curselection()
+    return panel.models[row]["id"]
+
+
+def test_load_success_selects_the_real_instance_id_when_it_differs():
+    rows = [{"id": "deepseek-r1-0528-qwen3-8b", "state": "loaded"},
+            {"id": "earlier-instance", "state": "loaded"},
+            {"id": VARIANT, "state": "not-loaded"},
+            {"id": "deepseek-r1-0528-qwen3-8b@q6_k", "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, "deepseek-r1-0528-qwen3-8b")
+
+    assert _selected_id(panel) == "deepseek-r1-0528-qwen3-8b"
+
+
+def test_load_success_with_unknown_id_selects_the_only_loaded_row():
+    rows = [{"id": VARIANT, "state": "not-loaded"},
+            {"id": "deepseek-r1-0528-qwen3-8b", "state": "loaded"},
+            {"id": "other", "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None)
+
+    assert _selected_id(panel) == "deepseek-r1-0528-qwen3-8b"
+
+
+def test_load_success_with_unknown_id_and_no_single_loaded_row_selects_requested():
+    rows = [{"id": "other", "state": "loaded"}, {"id": "more", "state": "loaded"},
+            {"id": VARIANT, "state": "not-loaded"}]
+    panel = _panel_refreshing_to(rows, "other")
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None)
+
+    assert _selected_id(panel) == VARIANT
+
+
+def _tk_root_or_skip():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    return root
+
+
+def test_load_and_restore_keep_the_button_order():
+    """[Load Model][Unload][Refresh] -> [Cancel][Unload][Refresh] -> back again."""
+    from tkinter import ttk
+
+    root = _tk_root_or_skip()
+    try:
+        row = ttk.Frame(root)
+        load_btn, unload_btn, refresh_btn = (ttk.Button(row) for _ in range(3))
+        for button in (load_btn, unload_btn, refresh_btn):
+            button.pack(side="left")
+        panel = SimpleNamespace(
+            model_list=Mock(curselection=lambda: (0,)),
+            models=[{"id": "gemma-4-e4b-it"}],
+            ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
+            gpu_var=Mock(get=lambda: "CPU"),
+            _set_status=Mock(), status_dot=Mock(), _cancel_load=Mock(),
+            client=Mock(), _post_ui=Mock(),
+            load_btn=load_btn, unload_btn=unload_btn)
+
+        lm.LMStudioPanel._load_model(panel)
+        assert row.pack_slaves() == [panel._cancel_btn, unload_btn, refresh_btn]
+
+        lm.LMStudioPanel._restore_load_btn(panel)
+        assert row.pack_slaves() == [load_btn, unload_btn, refresh_btn]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_records_the_identifier_lm_studio_returned():
+    target = Mock(model_key=VARIANT, path="publisher/deepseek", display_name="DeepSeek")
+    target.load_new_instance.return_value = SimpleNamespace(identifier="deepseek-r1-0528-qwen3-8b")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model(VARIANT, context_length=65536)
+
+    assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_without_handle_identifier_uses_the_newly_listed_instance():
+    target = Mock(model_key=VARIANT, path="publisher/deepseek", display_name="DeepSeek")
+    target.load_new_instance.return_value = None
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    survivor = SimpleNamespace(identifier="survivor", unload=Mock())
+    fresh = SimpleNamespace(identifier="deepseek-r1-0528-qwen3-8b", unload=Mock())
+    client._sdk_client.llm.list_loaded.side_effect = [
+        [survivor],          # unload pass
+        [survivor],          # before the load
+        [survivor, fresh],   # after the load
+    ]
+
+    assert client.load_model(VARIANT, context_length=65536)
+
+    assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"

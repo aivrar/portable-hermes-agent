@@ -1,0 +1,168 @@
+"""Fonts must be DPI-scaled exactly once (gui/theme.py).
+
+Tk converts font point sizes to pixels with ``tk scaling``; in a DPI-aware
+process that already includes the display DPI.  These tests fake the Tk root
+and the Win32 DPI calls, so they need neither a display nor the Hermes core.
+"""
+from types import SimpleNamespace
+
+import pytest
+
+from gui import theme
+
+TK_SCALING_96DPI = 96.0 / 72.0  # 1.3333 px/pt
+TK_SCALING_175 = 2.3316121629374638  # measured on a 175% (168 dpi) display
+
+
+class FakeRoot:
+    """``tk_scaling`` / ``fpixels_inch`` may be an Exception to make that call fail."""
+
+    def __init__(self, tk_scaling, fpixels_inch=None):
+        self._tk_scaling = tk_scaling
+        if fpixels_inch is None:
+            fpixels_inch = tk_scaling * 72.0  # Tk keeps both on the same basis
+        self._fpixels_inch = fpixels_inch
+        self.tk = SimpleNamespace(call=self._call)
+
+    def _call(self, *args):
+        assert args == ("tk", "scaling")
+        if isinstance(self._tk_scaling, Exception):
+            raise self._tk_scaling
+        return self._tk_scaling
+
+    def winfo_id(self):
+        return 1234
+
+    def winfo_fpixels(self, value):
+        assert value == "1i"
+        if isinstance(self._fpixels_inch, Exception):
+            raise self._fpixels_inch
+        return self._fpixels_inch
+
+
+def _fake_ctypes(window_dpi):
+    user32 = SimpleNamespace(
+        GetParent=lambda hwnd: hwnd + 1,
+        GetDpiForWindow=lambda hwnd: window_dpi,
+    )
+    return SimpleNamespace(windll=SimpleNamespace(user32=user32))
+
+
+@pytest.fixture(autouse=True)
+def _restore_theme_state(monkeypatch):
+    monkeypatch.setattr(theme, "_DPI_SCALE", theme._DPI_SCALE)
+    monkeypatch.setattr(theme, "_TK_FONT_SCALE",
+                        getattr(theme, "_TK_FONT_SCALE", 1.0), raising=False)
+    saved_fonts = dict(theme.FONTS)
+    yield
+    theme.FONTS.clear()
+    theme.FONTS.update(saved_fonts)
+
+
+@pytest.mark.parametrize("percent", [125, 150, 175, 200])
+def test_dpi_aware_tk_keeps_point_sizes(monkeypatch, percent):
+    """Tk already scales points for the display, so 10pt must stay 10pt."""
+    dpi = 96 * percent // 100
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(dpi))
+
+    theme.init_dpi_scaling(FakeRoot(dpi / 72.0))
+
+    assert theme._DPI_SCALE == pytest.approx(percent / 100)
+    assert theme.F(9) == 9
+    assert theme.F(10) == 10
+    assert theme.F(24) == 24
+    assert theme.SF("Segoe UI", 8, "underline") == ("Segoe UI", 8, "underline")
+    assert theme.FONTS["body"] == ("Segoe UI", 10)
+    assert theme.FONTS["logo"] == ("Segoe UI", 24, "bold")
+    # Pixel geometry is still scaled by the DPI factor.
+    assert theme.S(100) == percent
+
+
+def test_measured_175_percent_tk_scaling_keeps_point_sizes(monkeypatch):
+    """The owner's display reports 2.3316, not exactly 168/72."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(168))
+
+    theme.init_dpi_scaling(FakeRoot(TK_SCALING_175))
+
+    assert theme.F(10) == 10
+    assert theme.FONTS["heading"] == ("Segoe UI", 13, "bold")
+    assert theme.S(100) == 175
+
+
+def test_window_dpi_below_tk_scaling_shrinks_points(monkeypatch):
+    """Window on a 150% monitor while Tk scaled for 175%: only the ratio applies."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(144))
+
+    theme.init_dpi_scaling(FakeRoot(168 / 72.0))
+
+    assert theme._DPI_SCALE == pytest.approx(1.5)
+    assert theme.F(10) == 8  # int(10 * 1.5 / 1.75)
+    assert theme.F(24) == 20
+    assert theme.S(100) == 150
+
+
+def test_withdrawn_root_fallback_uses_tk_inch_and_keeps_point_sizes(monkeypatch):
+    """GetDpiForWindow returns 0 for a withdrawn root; fallback is 1i in pixels."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(0))
+
+    theme.init_dpi_scaling(FakeRoot(TK_SCALING_175))
+
+    assert theme._DPI_SCALE == pytest.approx(167.876 / 96.0, rel=1e-4)
+    assert theme.S(100) == 174
+    assert theme.F(9) == 9
+    assert theme.F(10) == 10
+    assert theme.FONTS["heading"] == ("Segoe UI", 13, "bold")
+
+
+def test_tk_at_96_dpi_on_150_percent_display_scales_fonts(monkeypatch):
+    """If Tk does not scale for DPI itself, F() must still enlarge points."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(144))
+
+    theme.init_dpi_scaling(FakeRoot(TK_SCALING_96DPI))
+
+    assert theme._DPI_SCALE == pytest.approx(1.5)
+    assert theme.F(10) == 15
+    assert theme.SF("Segoe UI", 10, "bold") == ("Segoe UI", 15, "bold")
+    assert theme.FONTS["body"] == ("Segoe UI", 15)
+
+
+def test_unreadable_tk_scaling_uses_tk_inch_on_scaled_tk(monkeypatch):
+    """No `tk scaling`: Tk's 1i (168 px) shows it already scales, so no double scaling."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(168))
+
+    theme.init_dpi_scaling(FakeRoot(RuntimeError("no tk scaling"), fpixels_inch=168.0))
+
+    assert theme._TK_FONT_SCALE == pytest.approx(1.75)
+    assert theme.F(10) == 10
+
+
+def test_unreadable_tk_scaling_uses_tk_inch_on_unscaled_tk(monkeypatch):
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(144))
+
+    theme.init_dpi_scaling(FakeRoot(RuntimeError("no tk scaling"), fpixels_inch=96.0))
+
+    assert theme._TK_FONT_SCALE == 1.0
+    assert theme.F(10) == 15
+
+
+def test_tk_scale_unknown_leaves_point_sizes_unchanged(monkeypatch):
+    """Neither `tk scaling` nor 1i readable: never risk double scaling."""
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(168))
+
+    theme.init_dpi_scaling(FakeRoot(RuntimeError("no tk scaling"),
+                                    fpixels_inch=RuntimeError("no fpixels")))
+
+    assert theme._DPI_SCALE == pytest.approx(1.75)
+    assert theme.F(10) == 10
+    assert theme.FONTS["body"] == ("Segoe UI", 10)
+    assert theme.S(100) == 175
+
+
+def test_plain_96_dpi_display_is_unchanged(monkeypatch):
+    monkeypatch.setattr(theme, "ctypes", _fake_ctypes(96))
+
+    theme.init_dpi_scaling(FakeRoot(TK_SCALING_96DPI))
+
+    assert theme.F(10) == 10
+    assert theme.S(100) == 100
+    assert theme.FONTS["small"] == ("Segoe UI", 9)

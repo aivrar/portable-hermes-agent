@@ -283,3 +283,180 @@ def test_gui_api_key_wizard_persists_to_active_hermes_home(monkeypatch, tmp_path
     assert (tmp_path / ".env").read_text(encoding="utf-8") == (
         "\nPORTABLE_TEST_API_KEY=secret-value\n"
     )
+
+
+def _sidebar_shell(app):
+    sidebar = object.__new__(app.Sidebar)
+    sidebar._render_sessions = lambda: None
+    return sidebar
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_hides_sessions_without_messages():
+    """Empty sessions (failed first turn, gateway resets) cannot be resumed."""
+    from gui import app
+    from hermes_state import SessionDB
+
+    with SessionDB() as db:
+        db.create_session(session_id="empty_session", source="gui", model="m")
+        db.create_session(session_id="chat_session", source="gui", model="m")
+        db.append_message("chat_session", "user", "hello")
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert [s["id"] for s in sidebar._sessions_data] == ["chat_session"]
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_detects_current_core_session_filter():
+    import inspect
+    from hermes_state import SessionDB
+
+    with SessionDB() as db:
+        params = inspect.signature(db.list_sessions_rich).parameters
+
+    assert "min_message_count" in params
+
+
+def _fake_session_db(rows, calls, supports_filter):
+    """A SessionDB stand-in whose rows are newest first, honouring ``limit``."""
+
+    class FakeSessionDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        if supports_filter:
+            def list_sessions_rich(self, source=None, limit=20, min_message_count=0):
+                calls.append({"limit": limit, "min_message_count": min_message_count})
+                raise TypeError("bug inside a core that supports the filter")
+        else:
+            def list_sessions_rich(self, source=None, limit=20):
+                calls.append({"limit": limit})
+                return rows[:limit]
+
+    return SimpleNamespace(SessionDB=FakeSessionDB)
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_old_core_fallback_survives_20_newer_empty_sessions(monkeypatch):
+    import sys
+    from gui import app
+
+    rows = ([{"id": f"empty{i}", "message_count": 0} for i in range(20)]
+            + [{"id": f"chat{i}", "message_count": 2} for i in range(25)])
+    calls = []
+    monkeypatch.setitem(sys.modules, "hermes_state",
+                        _fake_session_db(rows, calls, supports_filter=False))
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert [s["id"] for s in sidebar._sessions_data] == [f"chat{i}" for i in range(20)]
+    assert calls == [{"limit": 200}]
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_does_not_retry_when_supporting_core_raises_type_error(monkeypatch):
+    import sys
+    from gui import app
+
+    calls = []
+    monkeypatch.setitem(sys.modules, "hermes_state",
+                        _fake_session_db([], calls, supports_filter=True))
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert calls == [{"limit": 20, "min_message_count": 1}]
+    assert sidebar._sessions_data == []
+
+
+def _tool_progress_bridge():
+    from gui.agent_bridge import AgentBridge
+
+    bridge = object.__new__(AgentBridge)
+    bridge.on_tool_call = object()
+    posted = []
+    bridge._post = lambda callback, *args: posted.append((callback, args))
+    return bridge, posted
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_uses_tool_name_from_current_core_events():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("tool.started", "gpu_info", None, {})
+    bridge._on_tool_progress("tool.started", "terminal", "nvidia-smi", {"command": "nvidia-smi"})
+    bridge._on_tool_progress("tool.started", "read_file", None, {"path": "a.txt"})
+
+    assert [args for _, args in posted] == [
+        ("gpu_info", None), ("terminal", "nvidia-smi"), ("read_file", {"path": "a.txt"})]
+    assert all(callback is bridge.on_tool_call for callback, _ in posted)
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_ignores_non_start_progress_events():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("tool.completed", "gpu_info", None, None,
+                             duration=0.1, is_error=False, result="{}")
+    bridge._on_tool_progress("tool.progress", "terminal", "50%", None, tool_call_id="c1")
+    bridge._on_tool_progress("tool.output_risk", "web", None, None, risk_metadata={})
+    bridge._on_tool_progress("reasoning.available", "_thinking", "hmm", None)
+    bridge._on_tool_progress("_thinking", "first line")
+    bridge._on_tool_progress("moa.progress", refs_done=1, refs_total=2, label="x")
+
+    assert posted == []
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_still_accepts_legacy_name_preview_calls():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("gpu_info", "query GPUs")
+
+    assert [args for _, args in posted] == [("gpu_info", "query GPUs")]
+
+
+def _streamed(chunks):
+    """(shown text, height, raw text) of a StreamingBubble fed *chunks*, finalized."""
+    import tkinter as tk
+    from gui import app
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        bubble = app.StreamingBubble(root)
+        for delta in chunks:
+            bubble.append_text(delta)
+        bubble.finalize()
+        return (bubble._body.get("1.0", "end-1c"), int(bubble._body.cget("height")),
+                bubble.get_text())
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_has_no_leading_or_trailing_blank_lines():
+    chunks = ("\n", "\n", "Hello", " world\n", "line two", "\n\n", " \n")
+    shown, height, raw = _streamed(chunks)
+
+    assert shown == "Hello world\nline two"
+    assert height == 2
+    # The raw stream stays available to the caller unchanged.
+    assert raw == "".join(chunks)
+
+
+@pytest.mark.needs_core
+def test_gui_streamed_reply_keeps_first_line_indentation():
+    assert _streamed(("\n\n", "    print(1)\n", "done"))[0] == "    print(1)\ndone"
+    # Indentation split over chunks, after whitespace-only chunks.
+    assert _streamed((" \n", "\n  ", "  print(1)"))[0] == "    print(1)"
+    assert _streamed(("  ", "x"))[0] == "  x"

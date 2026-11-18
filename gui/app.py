@@ -257,6 +257,7 @@ class StreamingBubble(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent, bg=C["bg_main"])
         self._full_text = ""
+        self._leading = ""  # whitespace held before the first visible character
         self._bg = C["msg_ai"]
 
         pad = tk.Frame(self, bg=C["bg_main"])
@@ -300,8 +301,22 @@ class StreamingBubble(tk.Frame):
         if text is None:
             return
         self._full_text += text
+        if self._leading is not None:
+            # Models often open a reply (or a segment after a tool call) with
+            # blank lines: hold whitespace until the first visible character,
+            # then drop the blank lines but keep that line's own indentation.
+            self._leading += text
+            content = self._leading.lstrip()
+            if not content:
+                return
+            blank = self._leading[:len(self._leading) - len(content)]
+            text = self._leading[blank.rfind("\n") + 1:]
+            self._leading = None
         self._body.insert("end", text)
-        # Auto-resize height based on content
+        self._fit_height()
+
+    def _fit_height(self):
+        """Size the body to its content."""
         content = self._body.get("1.0", "end-1c")
         lines = max(1, content.count('\n') + 1)
         for line in content.split('\n'):
@@ -312,12 +327,21 @@ class StreamingBubble(tk.Frame):
         return self._full_text
 
     def finalize(self):
-        """Stop cursor blink, lock the text, remove cursor."""
+        """Stop cursor blink, drop trailing blank lines, lock the text, remove cursor."""
         self._cursor_on = False
         try:
             self._cursor_lbl.destroy()
         except tk.TclError:
             pass
+        trimmed = False
+        while True:  # char by char: safe whatever Tk's index unit for non-BMP text
+            last = self._body.get("end-2c", "end-1c")
+            if not last or not last.isspace():
+                break
+            self._body.delete("end-2c", "end-1c")
+            trimmed = True
+        if trimmed:
+            self._fit_height()
         self._body.configure(state="disabled")
 
     def _blink(self):
@@ -335,6 +359,25 @@ class StreamingBubble(tk.Frame):
 # ============================================================================
 # Sidebar
 # ============================================================================
+
+def _list_sessions_with_messages(db, limit=20, fallback_window=200):
+    """Recent sessions that have at least one message.
+
+    Sessions without messages (a first turn that failed, gateway resets,
+    compression parents) have nothing to resume, so the sidebar hides them.
+    A core whose list_sessions_rich has no min_message_count gets a wider
+    window filtered here, so newer empty rows cannot crowd out real ones.
+    """
+    try:
+        import inspect
+        supported = "min_message_count" in inspect.signature(db.list_sessions_rich).parameters
+    except (TypeError, ValueError):
+        supported = False
+    if supported:
+        return db.list_sessions_rich(source=None, limit=limit, min_message_count=1)
+    rows = db.list_sessions_rich(source=None, limit=fallback_window)
+    return [s for s in rows if s.get("message_count", 1)][:limit]
+
 
 class Sidebar(tk.Frame):
     """Left sidebar with branding, new-chat, session history, and model switcher."""
@@ -787,7 +830,7 @@ class Sidebar(tk.Frame):
         try:
             from hermes_state import SessionDB
             with SessionDB() as db:
-                sessions = db.list_sessions_rich(source=None, limit=20)
+                sessions = _list_sessions_with_messages(db, limit=20)
             self._sessions_data = sessions
             self._render_sessions()
         except Exception:

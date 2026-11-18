@@ -14,6 +14,14 @@ from tkinter import ttk
 
 _DPI_SCALE = 1.0  # Set by init_dpi_scaling() after root window creation
 
+# How much Tk itself already enlarges point-sized fonts, relative to 96 DPI.
+# Tk converts points to pixels with `tk scaling` (pixels per point), which in
+# a DPI-aware process already reflects the screen DPI (2.333 at 175%), so
+# font point sizes must NOT be multiplied by _DPI_SCALE again.  Set by
+# init_dpi_scaling(); 1.0 means "Tk applies no DPI scaling of its own".
+_TK_FONT_SCALE = 1.0
+_TK_SCALING_96DPI = 96.0 / 72.0  # `tk scaling` value on a 100% (96 DPI) screen
+
 
 def _enable_dpi_awareness():
     """Set process DPI awareness — must be called BEFORE creating any windows."""
@@ -36,7 +44,7 @@ def init_dpi_scaling(root: tk.Tk):
     Call this AFTER creating the Tk root but BEFORE building any widgets.
     On a 150% display this sets _DPI_SCALE = 1.5, etc.
     """
-    global _DPI_SCALE
+    global _DPI_SCALE, _TK_FONT_SCALE
 
     # Ask Windows what the real DPI is
     try:
@@ -56,6 +64,26 @@ def init_dpi_scaling(root: tk.Tk):
     # Clamp to reasonable range
     _DPI_SCALE = max(1.0, min(_DPI_SCALE, 4.0))
 
+    # How much does Tk already scale point sizes?  Fonts are only enlarged
+    # by whatever DPI factor Tk has not applied itself.
+    px_per_pt = None
+    try:
+        px_per_pt = float(root.tk.call("tk", "scaling"))
+    except Exception:
+        pass
+    if not px_per_pt or px_per_pt <= 0:
+        # Same basis as `tk scaling`: Tk's pixels per inch / 72 points.
+        try:
+            px_per_pt = root.winfo_fpixels("1i") / 72.0
+        except Exception:
+            px_per_pt = None
+    if px_per_pt and px_per_pt > 0:
+        _TK_FONT_SCALE = max(1.0, min(px_per_pt / _TK_SCALING_96DPI, 4.0))
+    else:
+        # Unknown: assume Tk already scales fonts and leave point sizes as
+        # they are; slightly small text beats text so large it hides buttons.
+        _TK_FONT_SCALE = _DPI_SCALE
+
     # Rebuild font sizes with the actual scale factor
     init_fonts()
 
@@ -66,12 +94,24 @@ def S(px: int) -> int:
 
 
 def F(pt: int) -> int:
-    """Scale a font point size by the DPI factor."""
-    return max(1, int(pt * _DPI_SCALE))
+    """Scale a font point size for DPI, counting only scaling Tk does not do.
+
+    Tk already turns points into pixels using `tk scaling`; in a DPI-aware
+    process that includes the display DPI, so the result is ~pt unchanged.
+    Only if Tk reports 96 DPI while the display is larger (e.g. Tk not DPI
+    aware) are the points multiplied up.
+    """
+    factor = _DPI_SCALE / _TK_FONT_SCALE
+    if abs(factor - 1.0) < 0.02:
+        # 168-dpi screens report tk scaling 2.3316 (factor 1.0007): treat
+        # such rounding noise as "already scaled", not as a size change.
+        factor = 1.0
+    return max(1, int(pt * factor))
 
 
 def SF(family: str, size: int, *args) -> tuple:
-    """Build a DPI-scaled font tuple: SF("Segoe UI", 10, "bold") -> ("Segoe UI", 15, "bold") at 150%."""
+    """Build a DPI-scaled font tuple via F(): ("Segoe UI", 10, "bold") when Tk
+    already scales for DPI, ("Segoe UI", 15, "bold") at 150% if it does not."""
     return (family, F(size)) + args
 
 

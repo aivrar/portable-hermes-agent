@@ -9,7 +9,6 @@ import json
 import subprocess
 import threading
 import queue
-import time
 import tempfile
 from urllib.parse import urlsplit
 import tkinter as tk
@@ -119,6 +118,21 @@ def get_available_gpus() -> List[str]:
     return gpus
 
 
+#: Selection preference for LMStudioPanel._display_models: the row marked
+#: loaded, when exactly one is.
+ONLY_LOADED_ROW = object()
+
+
+def _one_row_per_model(models: List[Dict]) -> List[Dict]:
+    """Keep one row per model id (first position), preferring a loaded row."""
+    rows: Dict[str, Dict] = {}
+    for m in models:
+        kept = rows.get(m["id"])
+        if kept is None or (m.get("state") == "loaded" and kept.get("state") != "loaded"):
+            rows[m["id"]] = m
+    return list(rows.values())
+
+
 # ============================================================================
 # LM Studio Client
 # ============================================================================
@@ -128,6 +142,7 @@ class LMStudioClient:
 
     def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: Optional[str] = None):
         self.base_url = base_url.strip().rstrip("/")
+        self.last_loaded_identifier: Optional[str] = None  # set by load_model()
         cfg = _read_lmstudio_config()
         saved_url = cfg.get("base_url", "http://localhost:1234/v1").rstrip("/").removesuffix("/v1")
         saved_key = cfg.get("api_key") if saved_url == self._server_root() else None
@@ -340,12 +355,20 @@ class LMStudioClient:
                             "state": state,
                         })
                     if result:
-                        return result
+                        return _one_row_per_model(result)
             except Exception:
                 continue
         
         # Fallback: return empty list (let UI show "no models" instead of fake ones)
         return []
+
+    def _loaded_identifiers(self) -> set:
+        """Identifiers of the instances LM Studio has loaded (empty if unknown)."""
+        try:
+            ids = (getattr(m, "identifier", None) for m in self._sdk_client.llm.list_loaded())
+            return {i for i in ids if isinstance(i, str) and i}
+        except Exception:
+            return set()
 
     def load_model(self, model_key: str, gpu_index: Optional[int] = None,
                    context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True) -> bool:
@@ -406,20 +429,30 @@ class LMStudioClient:
                     _log.info("Found match: model_key=%r path=%r", mk, mp)
                     break
 
+            # No instance_identifier: LM Studio then names the instance after
+            # the model key (e.g. "gemma-4-e4b-it"; "key:2" only if another
+            # instance survived the unload above). That id is what the model
+            # list, the chat requests and every label show, so the user sees
+            # the real model name and the list shows it once, as loaded.
+            # The instance id can still differ from the requested key (e.g. a
+            # "name@q4_k_m" variant), so remember the id LM Studio really used.
+            self.last_loaded_identifier = None
+            before = self._loaded_identifiers()
             if target is not None:
                 # Use the SDK model object's own load method
                 _log.info("Loading via SDK model object, ctx=%d gpu=%r", context_length, gpu_index)
-                target.load_new_instance(
-                    config=config, ttl=86400,
-                    instance_identifier=f"hermes-{int(time.time())}",
-                )
+                handle = target.load_new_instance(config=config, ttl=86400)
             else:
                 # Fallback: try string-based load
                 _log.warning("No SDK model object found, trying string key: %r", model_key)
-                self._sdk_client.llm.load_new_instance(
-                    model_key, f"hermes-{int(time.time())}",
-                    config=config, ttl=86400,
+                handle = self._sdk_client.llm.load_new_instance(
+                    model_key, config=config, ttl=86400,
                 )
+            identifier = getattr(handle, "identifier", None)
+            if not isinstance(identifier, str) or not identifier:
+                new = self._loaded_identifiers() - before
+                identifier = next(iter(new)) if len(new) == 1 else None
+            self.last_loaded_identifier = identifier
             return True
         except Exception as e:
             raise RuntimeError(f"Failed to load model: {e}")
@@ -768,8 +801,9 @@ class LMStudioPanel(tk.Toplevel):
         self.client = LMStudioClient(base_url=self._ep_var.get().strip().rstrip("/"), api_key=key)
         self._connect()
 
-    def _refresh_models(self):
-        """Refresh model list."""
+    def _refresh_models(self, select_id=None, select_ids=()):
+        """Refresh model list, then select *select_id* or the first of
+        *select_ids* that is listed (see _display_models)."""
         def _do():
             models = self.client.list_models_api()
             if HAS_SDK and self.client._sdk_client:
@@ -787,12 +821,19 @@ class LMStudioPanel(tk.Toplevel):
                             })
                 except Exception:
                     pass
-            self._post_ui("_display_models", models)
+            self._post_ui("_display_models", models, select_id, select_ids)
 
         threading.Thread(target=_do, daemon=True).start()
 
-    def _display_models(self, models):
+    def _display_models(self, models, select_id=None, select_ids=()):
+        """Show *models*; select the first listed of *select_id*, *select_ids*
+        (ONLY_LOADED_ROW: the row marked loaded, if exactly one) and the
+        previously selected model."""
+        # Keep the selection on the same model (by id, not row: a refresh can
+        # add, drop or reorder rows), or move it to *select_id* if given.
         selected = self.model_list.curselection()
+        previous_id = (self.models[selected[0]]["id"]
+                       if selected and selected[0] < len(self.models) else None)
         self.models = models
         self.model_list.delete(0, "end")
         for m in models:
@@ -806,8 +847,18 @@ class LMStudioPanel(tk.Toplevel):
             if ctx:
                 label += f"  {t('lmstudio.context_suffix', count=f'{ctx:,}')}"
             self.model_list.insert("end", label)
-        if selected and selected[0] < len(models):
-            self.model_list.selection_set(selected[0])
+        ids = [m["id"] for m in models]
+        loaded = [m["id"] for m in models if m.get("state") == "loaded"]
+        only_loaded = loaded[0] if len(loaded) == 1 else None
+        candidates = [select_id, *select_ids, previous_id]
+        for wanted in candidates:
+            if wanted is ONLY_LOADED_ROW:
+                wanted = only_loaded
+            if wanted is not None and wanted in ids:
+                row = ids.index(wanted)
+                self.model_list.selection_set(row)
+                self.model_list.see(row)
+                break
 
     def _on_model_select(self, event):
         sel = self.model_list.curselection()
@@ -875,7 +926,7 @@ class LMStudioPanel(tk.Toplevel):
         self._cancel_btn = ttk.Button(self.load_btn.master, text=t("lmstudio.cancel_load"),
                                        style="Danger.TButton",
                                        command=self._cancel_load)
-        self._cancel_btn.pack(side="left", padx=(0, 8))
+        self._cancel_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
         self._loading = True
 
         def _do():
@@ -888,7 +939,8 @@ class LMStudioPanel(tk.Toplevel):
                 self.client.load_model(model_path, gpu_index=gpu_index,
                                        context_length=ctx)
                 if self._loading:
-                    self._post_ui("_on_load_success", model_id)
+                    self._post_ui("_on_load_success", model_id,
+                                  getattr(self.client, "last_loaded_identifier", None))
             except Exception as e:
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
@@ -928,14 +980,20 @@ class LMStudioPanel(tk.Toplevel):
         if hasattr(self, '_cancel_btn'):
             self._cancel_btn.destroy()
             del self._cancel_btn
-        self.load_btn.pack(side="left", padx=(0, 8))
+        # Back in its original slot: [Load Model][Unload][Refresh Models]
+        self.load_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
 
-    def _on_load_success(self, model_id):
+    def _on_load_success(self, model_id, loaded_id=None):
+        """*loaded_id*: the instance id LM Studio gave the load, if known; it can
+        differ from the requested row id (e.g. for "name@quant" variants)."""
         self._restore_load_btn()
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         self.status_dot.configure(fg=C["success"])
         self._set_status("lmstudio.loaded_model", model=short)
-        self._refresh_models()
+        # Prefer the real instance id, else the only row marked loaded, else
+        # the requested row.
+        prefer = (loaded_id,) if loaded_id else ()
+        self._refresh_models(select_ids=prefer + (ONLY_LOADED_ROW, model_id))
 
     def _on_load_error(self, error):
         self._restore_load_btn()
