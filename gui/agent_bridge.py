@@ -76,6 +76,8 @@ class AgentBridge:
         # Agents dropped while a turn was running; released when it ends.
         self._agents_to_release: list = []
         self._release_lock = threading.Lock()
+        self._running_agent = None    # the agent of the running turn (Stop reaches it)
+        self._agent_generation = 0    # bumped whenever the agent is dropped
         self._agent_thread: Optional[threading.Thread] = None
         self._clarify_queue = queue.Queue()
         self._approval_queue = queue.Queue()
@@ -170,7 +172,11 @@ class AgentBridge:
         return state.setdefault("_release_lock", threading.Lock())
 
     def _discard_agent(self, *, conversation_over: bool) -> None:
-        agent, self.agent = getattr(self, "agent", None), None
+        with self._release_state():
+            # Bumped even when there is no agent yet: a worker building one
+            # right now then knows its settings are stale (_agent_for_turn).
+            self._agent_generation = self.__dict__.get("_agent_generation", 0) + 1
+            agent, self.agent = getattr(self, "agent", None), None
         if agent is None:
             return
         history = list(getattr(self, "conversation_history", None) or [])
@@ -204,6 +210,7 @@ class AgentBridge:
         """End of a worker turn: clear is_running, release agents dropped meanwhile."""
         with self._release_state():
             pending, self._agents_to_release = self._agents_to_release, []
+            self._running_agent = None
             self.is_running = False
         for agent, conversation_over, history in pending:
             self._release_agent(agent, conversation_over, history)
@@ -800,6 +807,28 @@ You are running on **{os_name} {os_release}**.
         return "\n\n".join(response_parts)
 
     def _run_agent(self, message: str, image_paths: list = None):
+        """Worker thread body. Whatever happens (log setup, config, imports,
+        agent build, the turn itself), the turn is finished and the error is
+        reported, so is_running can never stay stuck."""
+        try:
+            self._run_agent_turn(message, image_paths)
+        except Exception as e:
+            error_msg = f"Error: {e}\n{traceback.format_exc()}"
+            try:
+                import logging
+                logging.getLogger("hermes.bridge").error("run_agent EXCEPTION: %s", error_msg)
+            except Exception:
+                pass
+            self._post(self.on_error, error_msg)
+        finally:
+            try:
+                from tools.terminal_tool import set_approval_callback
+                set_approval_callback(None)
+            except Exception:
+                pass
+            self._finish_turn()
+
+    def _bridge_log(self):
         import logging as _log
         _dbg = _log.getLogger("hermes.bridge")
         if not _dbg.handlers:
@@ -810,7 +839,36 @@ You are running on **{os_name} {os_release}**.
             _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
             _dbg.addHandler(_fh)
             _dbg.setLevel(_log.DEBUG)
+        return _dbg
 
+    def _agent_for_turn(self):
+        """The agent this turn runs on, built if needed.
+
+        A model or settings change that arrives while the agent is being built
+        (rebuild_agent bumps the generation) would otherwise be lost: the
+        build finishes with the old settings and later turns reuse it. Such a
+        stale agent is released and the agent is built again."""
+        for _attempt in range(3):
+            with self._release_state():
+                generation = self.__dict__.get("_agent_generation", 0)
+                agent = self.agent
+            if agent is not None:
+                return agent
+            self._create_agent()
+            with self._release_state():
+                current = self.__dict__.get("_agent_generation", 0)
+                agent = self.agent
+                if current == generation:
+                    return agent
+                # Settings changed during the build: drop what was built.
+                self.agent = None
+            if agent is not None:
+                self._release_agent(agent, False, [])
+        raise RuntimeError("the model settings kept changing while the agent was being "
+                           "prepared; please send the message again")
+
+    def _run_agent_turn(self, message: str, image_paths: list = None):
+        _dbg = self._bridge_log()
         _dbg.debug("_run_agent START model=%r provider=%s msg=%r",
                     self.get_model(), self._active_provider, message[:80])
 
@@ -827,69 +885,68 @@ You are running on **{os_name} {os_release}**.
                 })
             except Exception as e:
                 self._post(self.on_error, f"Guided mode error: {e}")
-            finally:
-                self._finish_turn()
             return
 
         # Approval callbacks are thread-local in current Hermes. Install the
-        # bridge in the worker that actually executes tools, then always clear
-        # it before that thread exits.
+        # bridge in the worker that actually executes tools; _run_agent
+        # clears it before this thread exits.
         from tools.terminal_tool import set_approval_callback
         set_approval_callback(self._approval_callback)
 
-        try:
-            if self.agent is None:
-                _dbg.debug("creating agent...")
-                self._create_agent()
-            # This turn keeps its own reference: the GUI may drop self.agent
-            # meanwhile (the dropped agent is released after the turn).
-            agent = self.agent
-            if agent is None:
-                raise RuntimeError("the agent was replaced before the turn started; please resend")
-            _dbg.debug("agent ready, base_url=%r api_key=%s",
-                       agent.base_url, "set" if getattr(agent, 'api_key', None) else "none")
+        # This turn keeps its own reference for its whole lifetime: the GUI
+        # may drop self.agent meanwhile (the dropped agent is released after
+        # the turn), and Stop must still reach the agent that is running.
+        agent = self._agent_for_turn()
+        if agent is None:
+            raise RuntimeError("the agent was replaced before the turn started; please resend")
+        with self._release_state():
+            self._running_agent = agent
+        if self._interrupted:  # Stop pressed while the agent was being built
+            _dbg.debug("stopped before the turn started")
+            return
+        _dbg.debug("agent ready, base_url=%r api_key=%s",
+                   getattr(agent, "base_url", None),
+                   "set" if getattr(agent, 'api_key', None) else "none")
 
-            # Build user message content — multimodal if images attached
-            if image_paths:
-                content_parts = [{"type": "text", "text": message}]
-                for img_path in image_paths:
-                    data_url = self._encode_image(img_path)
-                    if data_url:
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        })
-                user_content = content_parts
-            else:
-                user_content = message
+        # Build user message content — multimodal if images attached
+        if image_paths:
+            content_parts = [{"type": "text", "text": message}]
+            for img_path in image_paths:
+                data_url = self._encode_image(img_path)
+                if data_url:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    })
+            user_content = content_parts
+        else:
+            user_content = message
 
-            _dbg.debug("calling run_conversation...")
-            result = agent.run_conversation(
-                user_message=user_content,
-                conversation_history=self.conversation_history,
-            )
+        _dbg.debug("calling run_conversation...")
+        result = agent.run_conversation(
+            user_message=user_content,
+            conversation_history=self.conversation_history,
+        )
 
-            final_response = result.get("final_response") or ""
-            messages = result.get("messages", [])
-            self.conversation_history = messages
-            _dbg.debug("run_conversation done, response=%d chars", len(final_response))
+        final_response = result.get("final_response") or ""
+        messages = result.get("messages", [])
+        self.conversation_history = messages
+        _dbg.debug("run_conversation done, response=%d chars", len(final_response))
 
-            self._post(self.on_response, final_response)
-            self._post(self.on_complete, result)
-
-        except Exception as e:
-            error_msg = f"Error: {e}\n{traceback.format_exc()}"
-            _dbg.error("run_agent EXCEPTION: %s", error_msg)
-            self._post(self.on_error, error_msg)
-        finally:
-            set_approval_callback(None)
-            self._finish_turn()
+        self._post(self.on_response, final_response)
+        self._post(self.on_complete, result)
 
     def interrupt(self):
-        if self.agent and self.is_running:
-            self._interrupted = True
+        """Stop the running turn: the agent that is actually running, even if
+        the GUI has already dropped self.agent (model switch mid-turn)."""
+        if not self.is_running:
+            return
+        self._interrupted = True
+        with self._release_state():
+            agent = self.__dict__.get("_running_agent") or self.agent
+        if agent is not None:
             try:
-                self.agent.interrupt("")
+                agent.interrupt("")
             except Exception:
                 pass
 

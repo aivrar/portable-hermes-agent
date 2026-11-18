@@ -1043,6 +1043,117 @@ def test_gui_resume_fails_when_the_core_cannot_reopen_the_session(monkeypatch):
     gui.msg_frame.winfo_children.assert_not_called()          # chat view not cleared
 
 
+class _TurnAgent(_ReleasableAgent):
+    """An agent whose turn can be held open and interrupted."""
+
+    def __init__(self, model, hold=None):
+        super().__init__()
+        self.model, self.hold, self.interrupted = model, hold, []
+        self.base_url = "http://127.0.0.1:9/v1"
+
+    def run_conversation(self, user_message, conversation_history):
+        self.calls.append("run_conversation")
+        if self.hold is not None:
+            self.hold.wait(10)
+        return {"final_response": f"answer from {self.model}",
+                "messages": list(conversation_history) + [{"role": "user", "content": user_message}]}
+
+    def interrupt(self, message=""):
+        self.interrupted.append(message)
+        if self.hold is not None:
+            self.hold.set()
+
+
+def _worker_bridge(monkeypatch, create_agent):
+    import tools.terminal_tool as terminal_tool
+
+    events = {"error": [], "response": []}
+    bridge = _new_chat_bridge(None, [])
+    bridge.__dict__.update(
+        root=SimpleNamespace(after=lambda _ms, fn: fn()),
+        on_error=events["error"].append, on_response=events["response"].append,
+        on_complete=None, _interrupted=False, _is_model_configured=lambda: True,
+        get_model=lambda: bridge.__dict__.get("model", "old-model"),
+        _active_provider="cloud")
+    bridge._create_agent = lambda: create_agent(bridge)
+    monkeypatch.setattr(terminal_tool, "set_approval_callback", lambda cb: None)
+    return bridge, events
+
+
+@pytest.mark.needs_core
+def test_gui_settings_change_while_the_agent_is_built_is_not_lost(monkeypatch):
+    built = []
+
+    def create(bridge):
+        agent = _TurnAgent(bridge.get_model())
+        built.append(agent)
+        if len(built) == 1:              # the user switches model mid-build
+            bridge.model = "new-model"
+            bridge.rebuild_agent()
+        bridge.agent = agent
+
+    bridge, events = _worker_bridge(monkeypatch, create)
+    bridge.send_message("hi")
+    bridge._agent_thread.join(10)
+
+    assert [a.model for a in built] == ["old-model", "new-model"]
+    assert built[0].calls == ["release_clients"]          # stale build released, never used
+    assert events["response"] == ["answer from new-model"]
+    assert bridge.agent is built[1] and bridge.is_running is False
+
+
+@pytest.mark.needs_core
+def test_gui_stop_reaches_the_running_agent_after_a_model_switch(monkeypatch):
+    import threading
+    hold = threading.Event()
+    running = _TurnAgent("old-model", hold=hold)
+
+    def create(bridge):
+        bridge.agent = running
+
+    bridge, _events = _worker_bridge(monkeypatch, create)
+    bridge.send_message("long task")
+    for _ in range(100):
+        if running.calls:
+            break
+        threading.Event().wait(0.02)
+
+    bridge.set_cloud_mode("other/model")         # drops self.agent mid-turn
+    assert bridge.agent is None and bridge.is_running
+    bridge.interrupt()                            # Stop
+
+    bridge._agent_thread.join(10)
+    assert running.interrupted == [""]
+    assert running.calls == ["run_conversation", "release_clients"]
+    assert bridge.is_running is False
+
+
+@pytest.mark.needs_core
+@pytest.mark.parametrize("broken", ["log_setup", "model_config", "terminal_tool"])
+def test_gui_worker_setup_failure_finishes_the_turn(monkeypatch, broken):
+    import sys
+
+    bridge, events = _worker_bridge(monkeypatch, lambda b: None)
+
+    def boom(*a, **k):
+        raise OSError(f"{broken} failed")
+
+    if broken == "log_setup":
+        bridge._bridge_log = boom
+    elif broken == "model_config":
+        bridge._is_model_configured = boom
+    else:
+        monkeypatch.setitem(sys.modules, "tools.terminal_tool", None)   # import fails
+
+    bridge.send_message("hi")
+    bridge._agent_thread.join(10)
+
+    assert bridge.is_running is False                 # the session guard is not stuck
+    assert len(events["error"]) == 1
+    if broken != "terminal_tool":
+        assert f"{broken} failed" in events["error"][0]
+
+
 @pytest.mark.needs_core
 def test_gui_reselecting_the_active_session_does_not_end_it():
     agent = _ReleasableAgent()
