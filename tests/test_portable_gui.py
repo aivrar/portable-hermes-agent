@@ -1836,6 +1836,38 @@ def test_gui_reply_clock_ticks_and_stops_on_every_exit_path(monkeypatch, exit_pa
 
 
 @pytest.mark.needs_core
+@pytest.mark.parametrize("exit_path", ["reply done", "error", "Stop"])
+def test_gui_status_bar_clock_runs_with_the_reply(monkeypatch, exit_path):
+    from types import SimpleNamespace
+    from gui import app
+
+    now = [500.0]
+    monkeypatch.setattr(app, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    gui = _replying_gui(monkeypatch)
+    gui.status_bar.set_elapsed.assert_called_once_with(0)
+
+    now[0] += 65.4
+    gui.root.run(gui.root.clock_ticks()[0])
+    assert abs(gui.status_bar.set_elapsed.call_args.args[0] - 65.4) < 1e-6
+
+    {"reply done": lambda: gui._on_complete({}), "error": lambda: gui._on_error("boom"),
+     "Stop": gui._interrupt}[exit_path]()
+    assert gui.status_bar.set_elapsed.call_args.args == (None,)
+
+
+def test_status_bar_clock_text():
+    from types import SimpleNamespace
+    from gui import app
+
+    shown = {}
+    bar = SimpleNamespace(clock_lbl=SimpleNamespace(configure=lambda **kw: shown.update(kw)))
+    app.StatusBar.set_elapsed(bar, 65.4)
+    assert shown["text"] == "1:05"
+    app.StatusBar.set_elapsed(bar, None)
+    assert shown["text"] == ""
+
+
+@pytest.mark.needs_core
 def test_gui_reply_bubble_follows_waiting_thinking_tool_and_answer(monkeypatch):
     from gui import i18n
     monkeypatch.setattr(i18n, "_current_language", "en")

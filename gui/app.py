@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import threading
 import queue
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -46,7 +47,7 @@ from gui.i18n import (
     load_gui_setting,
     save_gui_setting,
 )
-from gui.reply_activity import ReplyActivity
+from gui.reply_activity import ReplyActivity, clock
 from hermes_constants import get_hermes_home
 from hermes_cli import __version__ as HERMES_CORE_VERSION
 
@@ -1480,6 +1481,11 @@ class StatusBar(tk.Frame):
                                   fg=C["text_hint"], bg=C["bg_sidebar"])
         self.status_lbl.pack(side="left")
 
+        # How long the running reply has taken (empty when idle).
+        self.clock_lbl = tk.Label(self, text="", font=FONTS["mono_small"],
+                                  fg=C["text_hint"], bg=C["bg_sidebar"])
+        self.clock_lbl.pack(side="left", padx=(8, 0))
+
         self.model_lbl = tk.Label(self, text="", font=FONTS["mono_small"],
                                  fg=C["text_disabled"], bg=C["bg_sidebar"])
         self.model_lbl.pack(side="right", padx=12)
@@ -1527,6 +1533,10 @@ class StatusBar(tk.Frame):
         self._state_data = ""
         self.dot.configure(fg=C["danger"])
         self.status_lbl.configure(text=t("status.error", error=""))
+
+    def set_elapsed(self, seconds=None):
+        """The running reply's clock next to the status text; None clears it."""
+        self.clock_lbl.configure(text="" if seconds is None else clock(seconds))
 
     def set_model(self, m):
         self.model_lbl.configure(text=m)
@@ -2022,13 +2032,17 @@ class HermesGUI:
 
     def _start_turn_clock(self):
         self._stop_turn_clock()
+        self._turn_started = time.monotonic()
+        self.status_bar.set_elapsed(0)
         self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
 
     def _tick_turn_clock(self):
-        """Every second while a reply runs: the activity line's clock moves."""
+        """Every second while a reply runs: the activity line's clock and the
+        status bar's clock move."""
         self._turn_clock_id = None
         if self._stream_bubble is not None:
             self._stream_bubble.refresh_activity()
+        self.status_bar.set_elapsed(time.monotonic() - self._turn_started)
         self._turn_clock_id = self.root.after(1000, self._tick_turn_clock)
 
     def _stop_turn_clock(self):
@@ -2039,6 +2053,7 @@ class HermesGUI:
             except tk.TclError:
                 pass
             self._turn_clock_id = None
+            self.status_bar.set_elapsed(None)
 
     def _on_response(self, text):
         if self._stream_bubble:
