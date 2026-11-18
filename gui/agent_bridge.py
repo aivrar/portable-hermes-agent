@@ -822,15 +822,26 @@ You are running on **{os_name} {os_release}**.
             finally:
                 self._session_db = None
 
+    @staticmethod
+    def _commit_memory(agent, history) -> None:
+        """Hand the finished conversation to the memory providers (end of session).
+
+        ``commit_memory_session`` exists in the current core and in the
+        last-known-good one (8d285687); an agent without it is skipped. Never
+        raises into the GUI."""
+        commit = getattr(agent, "commit_memory_session", None)
+        if agent is None or not history or not callable(commit):
+            return
+        try:
+            commit(list(history))
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning(
+                "memory commit at session end failed", exc_info=True)
+
     def new_session(self):
-        """Start a fresh session. Flushes memory first."""
-        # Flush memories before ending session
-        if self.agent:
-            try:
-                if hasattr(self.agent, '_memory_store') and self.agent._memory_store:
-                    self.agent._memory_store.flush(self.conversation_history)
-            except Exception:
-                pass
+        """Start a fresh session. Commits the old one to memory first."""
+        self._commit_memory(self.agent, self.conversation_history)
 
         # End old session in database
         if self._session_db and self.session_id:

@@ -632,6 +632,54 @@ def test_gui_new_chat_ends_the_previous_session_in_the_database():
         db.close()
 
 
+def _new_chat_bridge(agent, history):
+    from gui.agent_bridge import AgentBridge
+
+    bridge = object.__new__(AgentBridge)
+    bridge.__dict__.update(agent=agent, conversation_history=list(history),
+                           session_id="gui_old", _session_db=None, is_running=False)
+    return bridge
+
+
+HISTORY = [{"role": "user", "content": "remember: I like tea"},
+           {"role": "assistant", "content": "Noted."}]
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_commits_the_conversation_to_memory():
+    """The old _memory_store.flush() call did not exist, so nothing was committed."""
+    committed = []
+    agent = SimpleNamespace(commit_memory_session=committed.append)
+    bridge = _new_chat_bridge(agent, HISTORY)
+
+    bridge.new_session()
+
+    assert committed == [HISTORY]
+    assert bridge.agent is None and bridge.conversation_history == []
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_memory_commit_never_raises_into_the_gui():
+    def broken(_messages):
+        raise RuntimeError("provider offline")
+
+    for agent in (SimpleNamespace(commit_memory_session=broken),   # failing provider
+                  SimpleNamespace(),                               # core without the method
+                  None):                                           # no agent yet
+        bridge = _new_chat_bridge(agent, HISTORY)
+        bridge.new_session()
+        assert bridge.agent is None and bridge.conversation_history == []
+
+
+@pytest.mark.needs_core
+def test_gui_new_chat_commit_matches_the_core_signature():
+    import inspect
+    from run_agent import AIAgent
+
+    params = inspect.signature(AIAgent.commit_memory_session).parameters
+    assert list(params)[:2] == ["self", "messages"]
+
+
 @pytest.mark.needs_core
 def test_gui_bridge_leaves_session_row_creation_to_the_core(monkeypatch, tmp_path):
     """No row before the first turn: a failing agent build must not leave an empty session."""
