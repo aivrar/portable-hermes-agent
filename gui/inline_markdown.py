@@ -7,11 +7,14 @@ The rules are conservative: anything doubtful is shown as typed.
   fenced block; the fence lines and everything inside stay literal.
 - A run of backticks opens a code span only if the same run closes it later
   on the same line; inside a code span nothing is bold.
-- Only a run of exactly two asterisks can be bold. An opening ``**`` is at
-  the start of the line or after whitespace or ( [ " ', and is followed by a
-  non-space; a closing ``**`` follows a non-space and is followed by the end,
-  whitespace or punctuation. So ``**/*.py``, ``2**10``, ``a ** b`` and
-  ``***x***`` stay as typed.
+- Only a run of exactly two asterisks can be bold, and the bold text holds
+  no ``*``. An opening ``**`` is at the start of the line or after
+  whitespace or ( [ " ', and is followed by a letter, a digit or
+  ( [ " ' $ # @; a closing ``**`` follows anything but whitespace or
+  / \\ ( [ , and is followed by the end, whitespace or . , ; : ! ? ) ] } " '.
+  So ``**/*.py,**/*.txt``, ``2**10``, ``a ** b``, ``f(*args, **kwargs)``
+  and ``***x***`` stay as typed.
+- Link and image text with its target, and bare URLs, are never styled.
 
 ``spans(text)`` styles a complete text. A streaming bubble styles each line
 with ``line_spans`` as it arrives (a best-effort preview) and redraws the
@@ -25,7 +28,12 @@ from typing import List, Tuple
 BOLD = "md_bold"
 CODE = "md_code"
 _RUN = re.compile(r"(\*+|`+)")
-_OPENS_AFTER = "([\"'"
+_OPENS_AFTER = "([\"'"                 # what may stand before an opening **
+_STARTS_BOLD = "([\"'$#@"              # besides letters and digits, what may follow it
+_NOT_BEFORE_CLOSE = "/\\([,"           # what may not stand before a closing **
+_ENDS_BOLD = ".,;:!?)]}\"'"            # besides end and whitespace, what may follow it
+#: Link and image text with its target, and bare URLs: never styled.
+_LITERAL = re.compile(r"!?\[[^\]\n]*\]\([^)\n]*\)|https?://\S+")
 
 Piece = Tuple[str, Tuple[str, ...]]
 
@@ -40,16 +48,26 @@ def _add(pieces: List[Piece], text: str, tags: Tuple[str, ...]):
 
 
 def _can_open(before: str, after: str) -> bool:
-    return bool(after) and not after.isspace() and (
-        not before or before.isspace() or before in _OPENS_AFTER)
+    return (not before or before.isspace() or before in _OPENS_AFTER) and bool(after) and (
+        after.isalnum() or after in _STARTS_BOLD)
 
 
 def _can_close(before: str, after: str) -> bool:
-    return bool(before) and not before.isspace() and (
-        not after or after.isspace() or not (after.isalnum() or after == "_"))
+    return bool(before) and not before.isspace() and before not in _NOT_BEFORE_CLOSE and (
+        not after or after.isspace() or after in _ENDS_BOLD)
 
 
 def _styled_line(line: str, pieces: List[Piece]):
+    """A line's pieces; link/image text with its target and URLs stay literal."""
+    done = 0
+    for literal in _LITERAL.finditer(line):
+        _styled_segment(line[done:literal.start()], pieces)
+        _add(pieces, literal.group(), ())
+        done = literal.end()
+    _styled_segment(line[done:], pieces)
+
+
+def _styled_segment(line: str, pieces: List[Piece]):
     tokens = _RUN.split(line)          # odd indices: runs of * or `
     starts, pos = [], 0
     for token in tokens:
@@ -73,7 +91,8 @@ def _styled_line(line: str, pieces: List[Piece]):
             continue
         before = line[starts[i] - 1] if starts[i] else ""
         after = line[starts[i] + 2:starts[i] + 3]
-        if opened is not None and _can_close(before, after):
+        if (opened is not None and _can_close(before, after)
+                and "*" not in line[starts[opened] + 2:starts[i]]):   # no * inside bold
             role[opened] = role[i] = "bold"
             opened = None
         elif _can_open(before, after):

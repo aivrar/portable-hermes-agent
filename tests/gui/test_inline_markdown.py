@@ -14,6 +14,11 @@ LITERAL = [
     "an unmatched ` backtick", "*single* stars", "**bold**s", "x**y**",
     "** spaced**", "**spaced **", "two\n** lines **\n","**across\nlines**",
     "`across\nlines`", "",
+    # 27a: glob prefixes, Python arguments, links and URLs
+    "**/*.py,**/*.txt", "**/a,**/b", "src/**/test_*.py and docs/**", "a**b**c",
+    "**kwargs and **more", "f(*args, **kwargs)", "![**x**](http://a/**/b.png)",
+    "see https://example.com/**/x.py?q=**y** now", "[**docs**](http://a/b)",
+    "**a*b**", "**/x**", "**x/**",
 ]
 
 
@@ -31,7 +36,12 @@ def test_real_bold_and_code():
     assert spans("`code with ** inside`") == [("code with ** inside", K)]
     assert spans("`a` and `b`") == [("a", K), (" and ", ()), ("b", K)]
     assert spans("``a ` b``") == [("a ` b", K)]
-    assert spans("**`x`**") == [("x", (BOLD, CODE))]
+    assert spans("**`x`**") == [("**", ()), ("x", K), ("**", ())]   # ` may not start bold
+    assert spans("**$5** and **#1** and **@me**") == [
+        ("$5", B), (" and ", ()), ("#1", B), (" and ", ()), ("@me", B)]
+    assert spans("Is it **really**?") == [("Is it ", ()), ("really", B), ("?", ())]
+    assert spans("**a** [link](http://x/**y**) **b**") == [
+        ("a", B), (" [link](http://x/**y**) ", ()), ("b", B)]
     assert spans('("**quoted**")') == [('("', ()), ("quoted", B), ('")', ())]
     assert spans("**a** **b**.") == [("a", B), (" ", ()), ("b", B), (".", ())]
     assert spans("**a `b** c`") == [("**a ", ()), ("b** c", K)]
