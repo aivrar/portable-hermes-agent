@@ -59,6 +59,7 @@ class MessageBubble(tk.Frame):
         super().__init__(parent, bg=C["bg_main"])
         self._msg_type = msg_type
         self._tool_name = tool_name
+        self._text = text
 
         if msg_type == "user":
             bg, border, label, label_fg = C["msg_user"], C["msg_user_border"], t("chat.role_user"), C["accent"]
@@ -1844,7 +1845,7 @@ class HermesGUI:
         if not msg or self.bridge.is_running:
             return
         if self._model_work_running():  # the message stays in the input box
-            self._add_msg(t("chat.model_loading_wait"), "system")
+            self._add_notice(t("chat.model_loading_wait"))
             return
         self.input_text.delete("1.0", "end")
 
@@ -2013,8 +2014,18 @@ class HermesGUI:
         turn would write into the new session); True when refused."""
         if not self.bridge.is_running:
             return False
-        self._add_msg(t("chat.busy_stop_first", stop=t("chat.stop")), "system")
+        self._add_notice(t("chat.busy_stop_first", stop=t("chat.stop")))
         return True
+
+    def _add_notice(self, text):
+        """A System line, unless the chat's last line is already this one
+        (refusals in a row would repeat it)."""
+        children = self.msg_frame.winfo_children()
+        last = children[-1] if children else None
+        if (isinstance(last, MessageBubble) and last._msg_type == "system"
+                and last._text == text):
+            return
+        self._add_msg(text, "system")
 
     def _can_delete_session(self, session_id) -> bool:
         """Sidebar delete guard: not the active session while its turn runs."""

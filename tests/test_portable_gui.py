@@ -1708,6 +1708,53 @@ def test_gui_send_is_refused_while_a_model_loads():
     assert gui._model_work_running() is False         # busy ends with the thread
 
 
+def _chat_keeping_bubbles(gui, app):
+    """_add_msg adds a (Tk-free) MessageBubble that the chat then lists."""
+    bubbles = []
+
+    def add(text, msg_type, tool_name=None):
+        bubble = object.__new__(app.MessageBubble)
+        bubble.__dict__.update(_text=text, _msg_type=msg_type, _tool_name=tool_name)
+        bubbles.append(bubble)
+
+    gui._add_msg = add
+    gui.msg_frame.winfo_children.side_effect = lambda: list(bubbles)
+    return bubbles
+
+
+@pytest.mark.needs_core
+def test_gui_a_refusal_in_a_row_is_not_repeated_in_the_chat():
+    import threading
+    from unittest.mock import Mock
+    from gui import app
+    from gui.i18n import t
+
+    busy = t("chat.busy_stop_first", stop=t("chat.stop"))
+    gui = _gui_with_bridge(Mock(is_running=True))
+    bubbles = _chat_keeping_bubbles(gui, app)
+
+    assert gui._refuse_while_running() and gui._refuse_while_running()
+    assert [(b._text, b._msg_type) for b in bubbles] == [(busy, "system")]
+
+    gui._add_msg("a reply", "ai")                     # another line in between: say it again
+    gui._refuse_while_running()
+    gui._add_msg(busy, "ai")                          # same words, but not a System line
+    gui._refuse_while_running()
+    assert [b._msg_type for b in bubbles] == ["system", "ai", "system", "ai", "system"]
+
+    gui.bridge.is_running = False
+    gui.input_text.get.return_value = "hello"
+    release = threading.Event()
+    loader = threading.Thread(target=release.wait, args=(10,), daemon=True)
+    loader.start()
+    gui._track_model_work(loader)
+    gui._send()
+    gui._send()
+    assert [b._text for b in bubbles[-2:]] == [busy, t("chat.model_loading_wait")]
+    release.set()
+    loader.join(10)
+
+
 @pytest.mark.needs_core
 def test_gui_busy_lasts_until_the_tk_side_completion_ran():
     from unittest.mock import Mock
