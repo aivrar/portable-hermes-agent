@@ -360,6 +360,31 @@ class StreamingBubble(tk.Frame):
 # Sidebar
 # ============================================================================
 
+def _auto_load_local_model(model_id, settings, log):
+    """Load *model_id* in LM Studio for the sidebar; runs on a worker thread.
+
+    Returns (success, error message, instance id LM Studio used or None)."""
+    try:
+        from gui.lm_studio import LMStudioPanel, LMStudioClient
+        client = LMStudioClient(base_url=LMStudioPanel._resolve_base_url())
+        if not client.connect_sdk():
+            log.debug("auto-load SDK connect FAILED")
+            return False, t("sidebar.sdk_unavailable"), None
+        log.debug("auto-load SDK connected, calling load_model...")
+        client.load_model(
+            model_id,
+            gpu_index=settings["gpu_index"],
+            context_length=settings["context_length"],
+            flash_attention=settings.get("flash_attention", True),
+        )
+        loaded_id = client.last_loaded_identifier
+        log.debug("auto-load SUCCESS instance=%r", loaded_id)
+        return True, "", loaded_id
+    except Exception as e:
+        log.error("auto-load EXCEPTION: %s", e)
+        return False, str(e), None
+
+
 def _list_sessions_with_messages(db, limit=20, fallback_window=200):
     """Recent sessions that have at least one message.
 
@@ -770,47 +795,40 @@ class Sidebar(tk.Frame):
                 _dbg.addHandler(_fh)
                 _dbg.setLevel(_log.DEBUG)
 
-            success = False
-            error_msg = ""
             _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
                        model_id, settings["gpu_index"], settings["context_length"])
-            try:
-                from gui.lm_studio import LMStudioPanel, LMStudioClient
-                url = LMStudioPanel._resolve_base_url()
-                client = LMStudioClient(base_url=url)
-                if not client.connect_sdk():
-                    error_msg = t("sidebar.sdk_unavailable")
-                    _dbg.debug("auto-load SDK connect FAILED")
-                else:
-                    _dbg.debug("auto-load SDK connected, calling load_model...")
-                    client.load_model(
-                        model_path=model_id,
-                        gpu_index=settings["gpu_index"],
-                        context_length=settings["context_length"],
-                        flash_attention=settings.get("flash_attention", True),
-                    )
-                    success = True
-                    _dbg.debug("auto-load SUCCESS")
-            except Exception as e:
-                error_msg = str(e)
-                _dbg.error("auto-load EXCEPTION: %s", error_msg)
+            success, error_msg, loaded_id = _auto_load_local_model(model_id, settings, _dbg)
 
             # Back to main thread
             try:
-                self.after(0, lambda: self._on_auto_load_complete(model_id, success, error_msg))
+                self.after(0, lambda: self._on_auto_load_complete(
+                    model_id, success, error_msg, loaded_id))
             except Exception:
                 pass
 
         threading.Thread(target=_load, daemon=True).start()
 
-    def _on_auto_load_complete(self, model_id: str, success: bool, error: str):
-        """Handle auto-load result on main thread."""
+    def _on_auto_load_complete(self, model_id: str, success: bool, error: str,
+                               loaded_id: Optional[str] = None):
+        """Handle auto-load result on main thread.
+
+        *loaded_id* is the instance id LM Studio gave the load; chat requests
+        must use it, so it replaces *model_id* when it differs."""
         self._loading_model = False
         self.model_combo.configure(state="readonly")
 
+        target = loaded_id if success and loaded_id else model_id
         if success:
             self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
-            self._model_states[model_id] = "loaded"
+            self._model_states[target] = "loaded"
+            if target != model_id:
+                # Route the new id to LM Studio before the next refresh lists it.
+                self.model_var.set(target)
+                if not self._is_local_entry(target):
+                    self._lm_studio_models.append((target, target, "LM Studio"))
+                    self._all_models.append((target, target, "LM Studio"))
+                if self.on_local_models:
+                    self.on_local_models([mid for mid, _, _ in self._lm_studio_models])
             self.after(500, self.refresh_models)
             self.after(1500, lambda: self._show_load_status(""))
         else:
@@ -820,10 +838,10 @@ class Sidebar(tk.Frame):
 
         # Notify HermesGUI of load result
         if self.on_auto_load:
-            self.on_auto_load(model_id, success, error)
+            self.on_auto_load(target, success, error)
         # Always switch to the model (user may have loaded it manually)
         if self.on_model_change:
-            self.on_model_change(model_id)
+            self.on_model_change(target)
 
     def _load_sessions(self):
         """Load recent sessions from SessionDB."""

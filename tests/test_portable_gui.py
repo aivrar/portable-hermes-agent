@@ -460,3 +460,75 @@ def test_gui_streamed_reply_keeps_first_line_indentation():
     # Indentation split over chunks, after whitespace-only chunks.
     assert _streamed((" \n", "\n  ", "  print(1)"))[0] == "    print(1)"
     assert _streamed(("  ", "x"))[0] == "  x"
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_auto_load_calls_load_model_and_reports_instance_id(monkeypatch):
+    import logging
+    from unittest.mock import Mock
+    from gui import app
+    from gui import lm_studio as lm
+
+    if not lm.HAS_SDK:
+        pytest.skip("lmstudio SDK not installed")
+    target = Mock(model_key="deepseek@q4_k_m", path="p/deepseek", display_name="DeepSeek")
+    target.load_new_instance.return_value = SimpleNamespace(identifier="deepseek")
+    llm = Mock()
+    llm.list_loaded.return_value = []
+    llm.list_downloaded.return_value = [target]
+
+    def connect(client):
+        client._sdk_client = SimpleNamespace(llm=llm)
+        return True
+
+    monkeypatch.setattr(lm.LMStudioPanel, "_resolve_base_url",
+                        staticmethod(lambda: "http://127.0.0.1:9/v1"))
+    monkeypatch.setattr(lm.LMStudioClient, "connect_sdk", connect)
+    settings = {"gpu_index": None, "context_length": 65536, "flash_attention": True}
+
+    result = app._auto_load_local_model("deepseek@q4_k_m", settings, logging.getLogger("t"))
+
+    assert result == (True, "", "deepseek")
+    target.load_new_instance.assert_called_once()
+
+
+def _auto_load_sidebar(app, local_ids):
+    from unittest.mock import Mock
+
+    sidebar = object.__new__(app.Sidebar)
+    rows = [(mid, mid, "LM Studio") for mid in local_ids]
+    sidebar.__dict__.update(
+        _loading_model=True, model_combo=Mock(), _show_load_status=Mock(),
+        _model_states={}, after=Mock(), model_var=Mock(),
+        _lm_studio_models=list(rows), _all_models=list(rows),
+        on_local_models=Mock(), on_auto_load=Mock(), on_model_change=Mock())
+    return sidebar
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_auto_load_switches_chat_to_the_loaded_instance():
+    from gui import app
+
+    sidebar = _auto_load_sidebar(app, ["deepseek@q4_k_m"])
+
+    sidebar._on_auto_load_complete("deepseek@q4_k_m", True, "", "deepseek")
+
+    sidebar.on_local_models.assert_called_once_with(["deepseek@q4_k_m", "deepseek"])
+    sidebar.on_model_change.assert_called_once_with("deepseek")
+    sidebar.model_var.set.assert_called_once_with("deepseek")
+    assert sidebar._model_states == {"deepseek": "loaded"}
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_auto_load_keeps_model_id_when_instance_matches_or_load_fails():
+    from gui import app
+
+    same = _auto_load_sidebar(app, ["gemma"])
+    same._on_auto_load_complete("gemma", True, "", "gemma")
+    same.on_model_change.assert_called_once_with("gemma")
+    same.on_local_models.assert_not_called()
+
+    failed = _auto_load_sidebar(app, ["gemma"])
+    failed._on_auto_load_complete("gemma", False, "boom", None)
+    failed.on_model_change.assert_called_once_with("gemma")
+    failed.on_auto_load.assert_called_once_with("gemma", False, "boom")
