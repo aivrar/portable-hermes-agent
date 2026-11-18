@@ -33,6 +33,8 @@ from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
 from portable_hermes.session_store import open_store
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
+from gui import accounts_core
+from gui.accounts_window import AccountsWindow
 from gui.lm_studio import (LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH,
                            gpu_fit_note)
 from gui.permissions_panel import PermissionsPanel
@@ -664,6 +666,7 @@ class Sidebar(tk.Frame):
         # Unified model list: cloud + local
         self._lm_studio_models: List[tuple] = []  # [(id, name, note), ...]
         self._model_sizes: Dict[str, int] = {}    # LM Studio model id -> file size
+        self._account_models: List[tuple] = []  # [(id, "[ChatGPT] id", "account:<provider>")]
         self._all_models: List[tuple] = list(self.MODELS)
         self._model_states: Dict[str, str] = {}  # model_id -> "loaded"/"not-loaded"
 
@@ -753,6 +756,8 @@ class Sidebar(tk.Frame):
     def _display_name(entry):
         """Build display string for a model tuple (id, name, note)."""
         _, name, note = entry
+        if note.startswith("account:"):
+            return name
         if note == "LM Studio":
             name = f"{t('sidebar.local_prefix')} {name}"
         elif note.startswith("sidebar.note."):
@@ -1001,6 +1006,19 @@ class Sidebar(tk.Frame):
             self._load_status_var.set("")
             self._load_status_lbl.pack_forget()
 
+    def set_account_models(self, provider: str, short: str, model_ids):
+        """List a signed-in account's models at the top of the box."""
+        self._account_models = [(m, f"[{short}] {m}", f"account:{provider}") for m in model_ids]
+        self._all_models = self._account_models + list(self.MODELS) + list(self._lm_studio_models)
+        self._update_combobox_values()
+
+    def account_for(self, model_id: str):
+        """The account a listed account model belongs to, else None."""
+        for mid, _, note in self._account_models:
+            if mid == model_id:
+                return note.split(":", 1)[1]
+        return None
+
     def _is_local_entry(self, model_id: str) -> bool:
         """Check if a model_id belongs to the local LM Studio models."""
         return any(mid == model_id for mid, _, _ in self._lm_studio_models)
@@ -1030,7 +1048,7 @@ class Sidebar(tk.Frame):
             self._lm_studio_models = local_models
             self._model_states = states
             self._model_sizes = sizes
-            self._all_models = list(self.MODELS) + local_models
+            self._all_models = self._account_models + list(self.MODELS) + local_models
             # Register local model IDs with the bridge for routing
             if self.on_local_models and local_models:
                 local_ids = [mid for mid, _, _ in local_models]
@@ -1446,6 +1464,7 @@ class SettingsDialog(tk.Toplevel):
         self.model_var = tk.StringVar(value="google/gemini-2.5-flash")
         self.model_combo = ttk.Combobox(parent, textvariable=self.model_var,
                                         values=models, font=FONTS["mono_small"])
+        self._shown_model = self.model_var.get()   # saved only when changed
         self.model_combo.pack(fill="x", pady=(4, 12))
         tk.Label(parent, text=t("settings.model_hint", "You can type any OpenRouter model ID"),
                 font=SF("Segoe UI", 8), fg=C["text_disabled"], bg=C["bg_main"]).pack(anchor="w")
@@ -1483,7 +1502,9 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     content += f"\n{key}={val}\n"
         model = self.model_var.get().strip()
-        if model:  # never during a reply: the dialog is not opened then (modal)
+        # Never during a reply (the dialog is modal). Only a changed model is
+        # applied: saving other settings keeps the model (or account) in use.
+        if model and model != getattr(self, "_shown_model", None):
             self.bridge.set_model(model)
         env_path.write_text(content, encoding="utf-8")
 
@@ -1804,8 +1825,10 @@ class HermesGUI:
             self.root.after(500, self._first_run_api_setup)
 
         model = self.bridge.get_model()
-        self.status_bar.set_model(model)
+        self.status_bar.set_model(self._model_label(model))
         self.sidebar.set_model(model)
+        if self._active_account():     # config names a signed-in account
+            self._load_account_models(self._active_account())
 
         # Show local settings if current model is local
         if self.bridge._is_local_model(model):
@@ -1858,6 +1881,7 @@ class HermesGUI:
             ]),
             (t("menu.view"), [
                 (t("menu.lm_studio"), self._open_lm_studio),
+                (t("menu.accounts"), self._open_accounts),
                 (t("menu.skills"), self._open_skills),
                 (t("menu.extensions"), self._open_extensions),
                 None,
@@ -2487,6 +2511,10 @@ class HermesGUI:
         if self._refuse_while_running():
             self.sidebar.set_model(self.bridge.get_model())
             return
+        account = self.sidebar.account_for(model_id)
+        if isinstance(account, str):
+            self._use_account(account, model_id)
+            return
         # Detect if this is a local model (known from LM Studio discovery)
         if model_id in self.bridge._known_local_models:
             url = self.bridge._resolve_lm_studio_url()
@@ -2571,7 +2599,7 @@ class HermesGUI:
         d = SettingsDialog(self.root, self.bridge)
         self.root.wait_window(d)
         m = self.bridge.get_model()
-        self.status_bar.set_model(m)
+        self.status_bar.set_model(self._model_label(m))
         self.sidebar.set_model(m)
 
     def _open_skills(self):
@@ -2589,6 +2617,83 @@ class HermesGUI:
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
+
+    # -- signed-in accounts (View > Accounts) ----------------------------------
+    def _open_accounts(self):
+        AccountsWindow(self.root, on_use=self._use_account,
+                       active_account=self._active_account)
+
+    def _active_account(self):
+        """The signed-in account the chat goes through now (not while on LM Studio)."""
+        account = getattr(self.bridge, "_account_provider", None)
+        local = getattr(self.bridge, "_active_provider", "cloud") == "local"
+        return account if isinstance(account, str) and not local else None
+
+    def _model_label(self, model):
+        """The status bar's model text: the account in front when one is used."""
+        account = self._active_account()
+        return f"{accounts_core.short_name(account)}: {model}" if account else model
+
+    def _use_account(self, provider, model):
+        """Chat through a signed-in account. The core validates and writes the
+        choice on a worker thread; sending waits meanwhile, as for a model load.
+        Refused while a reply runs or a model loads."""
+        if self._refuse_while_running():
+            self.sidebar.set_model(self.bridge.get_model())
+            return
+        if self._model_work_running():
+            self._add_notice(t("chat.model_loading_wait"))
+            self.sidebar.set_model(self.bridge.get_model())
+            return
+        results = queue.SimpleQueue()
+
+        def work():
+            try:
+                results.put(("ok", accounts_core.use(provider, model)))
+            except Exception as exc:   # Rejected: the core's reason; else what failed
+                results.put(("failed", str(exc) or type(exc).__name__))
+
+        def check():
+            try:
+                kind, value = results.get_nowait()
+            except queue.Empty:
+                self.root.after(100, check)
+                return
+            self._account_switching = False
+            name = accounts_core.short_name(provider)
+            if kind != "ok":
+                self._add_msg(t("chat.account_rejected", name=name, model=model, error=value), "error")
+                self.sidebar.set_model(self.bridge.get_model())
+                return
+            dropped = self.bridge.set_account_mode(provider, value)
+            self.status_bar.set_model(self._model_label(value))
+            self.sidebar.set_model(value)
+            self._load_account_models(provider)
+            self._add_msg(t("chat.account_in_use", name=name, model=value), "system")
+            self._note_dropped_resume(dropped)
+
+        thread = threading.Thread(target=work, daemon=True)
+        self._account_switching = True
+        self._track_model_work(thread)
+        thread.start()
+        self.root.after(100, check)
+
+    def _load_account_models(self, provider):
+        """Fill the model box with the account's models (worker thread)."""
+        results = queue.SimpleQueue()
+        threading.Thread(target=lambda: results.put(accounts_core.models(provider)),
+                         daemon=True).start()
+
+        def check():
+            try:
+                ids = results.get_nowait()
+            except queue.Empty:
+                self.root.after(200, check)
+                return
+            if ids:
+                self.sidebar.set_account_models(provider, accounts_core.short_name(provider), ids)
+                self.sidebar.set_model(self.bridge.get_model())
+        self.root.after(200, check)
 
     def _open_lm_studio(self):
         panel = LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
@@ -2617,6 +2722,7 @@ class HermesGUI:
         panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed]
         self._lm_panels = panels
         return (bool(self._model_work)
+                or getattr(self, "_account_switching", False) is True
                 or getattr(sidebar, "_loading_model", False) is True
                 or any(p.model_work_pending() for p in panels))
 
@@ -2649,7 +2755,7 @@ class HermesGUI:
                 # Force agent recreation to pick up new tools
                 self._note_dropped_resume(self.bridge.rebuild_agent())
             m = self.bridge.get_model()
-            self.status_bar.set_model(m)
+            self.status_bar.set_model(self._model_label(m))
             self.sidebar.set_model(m)
 
         w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True,

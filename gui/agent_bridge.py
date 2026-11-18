@@ -140,6 +140,9 @@ class AgentBridge:
 
         # Load config (same as CLI)
         self.config = _load_cli_config()
+        # The signed-in account (ChatGPT/Codex, Grok) the config chats through, or None.
+        from gui import accounts_core
+        self._account_provider = accounts_core.account_in_config(self.config)
 
         # The session store (portable_hermes.session_store: the core's storage
         # interface, or SessionDB on older cores); agents borrow it.
@@ -194,11 +197,35 @@ class AgentBridge:
         return self.rebuild_agent()  # Force recreation
 
     def set_cloud_mode(self, model: str):
-        """Switch to OpenRouter as the active provider."""
+        """Switch to OpenRouter as the active provider. The pick is written
+        as provider: openrouter, so "auto" cannot send it to a signed-in
+        account (local file write, no network)."""
         self._require_idle()
+        if model not in getattr(self, "_known_local_models", ()):
+            try:
+                from gui import accounts_core
+                accounts_core.use_openrouter(model)
+                self.config = _load_cli_config()
+                self._account_provider = None
+            except Exception:
+                import logging
+                logging.getLogger("hermes.bridge").warning("could not save the OpenRouter model", exc_info=True)
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
+        return self.rebuild_agent()
+
+    def set_account_mode(self, provider: str, model: str):
+        """Chat through a signed-in account. accounts_core.use has already
+        validated and written provider and model (on a worker thread); this
+        reloads the config and drops the agent: a new agent and session, as
+        for any model change."""
+        self._require_idle()
+        self.config = _load_cli_config()
+        self._active_provider = "cloud"
+        self._lm_studio_base_url = None
+        self._selected_model = model
+        self._account_provider = provider
         return self.rebuild_agent()
 
     # -- dropping agents ------------------------------------------------------
