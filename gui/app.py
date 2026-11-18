@@ -2264,7 +2264,15 @@ class HermesGUI:
             # Only show full response if we never streamed (non-streaming model/fallback)
             self._add_msg(text, "ai")
 
+    def _turn_live(self) -> bool:
+        """A reply runs: the turn clock runs from Send to its end (done, error,
+        Stop, New Chat, window close). Activity callbacks the worker posted
+        for a turn that has ended (a late token after Stop) are ignored."""
+        return self._turn_clock_id is not None
+
     def _on_tool_call(self, name, preview):
+        if not self._turn_live():
+            return
         # Finalize any in-progress streaming bubble before showing the tool call
         self._cleanup_stream_bubble()
         w = ToolCallWidget(self.msg_frame, name, preview)
@@ -2278,6 +2286,8 @@ class HermesGUI:
 
     def _on_stream_delta(self, text):
         """Append a token to the streaming bubble."""
+        if not self._turn_live():
+            return
         if text is None:
             # End-of-turn signal — finalize the current bubble
             if self._stream_bubble and self._stream_bubble.has_content():
@@ -2304,14 +2314,13 @@ class HermesGUI:
             self._stream_bubble = None
 
     def _on_thinking(self, text):
-        if self._turn_clock_id is not None:
-            return   # a reply runs: the status bar follows the reply bubble's line
-        if text:
-            self.status_bar.set_thinking(text)
-        else:
-            self.status_bar.set_ready()
+        """The core's spinner phrase: not shown. During a reply the status bar
+        follows the reply bubble's line; after it (a late call after Stop)
+        it must not say "Thinking..." again."""
 
     def _on_step(self, n, _):
+        if not self._turn_live():
+            return
         self.status_bar.set_iter(n)
         if self._stream_bubble is not None and self._stream_bubble.activity is not None:
             self._stream_bubble.activity.model_called()     # a tool ran; waiting again
@@ -2340,7 +2349,7 @@ class HermesGUI:
     def _on_reasoning(self, text):
         """Thinking text: into the reply bubble's activity line (and, when
         open, its thinking pane); the status bar says the model is thinking."""
-        if not text:
+        if not text or not self._turn_live():
             return
         if self._stream_bubble is not None:
             self._stream_bubble.add_thinking(text)

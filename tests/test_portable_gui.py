@@ -2115,6 +2115,37 @@ def test_gui_status_bar_says_what_the_reply_line_says(monkeypatch):
     agree("Waiting for the model...")
 
 
+@pytest.mark.needs_core
+@pytest.mark.parametrize("exit_path", ["Stop", "reply done"])
+def test_gui_callbacks_after_the_turn_ended_change_nothing(monkeypatch, exit_path):
+    from gui import app
+    gui = _replying_gui(monkeypatch)
+    gui._on_reasoning("Need the GPU list.")
+    gui._on_stream_delta("Partial")
+    if exit_path == "Stop":
+        gui._interrupt()
+    else:
+        gui.bridge.is_running = False
+        gui._on_complete({})
+    bar = gui.status_bar
+    bar.reset_mock()
+    made, pending = len(_FakeReplyBubble.made), dict(gui.root.pending)
+
+    # What the worker had already posted when the turn ended.
+    gui._on_thinking("(¬‿¬) pondering...")
+    gui._on_reasoning("more thoughts")
+    gui._on_tool_call("gpu_info", "{}")
+    gui._on_step(3, ["gpu_info"])
+    gui._on_stream_delta("late token")
+    gui._on_stream_delta(None)
+
+    assert bar.method_calls == []                      # the bar still says Ready
+    assert len(_FakeReplyBubble.made) == made and gui._stream_bubble is None
+    app.ToolCallWidget.assert_not_called()             # no tool bubble either
+    assert gui.root.pending == pending                 # no clock, no scroll queued
+    assert "late" not in _FakeReplyBubble.made[0].text
+
+
 def test_status_bar_clock_text():
     from types import SimpleNamespace
     from gui import app
