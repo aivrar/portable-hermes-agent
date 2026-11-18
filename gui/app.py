@@ -1995,13 +1995,13 @@ class HermesGUI:
         key = "chat.resumed_session" if kind == "resumed" else "chat.new_chat_title"
         self.chat_title.configure(text=title or t(key))
 
-    def _show_session_title(self, session_id):
-        """Show *session_id*'s title, as the sidebar's session list (just
-        refreshed) has it; nothing changes while the session has none."""
-        for sess in getattr(self.sidebar, "_sessions_data", None) or []:
-            if session_id and sess.get("id") == session_id and sess.get("title"):
-                self._set_chat_title(self._chat_title_kind, sess["title"])
-                return
+    def _show_session_title(self, session_id, kind="new"):
+        """Header for *session_id*: its title, as the sidebar's session list
+        (just refreshed) has it, else the *kind* label ("New Chat" after a
+        reply: a rebuilt agent's new session has no title yet)."""
+        title = next((s.get("title") for s in getattr(self.sidebar, "_sessions_data", None) or []
+                      if session_id and s.get("id") == session_id), None)
+        self._set_chat_title(kind, title)
 
     # ---- Commands ----
 
@@ -2092,8 +2092,7 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            self._set_chat_title("resumed")
-            self._show_session_title(session_id)
+            self._show_session_title(session_id, "resumed")
 
             # Display messages
             for msg in messages:

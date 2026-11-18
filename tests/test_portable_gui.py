@@ -1498,20 +1498,28 @@ def test_gui_header_shows_the_session_title_once_it_has_one():
     sessions = [{"id": "s0", "title": "Other chat"}, {"id": "s1", "title": None, "preview": "hi"}]
     gui.sidebar._sessions_data = sessions
 
-    gui._on_complete({})                                   # no title yet: header unchanged
-    gui.chat_title.configure.assert_not_called()
+    gui._on_complete({})                                   # no title yet
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
 
     sessions[1]["title"] = "General assistance capabilities"
     gui._on_complete({})
     gui.chat_title.configure.assert_called_with(text="General assistance capabilities")
 
-    gui._new_chat()
+    # A model or settings change rebuilds the agent with a new session id;
+    # until that session has a title, the header says New Chat again.
+    bridge.session_id = "s2"
+    sessions.insert(0, {"id": "s2", "title": None, "preview": "next"})
+    gui._on_complete({})
     gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
     assert gui._chat_title_text is None
 
-    gui._set_chat_title("resumed")                         # resuming a stored session
-    gui._show_session_title("s0")
+    gui._new_chat()
+    gui.chat_title.configure.assert_called_with(text=t("chat.new_chat_title"))
+
+    gui._show_session_title("s0", "resumed")               # resuming a stored session
     gui.chat_title.configure.assert_called_with(text="Other chat")
+    gui._show_session_title("s2", "resumed")               # one without a title
+    gui.chat_title.configure.assert_called_with(text=t("chat.resumed_session"))
     gui._set_chat_title("resumed", "x" * 80)               # long titles are shortened
     assert gui.chat_title.configure.call_args.kwargs["text"] == "x" * 57 + "..."
 
