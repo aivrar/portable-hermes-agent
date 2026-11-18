@@ -1504,20 +1504,53 @@ def test_gui_skills_browser_syncs_only_when_no_reply_runs(monkeypatch, tmp_path,
     from unittest.mock import Mock
     from gui import app
 
+    import queue
+    import threading
+
     sync = Mock()
     monkeypatch.setattr(app, "sync_bundled_skills_once", sync)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _bundled_skill(tmp_path / "skills", "listed-skill")
     browser = object.__new__(app.SkillsBrowser)
-    shown = []
-    browser.__dict__.update(_may_sync=may_sync, after=lambda _ms, fn: fn(),
-                            _post_ui=lambda fn: fn(),
+    shown, tk_calls = [], []
+    browser.__dict__.update(_may_sync=may_sync, _result=queue.SimpleQueue(),
+                            after=lambda _ms, fn: tk_calls.append(threading.current_thread()),
                             _set=lambda text, **_kw: shown.append(text))
 
-    browser._load()
+    worker = threading.Thread(target=browser._load)
+    worker.start()
+    worker.join(30)
+    assert tk_calls == [] and shown == []               # the worker never touches Tk
+    browser._poll_result()                              # Tk thread shows the result
 
     assert sync.call_count == (1 if may_sync else 0)
     assert "listed-skill" in shown[-1]                  # during a reply: what is there
+
+
+@pytest.mark.needs_core
+def test_gui_skills_browser_shows_the_list_in_a_real_window(monkeypatch, tmp_path):
+    import time
+    import tkinter as tk
+    from gui import app
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _bundled_skill(tmp_path / "skills", "windowed-skill")
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.withdraw()
+    try:
+        browser = app.SkillsBrowser(root, may_sync=False)
+        deadline = time.time() + 10
+        while "windowed-skill" not in browser.text.get("1.0", "end") and time.time() < deadline:
+            root.update()
+            time.sleep(0.02)
+        assert "windowed-skill" in browser.text.get("1.0", "end")
+        assert browser._poll_id is None                 # polling stopped once shown
+        browser.destroy()
+    finally:
+        root.destroy()
 
 
 @pytest.mark.needs_core

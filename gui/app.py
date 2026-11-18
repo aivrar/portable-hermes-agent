@@ -10,6 +10,7 @@ import io
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 import threading
+import queue
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -1313,10 +1314,15 @@ class SkillsBrowser(tk.Toplevel):
 
         self._content_data = None
         register_listener(self.update_ui_language)
+        self._result = queue.SimpleQueue()
         threading.Thread(target=self._load, daemon=True).start()
+        self._poll_result()
 
     def destroy(self):
         unregister_listener(self.update_ui_language)
+        if getattr(self, "_poll_id", None):
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
         super().destroy()
 
     def update_ui_language(self, _lang_code=None):
@@ -1327,13 +1333,28 @@ class SkillsBrowser(tk.Toplevel):
             self._set(t(key, **kwargs), key=key, **kwargs)
 
     def _load(self):
+        """Worker thread: never touches Tk; the result goes through
+        self._result to _poll_result on the Tk thread."""
+        self._result.put(self._read_skills())
+
+    def _poll_result(self):
+        """Tk thread: show the worker's result once it is there."""
+        try:
+            text, key, kwargs = self._result.get_nowait()
+        except queue.Empty:
+            self._poll_id = self.after(50, self._poll_result)
+            return
+        self._poll_id = None
+        self._set(text, key=key, **kwargs)
+
+    def _read_skills(self):
+        """(text, i18n key or None, key arguments) for the list."""
         try:
             if self._may_sync:
                 sync_bundled_skills_once()   # a home not made by install.bat has none yet
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
-                self.after(0, lambda: self._set(t("skills.no_dir"), key="skills.no_dir"))
-                return
+                return t("skills.no_dir"), "skills.no_dir", {}
             cats = _discover_installed_skills(skills_dir)
             lines = []
             for cat in sorted(cats):
@@ -1342,13 +1363,11 @@ class SkillsBrowser(tk.Toplevel):
                 for n, d in cats[cat]:
                     lines.append(f"    {n:30s} {d[:50]}" if d else f"    {n}")
             if lines:
-                self.after(0, lambda: self._set("\n".join(lines)))
-            else:
-                self.after(0, lambda: self._set(t("skills.no_skills"), key="skills.no_skills"))
+                return "\n".join(lines), None, {}
+            return t("skills.no_skills"), "skills.no_skills", {}
         except Exception as e:
             error = str(e)
-            self.after(0, lambda: self._set(t("skills.load_error", error=error),
-                                            key="skills.load_error", error=error))
+            return t("skills.load_error", error=error), "skills.load_error", {"error": error}
 
     def _set(self, txt, key=None, **kwargs):
         self._content_data = (key, kwargs) if key else None
