@@ -100,31 +100,40 @@ if results:
 
 ### Load a Model with GPU Selection
 ```python
-import lmstudio, time
+import lmstudio
 from lmstudio import LlmLoadModelConfig
 from lmstudio._sdk_models import GpuSetting
 
 client = lmstudio.Client()
 
-# User has: GPU 0: RTX 3060 (12GB), GPU 1: RTX 3090 (24GB)
-# ALWAYS force single-GPU with disabled_gpus to prevent splitting
+# Prefer the lm_studio_load tool: it maps GPUs for you. GpuSetting takes
+# LM Studio's GPU numbers (CUDA order, see `lms runtime survey`), which are
+# NOT nvidia-smi's: here nvidia-smi 0 = RTX 3060, 1 = RTX 3090, but
+# LM Studio 0 = RTX 3090, 1 = RTX 3060. Match them by GPU UUID.
+# Single GPU: disable every other GPU (main_gpu alone does not pin it).
 
 config = LlmLoadModelConfig(
     gpu=GpuSetting(
-        main_gpu=1,          # GPU index (1 = RTX 3090)
-        disabled_gpus=[0],   # Prevent splitting to other GPUs
-        ratio=1.0            # Use 100% of selected GPU
+        main_gpu=0,          # LM Studio GPU 0 (= RTX 3090 here)
+        disabled_gpus=[1],   # Prevent splitting to other GPUs
+        ratio=1.0            # Offload every layer to the GPU
     ),
+    # All GPUs, largest first: GpuSetting(main_gpu=0, split_strategy="favorMainGpu",
+    #                                     disabled_gpus=[], ratio=1.0)
+    # CPU only: GpuSetting(ratio=0.0, disabled_gpus=[every LM Studio GPU id])
+    # plus offload_kv_cache_to_gpu=False (ratio 0 alone still left ~3 GB of
+    # a vision model on a GPU in testing)
     context_length=8192,     # Adjust based on model + VRAM
 )
 
+# No instance identifier: LM Studio names the instance after the model key,
+# so it shows (and is addressed) by its real name. handle.identifier has it.
 handle = client.llm.load_new_instance(
     "model-path-from-list-downloaded",
-    f"hermes-{int(time.time())}",
     config=config,
     ttl=3600,  # Auto-unload after 1 hour idle
 )
-print(f"Loaded! Context: {handle.get_context_length()}")
+print(f"Loaded {handle.identifier}! Context: {handle.get_context_length()}")
 ```
 
 ### Unload a Model (Free GPU Memory)
@@ -277,7 +286,9 @@ User's GPUs: RTX 3060 (12 GB), RTX 3090 (24 GB)
 **"Download llama 3"** → Use `lm_studio_search` then `lm_studio_download`
 **"What models do I have?"** → Use `lm_studio_models` tool
 **"What's loaded?"** → Use `lm_studio_status` tool
-**"Load X on my 3090"** → Use `lm_studio_load` with gpu_index=1
+**"Load X on my 3090"** → Use `lm_studio_load` with gpu_index=1 (nvidia-smi index)
+**"Load X across both GPUs"** → Use `lm_studio_load` with gpu_mode="split"
+**"Load X on the CPU"** → Use `lm_studio_load` with gpu_mode="cpu"
 **"How much VRAM free?"** → Use `gpu_info` tool or `lm_studio_status`
 **"Count tokens in this text"** → Use `lm_studio_tokenize` tool
 **"What's my context length?"** → Use `lm_studio_model_info` tool
@@ -289,6 +300,7 @@ User's GPUs: RTX 3060 (12 GB), RTX 3090 (24 GB)
 - Always use `python -c "..."` via terminal tool
 - The lmstudio SDK is pre-installed in portable Python
 - Single-GPU loading: ALWAYS set `disabled_gpus` to prevent VRAM splitting
+- `lm_studio_load` takes nvidia-smi GPU indices; raw SDK calls take LM Studio's
 - Check VRAM before loading large models
 - Models download to LM Studio's configured directory (not the Hermes app)
 - For chat inference, use the OpenAI endpoint (`http://localhost:1234/v1`) — it's faster and more compatible than SDK direct inference

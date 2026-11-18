@@ -19,8 +19,13 @@ from typing import List, Dict, Optional
 from gui.theme import C, FONTS, set_dark_title_bar, Tooltip, SF
 from gui.i18n import t, register_listener, unregister_listener
 from hermes_constants import get_hermes_home
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+from portable_hermes import lmstudio_gpu as gpu_place
+try:
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+except ImportError:          # an older core without the minimum
+    MINIMUM_CONTEXT_LENGTH = 64000
 
+# The panel and the sidebar load models with this window by default.
 DEFAULT_CONTEXT_LENGTH = max(65536, MINIMUM_CONTEXT_LENGTH)
 
 try:
@@ -99,23 +104,48 @@ def _write_lmstudio_config(*, base_url: Optional[str] = None, api_key: Optional[
 # GPU Detection
 # ============================================================================
 
-def get_available_gpus() -> List[str]:
-    """Detect GPUs via nvidia-smi."""
-    gpus = ["CPU"]
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, check=True, timeout=10
-        )
-        for line in result.stdout.strip().splitlines():
-            parts = line.split(", ")
-            if len(parts) >= 3:
-                idx, name, mem = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                gpus.append(f"GPU {idx}: {name} ({mem} MiB)")
-    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        pass
+def detect_gpus() -> List["gpu_place.NvidiaGpu"]:
+    """NVIDIA GPUs in nvidia-smi order (empty without nvidia-smi).
+
+    Also warms LM Studio's hardware survey, which maps these to LM Studio's
+    own GPU numbering at load time; call it off the Tk thread."""
+    gpus = gpu_place.list_nvidia_gpus()
+    if gpus:
+        gpu_place.lmstudio_gpu_survey()
     return gpus
+
+
+def gpu_choice_label(placement: str, gpus=()) -> str:
+    """Display text for one GPU placement choice (translated where it is words)."""
+    kind, index = gpu_place.parse_placement(placement)
+    if kind == "gpu":
+        for gpu in gpus:
+            if gpu.index == index:
+                return f"GPU {gpu.index}: {gpu.name} ({gpu.memory_mib} MiB)"
+        return f"GPU {index}"
+    return t({gpu_place.AUTO: "lmstudio.gpu_auto",
+              gpu_place.CPU: "lmstudio.gpu_cpu",
+              gpu_place.SPLIT: "lmstudio.gpu_split"}[kind])
+
+
+def gpu_choices(gpus) -> List[tuple]:
+    """``[(placement, label), ...]`` for a GPU combobox, in display order."""
+    return [(p, gpu_choice_label(p, gpus)) for p in gpu_place.placements_for(gpus)]
+
+
+def gpu_unconfirmed_note(plan, choice_label: str) -> Optional[str]:
+    """User-facing warning when *plan*'s GPU could not be confirmed: the
+    numbering was only estimated, or CPU only could not disable any GPU."""
+    if plan is None or getattr(plan, "confirmed", True):
+        return None
+    if plan.mapping == gpu_place.MAP_NO_GPU_LIST:
+        return t("lmstudio.gpu_cpu_unconfirmed")
+    return t("lmstudio.gpu_unconfirmed", choice=choice_label)
+
+
+def get_available_gpus() -> List[str]:
+    """Display labels of the GPU choices (kept for older callers)."""
+    return [label for _placement, label in gpu_choices(detect_gpus())]
 
 
 #: Selection preference for LMStudioPanel._display_models: the row marked
@@ -143,6 +173,7 @@ class LMStudioClient:
     def __init__(self, base_url: str = "http://localhost:1234/v1", api_key: Optional[str] = None):
         self.base_url = base_url.strip().rstrip("/")
         self.last_loaded_identifier: Optional[str] = None  # set by load_model()
+        self.last_gpu_plan = None  # GpuPlan used by the last load_model()
         cfg = _read_lmstudio_config()
         saved_url = cfg.get("base_url", "http://localhost:1234/v1").rstrip("/").removesuffix("/v1")
         saved_key = cfg.get("api_key") if saved_url == self._server_root() else None
@@ -371,14 +402,47 @@ class LMStudioClient:
             return set()
 
     def load_model(self, model_key: str, gpu_index: Optional[int] = None,
-                   context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True) -> bool:
+                   context_length: int = DEFAULT_CONTEXT_LENGTH, flash_attention: bool = True,
+                   gpu_placement: Optional[str] = None) -> bool:
         """Load a model via SDK with GPU and context control.
+
+        *gpu_placement* is ``auto``, ``cpu``, ``split`` or ``gpu:<nvidia-smi
+        index>`` (see portable_hermes.lmstudio_gpu); when it is not given,
+        *gpu_index* means ``gpu:<index>`` and None means ``auto``.
 
         Finds the model object from downloaded models by matching model_key,
         then calls load_new_instance() on it directly.
         """
         if not self._sdk_client:
             raise RuntimeError("LM Studio SDK is not connected; reconnect before loading a model.")
+        placement = gpu_placement or gpu_place.placement_from_index(gpu_index)
+        try:
+            # Resolve the placement before unloading anything, so an unknown
+            # GPU leaves the current model loaded.
+            plan = gpu_place.plan(placement)
+        except ValueError as e:
+            raise RuntimeError(f"Failed to load model: {e}")
+        self.last_gpu_plan = plan
+        import logging
+        _log = logging.getLogger("hermes.lmstudio")
+        try:
+            # Find the SDK model object by model_key, path or display name.
+            downloaded = list(self._sdk_client.llm.list_downloaded())
+        except Exception as e:
+            raise RuntimeError(f"Failed to load model: {e}")
+        _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
+        target = next((m for m in downloaded if model_key in (
+            getattr(m, "model_key", ""), getattr(m, "path", ""), getattr(m, "display_name", ""))), None)
+        # Hermes cannot chat with a window below the core's minimum: raise a
+        # smaller request to it, and refuse a model that cannot go that far,
+        # before anything is unloaded.
+        context_length = max(MINIMUM_CONTEXT_LENGTH, int(context_length))
+        max_ctx = getattr(getattr(target, "info", None), "max_context_length", None)
+        if isinstance(max_ctx, int) and max_ctx > 0:
+            if max_ctx < MINIMUM_CONTEXT_LENGTH:
+                raise RuntimeError(t("lmstudio.context_too_small_msg", supported=f"{max_ctx:,}",
+                                     required=f"{MINIMUM_CONTEXT_LENGTH:,}"))
+            context_length = min(context_length, max_ctx)
         try:
             # Unload all existing instances to ensure clean GPU placement.
             try:
@@ -391,43 +455,18 @@ class LMStudioClient:
             except Exception:
                 pass
 
-            gpu_config = None
-            if gpu_index is not None:
-                gpus = get_available_gpus()
-                num_gpus = len([g for g in gpus if g.startswith("GPU")])
-                # nvidia-smi and CUDA have reversed GPU ordering:
-                #   nvidia-smi GPU 0 (3060) = CUDA device 1
-                #   nvidia-smi GPU 1 (3090) = CUDA device 0
-                # LM Studio uses CUDA ordering, so remap.
-                lms_index = (num_gpus - 1) - gpu_index
-                disabled = [i for i in range(num_gpus) if i != lms_index]
-                gpu_config = GpuSetting(
-                    main_gpu=lms_index,
-                    disabled_gpus=disabled if disabled else None,
-                    ratio=1.0,
-                )
-
+            # nvidia-smi and LM Studio number GPUs differently; the plan holds
+            # LM Studio's indices (mapping in portable_hermes.lmstudio_gpu).
+            gpu_config = GpuSetting(**plan.gpu) if plan.gpu else None
             config = LlmLoadModelConfig(
                 gpu=gpu_config,
                 context_length=context_length,
                 flash_attention=flash_attention,
+                **plan.load,
             )
 
-            import logging
-            _log = logging.getLogger("hermes.lmstudio")
-
-            # Find the actual SDK model object by matching model_key or path
-            downloaded = list(self._sdk_client.llm.list_downloaded())
-            _log.info("Looking for model_key=%r among %d downloaded models", model_key, len(downloaded))
-            target = None
-            for m in downloaded:
-                mk = getattr(m, 'model_key', '')
-                mp = getattr(m, 'path', '')
-                dn = getattr(m, 'display_name', '')
-                if model_key in (mk, mp, dn):
-                    target = m
-                    _log.info("Found match: model_key=%r path=%r", mk, mp)
-                    break
+            _log.info("GPU placement %s -> %r (LM Studio GPU %r, mapping %s)",
+                      plan.placement, plan.gpu, plan.lmstudio_gpu, plan.mapping)
 
             # No instance_identifier: LM Studio then names the instance after
             # the model key (e.g. "gemma-4-e4b-it"; "key:2" only if another
@@ -440,7 +479,7 @@ class LMStudioClient:
             before = self._loaded_identifiers()
             if target is not None:
                 # Use the SDK model object's own load method
-                _log.info("Loading via SDK model object, ctx=%d gpu=%r", context_length, gpu_index)
+                _log.info("Loading via SDK model object, ctx=%d gpu=%s", context_length, plan.placement)
                 handle = target.load_new_instance(config=config, ttl=86400)
             else:
                 # Fallback: try string-based load
@@ -498,9 +537,15 @@ def estimate_context_length(model_id: str) -> int:
 class LMStudioPanel(tk.Toplevel):
     """Full LM Studio management panel — model browser, GPU selector, context slider."""
 
-    def __init__(self, parent, on_model_ready=None):
+    def __init__(self, parent, on_model_ready=None, can_change_model=None,
+                 track_model_work=None):
         super().__init__(parent)
         self.on_model_ready = on_model_ready
+        # can_change_model() -> False while a chat reply runs (Load/Unload
+        # would unload the model it uses); track_model_work(thread) tells the
+        # app a load is running (sending waits for it).
+        self.can_change_model = can_change_model
+        self.track_model_work = track_model_work
         self.title(t("lmstudio.title"))
         self.configure(bg=C["bg_main"])
         self.transient(parent)
@@ -512,7 +557,9 @@ class LMStudioPanel(tk.Toplevel):
         base_url = self._resolve_base_url()
         api_key = self._resolve_api_key()
         self.client = LMStudioClient(base_url=base_url, api_key=api_key)
-        self.gpus = ["CPU"]
+        self.gpus = []  # NvidiaGpu entries; choices come from gpu_choices()
+        self._gpu_label_to_placement = {}
+        self._gpu_user_choice = None  # placement the user picked, if any
         self.models = []
         self._ui_results = queue.SimpleQueue()
         self._closed = False
@@ -522,7 +569,7 @@ class LMStudioPanel(tk.Toplevel):
         self._ui_poll_id = self.after(50, self._drain_ui_results)
         self.after(100, self._connect)
         def discover_gpus():
-            gpus = get_available_gpus()
+            gpus = detect_gpus()
             self._post_ui("_set_gpus", gpus)
         threading.Thread(target=discover_gpus, daemon=True).start()
 
@@ -565,11 +612,31 @@ class LMStudioPanel(tk.Toplevel):
             self._cancel_btn.configure(text=t("lmstudio.cancel_load"))
         self._set_status(self._status_key, **self._status_kwargs)
         self._display_models(self.models)
+        self._show_gpu_choices(self._selected_gpu_placement())
+
+    def _selected_gpu_placement(self) -> str:
+        """Placement of the GPU combobox entry (auto when unknown)."""
+        return self._gpu_label_to_placement.get(self.gpu_var.get(), gpu_place.AUTO)
+
+    def _show_gpu_choices(self, selected: str):
+        choices = gpu_choices(self.gpus)
+        self._gpu_label_to_placement = {label: p for p, label in choices}
+        placements = [p for p, _label in choices]
+        if selected not in placements:
+            selected = gpu_place.default_placement(self.gpus)
+        self.gpu_combo.configure(values=[label for _p, label in choices])
+        self.gpu_combo.current(placements.index(selected))
+
+    def _on_gpu_chosen(self, _event=None):
+        """The user picked a GPU entry: remember it (by placement, not label)."""
+        self._gpu_user_choice = self._selected_gpu_placement()
 
     def _set_gpus(self, gpus):
-        self.gpus = gpus
-        self.gpu_combo.configure(values=gpus)
-        self.gpu_combo.current(1 if len(gpus) > 1 else 0)
+        """Detection finished (possibly after the user already chose an entry,
+        e.g. CPU only): keep that choice when it is still offered."""
+        self.gpus = list(gpus)
+        chosen = getattr(self, "_gpu_user_choice", None)
+        self._show_gpu_choices(chosen or gpu_place.default_placement(self.gpus))
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -684,14 +751,12 @@ class LMStudioPanel(tk.Toplevel):
         self._localized_widgets.append((gpu_label, "lmstudio.gpu"))
         self.gpu_var = tk.StringVar()
         self.gpu_combo = ttk.Combobox(gpu_row, textvariable=self.gpu_var,
-                                      values=self.gpus, font=FONTS["body"],
-                                      state="readonly")
+                                      font=FONTS["body"], state="readonly")
         # Style the dropdown list to match the parent font
         self.option_add("*TCombobox*Listbox.font", FONTS["body"])
-        if len(self.gpus) > 1:
-            self.gpu_combo.current(1)  # Default to first GPU
-        else:
-            self.gpu_combo.current(0)
+        # Auto until GPU detection finishes; then the first GPU (_set_gpus).
+        self._show_gpu_choices(gpu_place.default_placement(self.gpus))
+        self.gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
         self.gpu_combo.pack(side="left", fill="x", expand=True)
 
         # Context length slider
@@ -884,7 +949,33 @@ class LMStudioPanel(tk.Toplevel):
         self.ctx_var.set(v)
         self.ctx_label.configure(text=f"{v:,}")
 
+    def _refuse_during_reply(self) -> bool:
+        """True (and says why) while a chat reply is running."""
+        can_change = getattr(self, "can_change_model", None)
+        if can_change is None or can_change():
+            return False
+        messagebox.showinfo(t("lmstudio.title"), t("chat.busy_stop_first", stop=t("chat.stop")),
+                            parent=self)
+        return True
+
+    def model_work_pending(self) -> bool:
+        """A load (or its cancel) has not completed on the Tk side yet: the
+        Cancel button is shown until _restore_load_btn. A closed panel's
+        completion never runs, so it no longer counts (its worker thread
+        still does, see track_model_work)."""
+        return not self._closed and hasattr(self, "_cancel_btn")
+
+    def _start_model_work(self, target):
+        """Run a load/unload worker; the app knows while it is alive."""
+        worker = threading.Thread(target=target, daemon=True)
+        worker.start()
+        track = getattr(self, "track_model_work", None)
+        if track:
+            track(worker)
+
     def _load_model(self):
+        if self._refuse_during_reply():
+            return
         sel = self.model_list.curselection()
         if not sel:
             messagebox.showwarning(t("lmstudio.no_model_title"),
@@ -908,14 +999,9 @@ class LMStudioPanel(tk.Toplevel):
         ctx = int(self.ctx_var.get())
         ctx = max(MINIMUM_CONTEXT_LENGTH, (ctx // 512) * 512)
 
-        # Parse GPU selection
-        gpu_str = self.gpu_var.get()
-        gpu_index = None
-        if gpu_str.startswith("GPU"):
-            try:
-                gpu_index = int(gpu_str.split(":")[0].replace("GPU ", ""))
-            except ValueError:
-                pass
+        # GPU selection (labels are translated, so map back to the placement)
+        gpu_label = self.gpu_var.get()
+        placement = getattr(self, "_gpu_label_to_placement", {}).get(gpu_label, gpu_place.AUTO)
 
         short = model_id.split("/")[-1] if "/" in model_id else model_id
         self._set_status("lmstudio.loading_model", model=short)
@@ -934,40 +1020,50 @@ class LMStudioPanel(tk.Toplevel):
                 # Log to file for debugging
                 import logging
                 _log = logging.getLogger("hermes.lmstudio")
-                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%r",
-                             model_path, model_id, ctx, gpu_index)
-                self.client.load_model(model_path, gpu_index=gpu_index,
+                _log.warning("PANEL LOAD: model_path=%r model_id=%r ctx=%d gpu=%s",
+                             model_path, model_id, ctx, placement)
+                self.client.load_model(model_path, gpu_placement=placement,
                                        context_length=ctx)
                 if self._loading:
+                    plan = getattr(self.client, "last_gpu_plan", None)
                     self._post_ui("_on_load_success", model_id,
-                                  getattr(self.client, "last_loaded_identifier", None))
+                                  getattr(self.client, "last_loaded_identifier", None),
+                                  gpu_unconfirmed_note(plan, gpu_label),
+                                  getattr(plan, "placement", None) == gpu_place.CPU)
             except Exception as e:
                 import logging
                 logging.getLogger("hermes.lmstudio").error("PANEL LOAD FAILED: %s", e)
                 if self._loading:
+                    # Unload to stop JIT retry loops - here, so the model work
+                    # (and the app's "busy") ends only after it.
+                    self._unload_all()
                     err = t("lmstudio.load_error_details", model=model_path, context=ctx,
-                            gpu=gpu_index, error=e)
-                    self._post_ui("_on_load_error", err)
+                            gpu=gpu_label, error=e)
+                    self._post_ui("_on_load_error", err, model_id)
 
-        threading.Thread(target=_do, daemon=True).start()
+        self._start_model_work(_do)
 
-    def _cancel_load(self):
-        """Cancel an in-progress model load by unloading all models."""
-        self._loading = False
-        self._set_status("lmstudio.cancelling")
-        def _do():
-            try:
-                # Unload whatever was loaded
-                loaded = list(self.client._sdk_client.llm.list_loaded())
-                for m in loaded:
+    def _unload_all(self):
+        try:
+            if self.client._sdk_client:
+                for m in list(self.client._sdk_client.llm.list_loaded()):
                     try:
                         m.unload()
                     except Exception:
                         pass
-            except Exception:
-                pass
+        except Exception:
+            pass
+
+    def _cancel_load(self):
+        """Cancel an in-progress model load by unloading all models."""
+        if self._refuse_during_reply():   # it unloads every model
+            return
+        self._loading = False
+        self._set_status("lmstudio.cancelling")
+        def _do():
+            self._unload_all()   # whatever was loaded
             self._post_ui("_on_cancel_done")
-        threading.Thread(target=_do, daemon=True).start()
+        self._start_model_work(_do)
 
     def _on_cancel_done(self):
         self._restore_load_btn()
@@ -983,35 +1079,42 @@ class LMStudioPanel(tk.Toplevel):
         # Back in its original slot: [Load Model][Unload][Refresh Models]
         self.load_btn.pack(side="left", padx=(0, 8), before=self.unload_btn)
 
-    def _on_load_success(self, model_id, loaded_id=None):
+    def _on_load_success(self, model_id, loaded_id=None, gpu_note=None, in_ram=False):
         """*loaded_id*: the instance id LM Studio gave the load, if known; it can
-        differ from the requested row id (e.g. for "name@quant" variants)."""
+        differ from the requested row id (e.g. for "name@quant" variants).
+        *gpu_note*: set when the GPU could not be confirmed (gpu_unconfirmed_note).
+        *in_ram*: a CPU-only load (LM Studio may still use some GPU memory)."""
         self._restore_load_btn()
         short = model_id.split("/")[-1] if "/" in model_id else model_id
-        self.status_dot.configure(fg=C["success"])
-        self._set_status("lmstudio.loaded_model", model=short)
+        if gpu_note:
+            self.status_dot.configure(fg=C["warning_dark"])
+            self._set_status("lmstudio.loaded_model_gpu_unconfirmed", model=short)
+        else:
+            self.status_dot.configure(fg=C["success"])
+            self._set_status("lmstudio.loaded_model_cpu" if in_ram else "lmstudio.loaded_model",
+                             model=short)
         # Prefer the real instance id, else the only row marked loaded, else
-        # the requested row.
+        # the requested row. Started before the (modal) warning below, so the
+        # list is not stale while it is open.
         prefer = (loaded_id,) if loaded_id else ()
         self._refresh_models(select_ids=prefer + (ONLY_LOADED_ROW, model_id))
+        if gpu_note:
+            messagebox.showwarning(t("lmstudio.gpu_unconfirmed_title"), gpu_note, parent=self)
 
-    def _on_load_error(self, error):
+    def _on_load_error(self, error, model_id=None):
+        """*model_id*: the row the user tried to load; it stays selected when
+        the list is refreshed (the load worker unloaded everything)."""
         self._restore_load_btn()
         self.status_dot.configure(fg=C["danger"])
         self._set_status("lmstudio.load_failed")
-        # Unload to stop JIT retry loops
-        try:
-            if self.client._sdk_client:
-                for m in list(self.client._sdk_client.llm.list_loaded()):
-                    try:
-                        m.unload()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        # The unload changed what is loaded: refresh so no row still shows
+        # [LOADED], keeping the user's selection.
+        self._refresh_models(select_ids=(model_id,) if model_id else ())
         messagebox.showerror(t("lmstudio.load_error_title"), error, parent=self)
 
     def _unload_model(self):
+        if self._refuse_during_reply():
+            return
         sel = self.model_list.curselection()
         if not sel:
             return

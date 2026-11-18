@@ -9,7 +9,6 @@ import re
 import uuid
 import queue
 import threading
-import traceback
 import time
 from pathlib import Path
 from datetime import datetime
@@ -49,8 +48,20 @@ def _load_cli_config() -> dict:
         }
 
 
+class TurnInProgress(RuntimeError):
+    """A model/provider switch was requested while a reply is running."""
+
+
 class AgentBridge:
     """Bridge between AIAgent and the GUI. Full CLI feature parity."""
+
+    # Turn state defaults (set again per instance in __init__).
+    agent = None
+    is_running = False
+    _running_agent = None
+    _closing = False
+    _interrupted = False
+    _resume_session_id = None
 
     def __init__(self, root, on_response=None, on_tool_call=None,
                  on_thinking=None, on_error=None, on_step=None,
@@ -71,7 +82,13 @@ class AgentBridge:
         self.agent = None
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_id: Optional[str] = None
+        self._resume_session_id: Optional[str] = None  # set by resume_session()
+        # The one rule (see "turns" below): the agent and the session change
+        # only on the Tk thread while no turn is running.
         self.is_running = False
+        self._running_agent = None     # the running turn's agent (Stop reaches it)
+        self._closing = False
+        self._shutdown_once = threading.Lock()   # one-shot latch, see _shutdown
         self._agent_thread: Optional[threading.Thread] = None
         self._clarify_queue = queue.Queue()
         self._approval_queue = queue.Queue()
@@ -119,19 +136,86 @@ class AgentBridge:
         """Check if the active provider is local (LM Studio)."""
         return self._active_provider == "local"
 
+    def _require_idle(self):
+        """Model/provider switches are refused during a turn (the GUI checks
+        first and tells the user to press Stop)."""
+        if self.is_running:
+            raise TurnInProgress("a reply is still running")
+
     def set_local_mode(self, base_url: str, model_id: str):
         """Switch to LM Studio as the active provider."""
+        self._require_idle()
         self._active_provider = "local"
         self._lm_studio_base_url = base_url.rstrip("/")
         self._selected_model = model_id
-        self.agent = None  # Force recreation
+        return self.rebuild_agent()  # Force recreation
 
     def set_cloud_mode(self, model: str):
         """Switch to OpenRouter as the active provider."""
+        self._require_idle()
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
-        self.agent = None
+        return self.rebuild_agent()
+
+    # -- dropping agents ------------------------------------------------------
+    # Every dropped AIAgent is released, never just forgotten: it holds LLM
+    # clients, memory providers and (on close) terminal/browser processes.
+    #   conversation over (New Chat, switching to another stored session,
+    #   app exit): agent.close() - commits end-of-session memory once (via
+    #   shutdown_memory_provider), stops the session's processes and ends its
+    #   row ("agent_close"; a reason recorded earlier, e.g. "new_chat", wins).
+    #   rebuild (model switch, saved permissions or API keys; the chat goes
+    #   on with the same history): agent.release_clients() - the core's soft
+    #   release for agent rebuilds; no end-of-session memory extraction, so
+    #   the conversation is committed once, when it really ends.
+    # Both exist in the current core and the last-known-good one (8d285687).
+
+    def rebuild_agent(self) -> bool:
+        """Drop the agent so the next turn builds a new one; the chat goes on.
+
+        Only ever called with no turn in progress: the dialogs that save
+        settings cannot be opened during a reply, and while they are open
+        (modal) no reply can start. Refused (logged) if it happens anyway.
+
+        A rebuilt agent always gets a new session id (model switch, saved
+        permissions or API keys start a new session, history kept), so a
+        resumed session that has not been continued yet is not continued
+        either. Returns True when such a pending resume was dropped."""
+        if self.is_running:
+            import logging
+            logging.getLogger("hermes.bridge").warning("rebuild_agent refused: a turn is running")
+            return False
+        dropped_resume = bool(self._resume_session_id)
+        self._resume_session_id = None
+        self._discard_agent(conversation_over=False)
+        return dropped_resume
+
+    def _discard_agent(self, *, conversation_over: bool) -> None:
+        """Drop and release the agent. Only while no turn runs (Tk thread),
+        or from _shutdown once the turn is over."""
+        agent, self.agent = self.agent, None
+        if agent is not None:
+            history = list(getattr(self, "conversation_history", None) or [])
+            self._release_agent(agent, conversation_over, history)
+
+    def _release_agent(self, agent, conversation_over: bool, history) -> None:
+        """Release one dropped agent. Never raises into the GUI."""
+        try:
+            if conversation_over:
+                close = getattr(agent, "close", None)
+                if callable(close):
+                    close()
+                else:  # an agent without close(): at least commit the memory
+                    self._commit_memory(agent, history)
+            else:
+                release = getattr(agent, "release_clients", None)
+                if callable(release):
+                    release()
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning(
+                "releasing the previous agent failed", exc_info=True)
 
     def register_local_models(self, model_ids: list):
         """Register model IDs discovered from LM Studio so routing works correctly."""
@@ -201,19 +285,17 @@ class AgentBridge:
             api_key = runtime.get("api_key")
             credential_pool = runtime.get("credential_pool")
 
-        # Generate session ID
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
-
-        # Create session in database
-        if self._session_db:
-            try:
-                self._session_db.create_session(
-                    session_id=self.session_id,
-                    source="gui",
-                    model=model,
-                )
-            except Exception:
-                pass
+        # Generate session ID. The core creates the session row itself when the
+        # first turn starts (source "gui" from platform="gui", with model,
+        # system prompt, model config and profile): creating it here first
+        # left an empty row whenever building the agent failed. A resumed
+        # session keeps its id (resume_session); the pending resume is cleared
+        # only once the agent is built, so a failed build retries the same id.
+        resume_id = getattr(self, "_resume_session_id", None)
+        if resume_id:
+            self.session_id = resume_id
+        else:
+            self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + uuid.uuid4().hex[:6]
 
         # Provider routing from config
         routing = self.config.get("provider_routing", {})
@@ -250,7 +332,9 @@ class AgentBridge:
             _r = _sp.run(
                 ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.free",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, timeout=5,
+                # no console window flash when the GUI runs windowless
+                creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
             )
             if _r.returncode == 0:
                 gpu_lines = []
@@ -401,10 +485,12 @@ You are running on **{os_name} {os_release}**.
             clarify_callback=self._on_clarify,
             stream_delta_callback=self._on_stream_delta,
         )
+        if resume_id and getattr(self, "_resume_session_id", None) == resume_id:
+            self._resume_session_id = None
 
     def _post(self, callback, *args):
-        """Post a callback to the tkinter main thread."""
-        if callback:
+        """Post a callback to the tkinter main thread (nothing after close())."""
+        if callback and not self._closing:
             try:
                 self.root.after(0, lambda: callback(*args))
             except Exception:
@@ -724,7 +810,77 @@ You are running on **{os_name} {os_release}**.
 
         return "\n\n".join(response_parts)
 
+    # -- turns ----------------------------------------------------------------
+    # One rule: the agent and the session change only on the Tk thread while
+    # no turn is running. send_message sets is_running (Tk thread) before the
+    # worker starts, so it also covers building the agent; the worker clears
+    # it as its very last step (_end_turn). Model switches and session
+    # changes are refused meanwhile, and the GUI does not open the dialogs
+    # that save settings (they are modal, so no turn starts while one is
+    # open). The worker therefore sees one consistent set of settings, and
+    # only it touches self.agent during the turn. The one exception is close().
+
     def _run_agent(self, message: str, image_paths: list = None):
+        """Worker thread body. Whatever happens (log setup, config, imports,
+        agent build, the turn itself), the turn is ended and the error is
+        reported, so is_running can never stay stuck."""
+        try:
+            self._run_agent_turn(message, image_paths)
+        except Exception as e:
+            self._post(self.on_error, self._error_text(e))
+        finally:
+            try:
+                from tools.terminal_tool import set_approval_callback
+                set_approval_callback(None)
+            except Exception:
+                pass
+            self._end_turn()
+
+    def _error_text(self, error):
+        """The chat bubble for a failed turn: the message only. The traceback
+        goes to bridge.log, and the bubble ends by saying where it is; if it
+        cannot be logged, the bubble carries it instead, so it is not lost."""
+        from gui.i18n import t
+        try:
+            self._bridge_log().error("run_agent EXCEPTION: %s", error, exc_info=error)
+            details = t("chat.error_details_in_log",
+                        path=str(get_hermes_home() / "logs" / "bridge.log"))
+        except Exception:
+            import traceback
+            details = "".join(traceback.format_exception(error)).rstrip()
+        parts = [f"Error: {error}"]
+        minimum = self._context_too_small(error)
+        if minimum:
+            parts.append(t("chat.error_reload_with_context", tokens=f"{minimum:,}"))
+        parts.append(details)
+        return "\n\n".join(parts)
+
+    def _context_too_small(self, error):
+        """The minimum context if *error* is the core refusing to build an
+        agent for LM Studio because the loaded window is below it, else None.
+
+        The core raises a plain ValueError quoting MINIMUM_CONTEXT_LENGTH
+        (agent_init._enforce_minimum_context), so match on that number while
+        no agent could be built, not on the wording."""
+        if self._active_provider != "local" or self.agent is not None:
+            return None
+        if not isinstance(error, ValueError):
+            return None
+        from gui.lm_studio import MINIMUM_CONTEXT_LENGTH
+        return MINIMUM_CONTEXT_LENGTH if f"{MINIMUM_CONTEXT_LENGTH:,}" in str(error) else None
+
+    def _end_turn(self):
+        """Last step of the worker: hand the agent back to the Tk thread.
+
+        close() sets _closing and then looks at is_running; this clears
+        is_running and then looks at _closing. So at least one of them sees
+        the other and runs _shutdown (its latch makes it run only once)."""
+        self._running_agent = None
+        self.is_running = False
+        if self._closing:
+            self._shutdown()
+
+    def _bridge_log(self):
         import logging as _log
         _dbg = _log.getLogger("hermes.bridge")
         if not _dbg.handlers:
@@ -735,7 +891,10 @@ You are running on **{os_name} {os_release}**.
             _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
             _dbg.addHandler(_fh)
             _dbg.setLevel(_log.DEBUG)
+        return _dbg
 
+    def _run_agent_turn(self, message: str, image_paths: list = None):
+        _dbg = self._bridge_log()
         _dbg.debug("_run_agent START model=%r provider=%s msg=%r",
                     self.get_model(), self._active_provider, message[:80])
 
@@ -752,101 +911,179 @@ You are running on **{os_name} {os_release}**.
                 })
             except Exception as e:
                 self._post(self.on_error, f"Guided mode error: {e}")
-            finally:
-                self.is_running = False
             return
 
         # Approval callbacks are thread-local in current Hermes. Install the
-        # bridge in the worker that actually executes tools, then always clear
-        # it before that thread exits.
+        # bridge in the worker that actually executes tools; _run_agent
+        # clears it before this thread exits.
         from tools.terminal_tool import set_approval_callback
         set_approval_callback(self._approval_callback)
 
-        try:
-            if self.agent is None:
-                _dbg.debug("creating agent...")
-                self._create_agent()
-                _dbg.debug("agent created, base_url=%r api_key=%s",
-                           self.agent.base_url,
-                           "set" if getattr(self.agent, 'api_key', None) else "none")
+        if self.agent is None:
+            _dbg.debug("creating agent...")
+            self._create_agent()
+        agent = self.agent
+        if agent is None:
+            raise RuntimeError("no agent could be prepared; please send the message again")
+        # Stop reaches this agent (interrupt). Stop or app exit during the
+        # build: skip the turn (on exit _end_turn closes the built agent).
+        self._running_agent = agent
+        if self._interrupted or self._closing:
+            _dbg.debug("stopped before the turn started")
+            return
+        _dbg.debug("agent ready, base_url=%r api_key=%s",
+                   getattr(agent, "base_url", None),
+                   "set" if getattr(agent, 'api_key', None) else "none")
 
-            # Build user message content — multimodal if images attached
-            if image_paths:
-                content_parts = [{"type": "text", "text": message}]
-                for img_path in image_paths:
-                    data_url = self._encode_image(img_path)
-                    if data_url:
-                        content_parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        })
-                user_content = content_parts
-            else:
-                user_content = message
+        # Build user message content — multimodal if images attached
+        if image_paths:
+            content_parts = [{"type": "text", "text": message}]
+            for img_path in image_paths:
+                data_url = self._encode_image(img_path)
+                if data_url:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    })
+            user_content = content_parts
+        else:
+            user_content = message
 
-            _dbg.debug("calling run_conversation...")
-            result = self.agent.run_conversation(
-                user_message=user_content,
-                conversation_history=self.conversation_history,
-            )
+        _dbg.debug("calling run_conversation...")
+        result = agent.run_conversation(
+            user_message=user_content,
+            conversation_history=self.conversation_history,
+        )
 
-            final_response = result.get("final_response") or ""
-            messages = result.get("messages", [])
-            self.conversation_history = messages
-            _dbg.debug("run_conversation done, response=%d chars", len(final_response))
+        final_response = result.get("final_response") or ""
+        messages = result.get("messages", [])
+        self.conversation_history = messages
+        _dbg.debug("run_conversation done, response=%d chars", len(final_response))
 
-            self._post(self.on_response, final_response)
-            self._post(self.on_complete, result)
-
-        except Exception as e:
-            error_msg = f"Error: {e}\n{traceback.format_exc()}"
-            _dbg.error("run_agent EXCEPTION: %s", error_msg)
-            self._post(self.on_error, error_msg)
-        finally:
-            set_approval_callback(None)
-            self.is_running = False
+        self._post(self.on_response, final_response)
+        self._post(self.on_complete, result)
 
     def interrupt(self):
-        if self.agent and self.is_running:
-            self._interrupted = True
+        """Stop the running turn.
+
+        Only signals the agent: the core's interrupt() sets flags and signals
+        tools and child agents, it releases nothing, so it is harmless on an
+        agent whose turn is finishing at the same moment. Agents are released
+        only in _discard_agent (Tk thread when idle, or _shutdown)."""
+        if not self.is_running:
+            return
+        self._interrupted = True
+        agent = self._running_agent   # None while the agent is still being built
+        if agent is not None:
             try:
-                self.agent.interrupt("")
+                agent.interrupt("")
             except Exception:
                 pass
 
     def close(self):
-        """Release resources owned by the GUI bridge."""
-        self.interrupt()
-        if self._session_db is not None:
-            try:
-                self._session_db.close()
-            finally:
-                self._session_db = None
+        """App exit. During a turn the turn is stopped and the worker closes
+        its agent and the database when it ends (_end_turn); it reports and
+        keeps nothing afterwards. Otherwise everything is closed now."""
+        self._closing = True
+        if self.is_running:
+            self.interrupt()
+            # A worker waiting for a clarify/approval answer would wait for a
+            # window that is gone: answer it (approval denied) so it ends.
+            self._clarify_queue.put("")
+            self._approval_queue.put(False)
+        if not self.is_running:
+            self._shutdown()
 
-    def new_session(self):
-        """Start a fresh session. Flushes memory first."""
-        # Flush memories before ending session
-        if self.agent:
+    def _shutdown(self):
+        """Close the agent (ends its session row) and then the database, once."""
+        if not self._shutdown_once.acquire(blocking=False):
+            return
+        self._discard_agent(conversation_over=True)
+        db, self._session_db = self._session_db, None
+        if db is not None:
             try:
-                if hasattr(self.agent, '_memory_store') and self.agent._memory_store:
-                    self.agent._memory_store.flush(self.conversation_history)
+                db.close()
             except Exception:
                 pass
 
-        # End old session in database
+    @staticmethod
+    def _commit_memory(agent, history) -> None:
+        """Hand the finished conversation to the memory providers (end of session).
+
+        ``commit_memory_session`` exists in the current core and in the
+        last-known-good one (8d285687); an agent without it is skipped. Never
+        raises into the GUI."""
+        commit = getattr(agent, "commit_memory_session", None)
+        if agent is None or not history or not callable(commit):
+            return
+        try:
+            commit(list(history))
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning(
+                "memory commit at session end failed", exc_info=True)
+
+    def new_session(self) -> bool:
+        """Start a fresh session. Commits the old one to memory first.
+
+        Refused (returns False, nothing changes) while a turn is running: the
+        running turn would write its reply into the new session. The GUI
+        asks the user to press Stop first."""
+        if getattr(self, "is_running", False):
+            return False
+        # End old session in database (before the agent's close() records
+        # its own "agent_close"; the first reason recorded wins)
         if self._session_db and self.session_id:
             try:
-                self._session_db.end_session(self.session_id, reason="new_chat")
+                # Positional: the parameter is ``end_reason`` (not ``reason``)
+                # in the current core and in the last-known-good one.
+                self._session_db.end_session(self.session_id, "new_chat")
             except Exception:
                 pass
 
+        # close() commits the conversation to memory exactly once (its
+        # shutdown_memory_provider); an agent without close() gets
+        # commit_memory_session instead (_release_agent).
+        self._discard_agent(conversation_over=True)
         self.conversation_history = []
         self.session_id = None
-        self.agent = None
+        self._resume_session_id = None
+        return True
+
+    def resume_session(self, session_id: str, messages: list) -> bool:
+        """Continue a stored session under its own id, as the CLI's resume does.
+
+        The next agent is built with *session_id* (see _create_agent), so new
+        turns are appended to the same session row instead of a new one; the
+        core restores the session's stored system prompt for it.
+
+        Returns False and changes nothing while a turn is running, or when
+        the core cannot reopen the session (then nothing may be written under
+        its id)."""
+        if getattr(self, "is_running", False):
+            return False
+        db = getattr(self, "_session_db", None)
+        if db:
+            try:
+                db.reopen_session(session_id)
+            except Exception:
+                import logging
+                logging.getLogger("hermes.bridge").warning(
+                    "could not reopen session %s", session_id, exc_info=True)
+                return False
+        # The conversation shown so far is over: close its agent (that ends
+        # its own row). Re-selecting the session that is already active only
+        # rebuilds the agent, so the row just reopened is not ended again.
+        same = session_id == getattr(self, "session_id", None)
+        self._discard_agent(conversation_over=not same)
+        self.conversation_history = messages
+        self.session_id = session_id
+        self._resume_session_id = session_id
+        return True
 
     def set_model(self, model: str):
         """Switch model from the sidebar dropdown — always cloud."""
-        self.set_cloud_mode(model)
+        return self.set_cloud_mode(model)
 
     def get_token_usage(self) -> Dict[str, int]:
         """Get token usage from current agent."""

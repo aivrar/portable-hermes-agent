@@ -7,7 +7,7 @@ paste the key back, and we save it automatically.
 import os
 import re
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 import webbrowser
 from pathlib import Path
 
@@ -155,9 +155,11 @@ class APISetupWizard(tk.Toplevel):
     Opens signup pages in their real browser, they paste keys back.
     """
 
-    def __init__(self, parent, on_complete=None, auto_mode=False, single_service=None):
+    def __init__(self, parent, on_complete=None, auto_mode=False, single_service=None,
+                 can_save=None):
         super().__init__(parent)
         self.on_complete = on_complete
+        self.can_save = can_save  # () -> False while a chat reply runs
         self.auto_mode = auto_mode  # True = only show missing keys
         self.title(t("wizard.title"))
         self.configure(bg=C["bg_main"])
@@ -443,7 +445,19 @@ class APISetupWizard(tk.Toplevel):
         except tk.TclError:
             pass
 
+    def _refuse_during_reply(self) -> bool:
+        """Keys are never saved or applied under a running reply (it reads
+        them while building its agent): say so, stay open."""
+        can_save = getattr(self, "can_save", None)
+        if can_save is None or can_save():
+            return False
+        messagebox.showinfo(t("wizard.title"), t("chat.busy_stop_first", stop=t("chat.stop")),
+                            parent=self)
+        return True
+
     def _save_current(self, svc):
+        if self._refuse_during_reply():
+            return
         key_name = svc["key"]
         entry = self.key_entries.get(key_name)
         if not entry:
@@ -516,6 +530,8 @@ class APISetupWizard(tk.Toplevel):
                    command=self._finish).pack(pady=20)
 
     def _finish(self):
+        if self._refuse_during_reply():
+            return
         if self.on_complete:
             self.on_complete(self.saved_keys)
         self.destroy()

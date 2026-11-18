@@ -99,7 +99,7 @@ def test_open_secondary_panels_retranslate_without_losing_model_selection(monkey
     monkeypatch.setattr(lm.LMStudioPanel, "_resolve_base_url", staticmethod(lambda: "http://localhost:1234/v1"))
     monkeypatch.setattr(lm.LMStudioPanel, "_resolve_api_key", staticmethod(lambda: ""))
     monkeypatch.setattr(lm.LMStudioPanel, "_connect", lambda self: None)
-    monkeypatch.setattr(lm, "get_available_gpus", lambda: ["CPU"])
+    monkeypatch.setattr(lm, "detect_gpus", lambda: [])
     monkeypatch.setattr(ext, "get_extension_status", lambda: {})
     monkeypatch.setattr(SkillsBrowser, "_load", lambda self: None)
     warning = Mock()
@@ -194,7 +194,7 @@ def test_lmstudio_panel_keeps_event_loop_responsive(monkeypatch):
             off_thread_callbacks.append(args)
         return original_after(self, *args)
     monkeypatch.setattr(lm.LMStudioPanel, "after", checked_after)
-    monkeypatch.setattr(lm, "get_available_gpus", lambda: ["CPU"])
+    monkeypatch.setattr(lm, "detect_gpus", lambda: [])
     monkeypatch.setattr(lm, "HAS_SDK", False)
     def slow_probe(self):
         time.sleep(0.4)

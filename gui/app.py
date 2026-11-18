@@ -30,7 +30,7 @@ from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center
 from gui.agent_bridge import AgentBridge
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
-from gui.lm_studio import LMStudioPanel
+from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
 from gui.permissions_panel import PermissionsPanel
 from gui.permissions import load_permissions, get_permissions_summary
 from gui.i18n import (
@@ -360,6 +360,38 @@ class StreamingBubble(tk.Frame):
 # Sidebar
 # ============================================================================
 
+def _auto_load_local_model(model_id, settings, log):
+    """Load *model_id* in LM Studio for the sidebar; runs on a worker thread.
+
+    Returns (success, message, instance id LM Studio used or None). The
+    message is the error on failure; on success it is empty, or the warning
+    that the GPU could only be estimated (gui.lm_studio.gpu_unconfirmed_note)."""
+    try:
+        from gui.lm_studio import LMStudioPanel, LMStudioClient, gpu_choice_label, gpu_unconfirmed_note
+        client = LMStudioClient(base_url=LMStudioPanel._resolve_base_url())
+        if not client.connect_sdk():
+            log.debug("auto-load SDK connect FAILED")
+            return False, t("sidebar.sdk_unavailable"), None
+        log.debug("auto-load SDK connected, calling load_model...")
+        client.load_model(
+            model_id,
+            gpu_index=settings.get("gpu_index"),
+            gpu_placement=settings.get("gpu_placement"),
+            context_length=settings["context_length"],
+            flash_attention=settings.get("flash_attention", True),
+        )
+        loaded_id = client.last_loaded_identifier
+        log.debug("auto-load SUCCESS instance=%r", loaded_id)
+        plan = getattr(client, "last_gpu_plan", None)
+        note = None
+        if plan is not None and not getattr(plan, "confirmed", True):
+            note = gpu_unconfirmed_note(plan, gpu_choice_label(plan.placement))
+        return True, note or "", loaded_id
+    except Exception as e:
+        log.error("auto-load EXCEPTION: %s", e)
+        return False, str(e), None
+
+
 def _list_sessions_with_messages(db, limit=20, fallback_window=200):
     """Recent sessions that have at least one message.
 
@@ -395,10 +427,17 @@ class Sidebar(tk.Frame):
 
     def __init__(self, parent, on_new=None, on_model_change=None,
                  on_session_select=None, on_local_models=None,
-                 on_auto_load=None, **kw):
+                 on_auto_load=None, can_delete_session=None, can_change_model=None,
+                 track_model_work=None, **kw):
         super().__init__(parent, bg=C["bg_sidebar"], width=S(260), **kw)
         self.pack_propagate(False)
         self.on_new = on_new
+        # callback() -> bool; False refuses a model pick (it explains why)
+        self.can_change_model = can_change_model
+        # callback(thread): a thread loading a model (sending waits for it)
+        self.track_model_work = track_model_work
+        # callback(session_id) -> bool; False refuses the delete (it explains why)
+        self.can_delete_session = can_delete_session
         self.on_model_change = on_model_change
         self.on_session_select = on_session_select
         self.on_local_models = on_local_models  # callback(list_of_model_ids)
@@ -539,18 +578,21 @@ class Sidebar(tk.Frame):
                                          fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
         self._local_gpu_label.pack(side="left")
         self._gpu_var = tk.StringVar(value="")
+        self._gpus = []  # NvidiaGpu entries from gui.lm_studio.detect_gpus()
+        self._gpu_label_to_placement = {}
+        self._gpu_user_choice = None  # placement the user picked, if any
         self._gpu_combo = ttk.Combobox(gpu_row, textvariable=self._gpu_var,
                                         font=FONTS["small"], state="readonly", width=22)
         self._gpu_combo.pack(side="left", fill="x", expand=True)
-        self._gpu_combo.bind("<<ComboboxSelected>>", lambda e: self._save_local_settings())
+        self._gpu_combo.bind("<<ComboboxSelected>>", self._on_gpu_chosen)
 
         # Detect GPUs in background
         def _detect_gpus():
             try:
-                from gui.lm_studio import get_available_gpus
-                gpus = get_available_gpus()
+                from gui.lm_studio import detect_gpus
+                gpus = detect_gpus()
             except Exception:
-                gpus = ["CPU"]
+                gpus = []
             try:
                 self.after(0, lambda: self._populate_gpus(gpus))
             except Exception:
@@ -563,8 +605,10 @@ class Sidebar(tk.Frame):
         self._local_ctx_label = tk.Label(ctx_row, text=t("sidebar.context_short"), font=FONTS["small"],
                                          fg=C["text_hint"], bg=C["bg_sidebar"], width=6, anchor="w")
         self._local_ctx_label.pack(side="left")
-        self._ctx_var = tk.IntVar(value=32768)
-        ctx_spin = ttk.Spinbox(ctx_row, from_=32768, to=131072, increment=4096,
+        # Same window as the LM Studio panel: Hermes cannot chat below the minimum.
+        self._ctx_var = tk.IntVar(value=DEFAULT_CONTEXT_LENGTH)
+        ctx_spin = ttk.Spinbox(ctx_row, from_=MINIMUM_CONTEXT_LENGTH,
+                               to=max(131072, DEFAULT_CONTEXT_LENGTH), increment=4096,
                                textvariable=self._ctx_var, font=FONTS["small"], width=8)
         ctx_spin.pack(side="left")
         ctx_spin.bind("<FocusOut>", lambda e: self._save_local_settings())
@@ -625,40 +669,71 @@ class Sidebar(tk.Frame):
                                   command=self._save_local_settings)
         self._flash_attn_cb.pack(side="left", padx=(8, 0))
 
+    def _on_gpu_chosen(self, _event=None):
+        """The user picked a GPU entry: remember it by placement (labels are
+        translated and the index shifts once GPUs are detected)."""
+        self._gpu_user_choice = self._get_gpu_placement()
+        self._save_local_settings()
+
     def _populate_gpus(self, gpus):
-        """Populate GPU combobox (called on main thread)."""
-        self._gpu_combo["values"] = gpus
-        saved = self._gpu_var.get()
-        if saved and saved in gpus:
-            self._gpu_combo.set(saved)
-        elif len(gpus) > 1:
-            # Default to first real GPU
-            self._gpu_combo.current(1)
-            self._gpu_var.set(gpus[1])
-        elif gpus:
-            self._gpu_combo.current(0)
+        """Populate GPU combobox (called on main thread). Detection can finish
+        after the user already picked an entry; keep that choice if offered."""
+        self._gpus = list(gpus)
+        self._show_gpu_choices(getattr(self, "_gpu_user_choice", None))
         # Persist the selection so bridge can read it
         self._save_local_settings()
+
+    def _show_gpu_choices(self, selected=None):
+        """Fill the GPU combobox, keeping *selected* if it is still offered
+        (else the first GPU, else Auto)."""
+        from gui.lm_studio import gpu_choices
+        from portable_hermes import lmstudio_gpu as gpu_place
+        choices = gpu_choices(self._gpus)
+        self._gpu_label_to_placement = {label: p for p, label in choices}
+        placements = [p for p, _label in choices]
+        if selected not in placements:
+            selected = gpu_place.default_placement(self._gpus)
+        self._gpu_combo["values"] = [label for _p, label in choices]
+        self._gpu_combo.current(placements.index(selected))
+        self._gpu_var.set(choices[placements.index(selected)][1])
 
     def _save_local_settings(self):
         """Settings are held in UI widgets — nothing to persist."""
         pass
 
+    def _get_gpu_placement(self) -> str:
+        """Placement of the GPU combobox entry: auto, cpu, split or gpu:<n>."""
+        return self._gpu_label_to_placement.get(self._gpu_var.get(), "auto")
+
     def _get_gpu_index(self) -> Optional[int]:
-        """Parse GPU index from the GPU combobox selection."""
-        val = self._gpu_var.get()
-        if val and val.startswith("GPU "):
+        """nvidia-smi index when a single GPU is selected, else None."""
+        placement = self._get_gpu_placement()
+        if placement.startswith("gpu:"):
             try:
-                return int(val.split(":")[0].replace("GPU ", ""))
-            except (ValueError, IndexError):
+                return int(placement[4:])
+            except ValueError:
                 pass
         return None
+
+    def _context_length(self) -> int:
+        """The Ctx box value, raised to the minimum Hermes can chat with (the
+        box accepts typed values below it); the box then shows what is used."""
+        try:
+            ctx = int(self._ctx_var.get())
+        except (tk.TclError, ValueError):
+            ctx = DEFAULT_CONTEXT_LENGTH
+            self._ctx_var.set(ctx)
+        if ctx < MINIMUM_CONTEXT_LENGTH:
+            ctx = MINIMUM_CONTEXT_LENGTH
+            self._ctx_var.set(ctx)
+        return ctx
 
     def get_local_settings(self) -> dict:
         """Return current local model settings."""
         return {
+            "gpu_placement": self._get_gpu_placement(),
             "gpu_index": self._get_gpu_index(),
-            "context_length": self._ctx_var.get(),
+            "context_length": self._context_length(),
             "temperature": self._temp_var.get(),
             "top_p": self._topp_var.get(),
             "flash_attention": self._flash_attn_var.get(),
@@ -733,6 +808,12 @@ class Sidebar(tk.Frame):
 
     def _on_model_selected(self, event):
         idx = self.model_combo.current()
+        can_change = getattr(self, "can_change_model", None)
+        if can_change and not can_change():
+            # Refused before anything happens (an auto-load would unload the
+            # model the running reply uses): show the model still in effect.
+            self._select_model_in_combo(self.model_var.get())
+            return
         if 0 <= idx < len(self._all_models):
             model_id = self._all_models[idx][0]
             self.model_var.set(model_id)
@@ -758,72 +839,82 @@ class Sidebar(tk.Frame):
         self.model_combo.configure(state="disabled")
 
         settings = self.get_local_settings()
+        self._loading_placement = settings.get("gpu_placement")  # for the result line
 
         def _load():
-            import logging as _log
-            _dbg = _log.getLogger("hermes.autoload")
-            if not _dbg.handlers:
-                _log_dir = get_hermes_home() / "logs"
-                _log_dir.mkdir(parents=True, exist_ok=True)
-                _fh = _log.FileHandler(str(_log_dir / "bridge.log"), encoding="utf-8")
-                _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
-                _dbg.addHandler(_fh)
-                _dbg.setLevel(_log.DEBUG)
-
-            success = False
-            error_msg = ""
-            _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
-                       model_id, settings["gpu_index"], settings["context_length"])
+            success, error_msg, loaded_id = False, "", None
             try:
-                from gui.lm_studio import LMStudioPanel, LMStudioClient
-                url = LMStudioPanel._resolve_base_url()
-                client = LMStudioClient(base_url=url)
-                if not client.connect_sdk():
-                    error_msg = t("sidebar.sdk_unavailable")
-                    _dbg.debug("auto-load SDK connect FAILED")
-                else:
-                    _dbg.debug("auto-load SDK connected, calling load_model...")
-                    client.load_model(
-                        model_path=model_id,
-                        gpu_index=settings["gpu_index"],
-                        context_length=settings["context_length"],
-                        flash_attention=settings.get("flash_attention", True),
-                    )
-                    success = True
-                    _dbg.debug("auto-load SUCCESS")
-            except Exception as e:
-                error_msg = str(e)
-                _dbg.error("auto-load EXCEPTION: %s", error_msg)
+                import logging as _log
+                _dbg = _log.getLogger("hermes.autoload")
+                if not _dbg.handlers:
+                    _log_dir = get_hermes_home() / "logs"
+                    _log_dir.mkdir(parents=True, exist_ok=True)
+                    _fh = _log.FileHandler(str(_log_dir / "bridge.log"), encoding="utf-8")
+                    _fh.setFormatter(_log.Formatter("%(asctime)s %(levelname)s %(message)s"))
+                    _dbg.addHandler(_fh)
+                    _dbg.setLevel(_log.DEBUG)
 
+                _dbg.debug("auto-load START model=%r gpu=%r ctx=%r",
+                           model_id, settings.get("gpu_placement"), settings["context_length"])
+                success, error_msg, loaded_id = _auto_load_local_model(model_id, settings, _dbg)
+            except Exception as exc:  # always report back, so _loading_model ends
+                error_msg = str(exc)
             # Back to main thread
             try:
-                self.after(0, lambda: self._on_auto_load_complete(model_id, success, error_msg))
+                self.after(0, lambda: self._on_auto_load_complete(
+                    model_id, success, error_msg, loaded_id))
             except Exception:
                 pass
 
-        threading.Thread(target=_load, daemon=True).start()
+        worker = threading.Thread(target=_load, daemon=True)
+        worker.start()
+        track = getattr(self, "track_model_work", None)
+        if track:
+            track(worker)   # sending waits while it runs
 
-    def _on_auto_load_complete(self, model_id: str, success: bool, error: str):
-        """Handle auto-load result on main thread."""
+    def _on_auto_load_complete(self, model_id: str, success: bool, error: str,
+                               loaded_id: Optional[str] = None):
+        """Handle auto-load result on main thread.
+
+        *loaded_id* is the instance id LM Studio gave the load; chat requests
+        must use it, so it replaces *model_id* when it differs."""
         self._loading_model = False
         self.model_combo.configure(state="readonly")
 
+        target = loaded_id if success and loaded_id else model_id
         if success:
-            self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
-            self._model_states[model_id] = "loaded"
+            in_ram = getattr(self, "_loading_placement", None) == "cpu"
+            if error:  # loaded, but the GPU could not be confirmed
+                self._show_load_status("sidebar.model_loaded_gpu_unconfirmed", prefix="\u26a0 ")
+            elif in_ram:  # layers in RAM; LM Studio may still use some GPU memory
+                self._show_load_status("sidebar.model_loaded_cpu", prefix="\u2713 ")
+            else:
+                self._show_load_status("sidebar.model_loaded", prefix="\u2713 ")
+            self._model_states[target] = "loaded"
+            if target != model_id:
+                # Route the new id to LM Studio before the next refresh lists it.
+                self.model_var.set(target)
+                if not self._is_local_entry(target):
+                    self._lm_studio_models.append((target, target, "LM Studio"))
+                    self._all_models.append((target, target, "LM Studio"))
+                if self.on_local_models:
+                    self.on_local_models([mid for mid, _, _ in self._lm_studio_models])
             self.after(500, self.refresh_models)
-            self.after(1500, lambda: self._show_load_status(""))
+            # A note (unconfirmed GPU, CPU only) stays long enough to be read.
+            self.after(8000 if error or in_ram else 1500, lambda: self._show_load_status(""))
         else:
             short_err = error[:80] if error else t("sidebar.unknown_error")
             self._show_load_status("sidebar.load_failed", prefix="\u2717 ", error=short_err)
             self.after(5000, lambda: self._show_load_status(""))
+            # The load unloads existing instances first: refresh the states.
+            self.after(500, self.refresh_models)
 
         # Notify HermesGUI of load result
         if self.on_auto_load:
-            self.on_auto_load(model_id, success, error)
+            self.on_auto_load(target, success, error)
         # Always switch to the model (user may have loaded it manually)
         if self.on_model_change:
-            self.on_model_change(model_id)
+            self.on_model_change(target)
 
     def _load_sessions(self):
         """Load recent sessions from SessionDB."""
@@ -870,7 +961,8 @@ class Sidebar(tk.Frame):
 
         tk.Label(top_row, text=title, font=FONTS["small"],
                 fg=C["text_primary"], bg=C["bg_sidebar"],
-                anchor="w", wraplength=S(190)).pack(side="left", fill="x", expand=True)
+                anchor="w", justify="left",   # a wrapped second line too
+                wraplength=S(190)).pack(side="left", fill="x", expand=True)
 
         # Delete button (only visible on hover)
         del_btn = tk.Label(top_row, text="\u2715", font=SF("Segoe UI", 9),
@@ -925,6 +1017,9 @@ class Sidebar(tk.Frame):
 
     def _delete_session(self, session_id):
         """Delete a session with optional confirmation dialog."""
+        allowed = getattr(self, "can_delete_session", None)
+        if allowed is not None and not allowed(session_id):
+            return
         if self._confirm_delete:
             # Custom dialog with "don't show again" checkbox
             dlg = tk.Toplevel(self)
@@ -976,21 +1071,21 @@ class Sidebar(tk.Frame):
         if widget:
             widget.destroy()
 
-        # DB delete in background
+        # DB delete in background, through the core only: it also removes the
+        # session's search index, media and related rows, and refuses while
+        # the session is being written. If it fails, reload the list so the
+        # session shows again instead of looking deleted.
         def _do():
+            deleted = False
             try:
                 from hermes_state import SessionDB
                 with SessionDB() as db:
-                    db.delete_session(session_id)
+                    deleted = bool(db.delete_session(session_id))
             except Exception:
+                deleted = False
+            if not deleted:
                 try:
-                    import sqlite3
-                    from hermes_state import DEFAULT_DB_PATH
-                    conn = sqlite3.connect(str(DEFAULT_DB_PATH))
-                    conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-                    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                    conn.commit()
-                    conn.close()
+                    self.after(0, self._load_sessions)
                 except Exception:
                     pass
         threading.Thread(target=_do, daemon=True).start()
@@ -1019,6 +1114,7 @@ class Sidebar(tk.Frame):
             ):
                 widget.configure(text=t(key))
             self._update_combobox_values()
+            self._show_gpu_choices(self._get_gpu_placement())
         if hasattr(self, "session_frame"):
             self._render_sessions()
         if self._load_status_data:
@@ -1123,6 +1219,12 @@ class SettingsDialog(tk.Toplevel):
         self.lang_combo.pack(fill="x", pady=(4, 12))
 
     def _save(self):
+        if self.bridge.is_running:
+            # Defensive (the dialog is not opened during a reply): never write
+            # what a running reply reads; the dialog stays open.
+            messagebox.showinfo(t("settings.title"),
+                                t("chat.busy_stop_first", stop=t("chat.stop")), parent=self)
+            return
         env_path = get_hermes_home() / ".env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         import re
@@ -1138,7 +1240,7 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     content += f"\n{key}={val}\n"
         model = self.model_var.get().strip()
-        if model:
+        if model:  # never during a reply: the dialog is not opened then (modal)
             self.bridge.set_model(model)
         env_path.write_text(content, encoding="utf-8")
 
@@ -1401,7 +1503,7 @@ class HermesGUI:
         # First-run wizard — show if any required keys are missing
         missing = get_missing_keys()
         if any(s["required"] for s in missing):
-            self.root.after(500, self._show_api_setup)
+            self.root.after(500, self._first_run_api_setup)
 
         model = self.bridge.get_model()
         self.status_bar.set_model(model)
@@ -1549,7 +1651,10 @@ class HermesGUI:
                                on_model_change=self._on_model_change,
                                on_session_select=self._on_session_select,
                                on_local_models=self._on_local_models_discovered,
-                               on_auto_load=self._on_auto_load_status)
+                               on_auto_load=self._on_auto_load_status,
+                               can_delete_session=self._can_delete_session,
+                               can_change_model=lambda: not self._refuse_while_running(),
+                               track_model_work=self._track_model_work)
         self.sidebar.pack(side="left", fill="y")
 
         # Vertical separator
@@ -1732,6 +1837,9 @@ class HermesGUI:
         msg = self.input_text.get("1.0", "end-1c").strip()
         if not msg or self.bridge.is_running:
             return
+        if self._model_work_running():  # the message stays in the input box
+            self._add_msg(t("chat.model_loading_wait"), "system")
+            return
         self.input_text.delete("1.0", "end")
 
         # Show attachments in the chat
@@ -1875,8 +1983,27 @@ class HermesGUI:
 
     # ---- Commands ----
 
+    def _refuse_while_running(self) -> bool:
+        """While a reply is running, session changes are refused (the running
+        turn would write into the new session); True when refused."""
+        if not self.bridge.is_running:
+            return False
+        self._add_msg(t("chat.busy_stop_first", stop=t("chat.stop")), "system")
+        return True
+
+    def _can_delete_session(self, session_id) -> bool:
+        """Sidebar delete guard: not the active session while its turn runs."""
+        if session_id and session_id == self.bridge.session_id and self._refuse_while_running():
+            return False
+        return True
+
+    def _note_dropped_resume(self, dropped: bool):
+        if dropped:
+            self._add_msg(t("chat.resume_not_continued"), "system")
+
     def _new_chat(self):
-        self.bridge.new_session()
+        if self._refuse_while_running() or not self.bridge.new_session():
+            return
         for w in self.msg_frame.winfo_children():
             w.destroy()
         self._chat_title_kind = "new"
@@ -1894,20 +2021,27 @@ class HermesGUI:
         """Called when a local model auto-load completes."""
         if success:
             self._add_msg(t("chat.auto_load_success", model=model_id), "system")
+            if error:  # the GPU could only be estimated: say so and how to check
+                self._add_msg(error, "system")
         else:
             self._add_msg(t("chat.auto_load_failed", model=model_id, error=error), "error")
 
     def _on_model_change(self, model_id):
-        """Called when user picks a model from the sidebar dropdown."""
+        """Called when user picks a model from the sidebar dropdown (also after
+        a sidebar auto-load). Refused during a reply: the dropdown goes back
+        to the model still in effect."""
+        if self._refuse_while_running():
+            self.sidebar.set_model(self.bridge.get_model())
+            return
         # Detect if this is a local model (known from LM Studio discovery)
         if model_id in self.bridge._known_local_models:
             url = self.bridge._resolve_lm_studio_url()
             if url:
-                self.bridge.set_local_mode(url, model_id)
+                dropped = self.bridge.set_local_mode(url, model_id)
             else:
-                self.bridge.set_model(model_id)
+                dropped = self.bridge.set_model(model_id)
         else:
-            self.bridge.set_model(model_id)
+            dropped = self.bridge.set_model(model_id)
         # Show friendly name in status bar
         display = model_id
         for mid, name, note in self.sidebar._all_models:
@@ -1917,14 +2051,19 @@ class HermesGUI:
         is_local = self.bridge._active_provider == "local"
         self.status_bar.set_model(f"LM Studio: {display}" if is_local else display)
         self._add_msg(t("chat.model_switched", model=display), "system")
+        self._note_dropped_resume(dropped)
 
     def _on_session_select(self, session_id):
         """Load a past session into the chat view."""
+        if self._refuse_while_running():
+            return
         try:
             from hermes_state import SessionDB
             with SessionDB() as db:
                 messages = db.get_messages_as_conversation(session_id)
-            if not messages:
+            # Continue the stored session (same id) with its history; the
+            # bridge refuses if the core cannot reopen it.
+            if not messages or not self.bridge.resume_session(session_id, messages):
                 self._add_msg(t("chat.session_load_failed"), "error")
                 return
 
@@ -1932,9 +2071,6 @@ class HermesGUI:
             for w in self.msg_frame.winfo_children():
                 w.destroy()
 
-            # Load conversation into bridge
-            self.bridge.conversation_history = messages
-            self.bridge.agent = None  # Force recreation
             self._chat_title_kind = "resumed"
             self.chat_title.configure(text=t("chat.resumed_session"))
 
@@ -1972,7 +2108,14 @@ class HermesGUI:
             self._add_msg(t("chat.generation_stopped", "Generation stopped."), "system")
             self.status_bar.set_ready()
 
+    # Settings, Permissions and the API-key wizard are modal (grab_set): while
+    # one is open no message can be sent. They are not opened during a reply,
+    # so a save never happens under a running turn (the worker reads these
+    # files and env vars while it builds the agent).
+
     def _open_settings(self):
+        if self._refuse_while_running():
+            return
         d = SettingsDialog(self.root, self.bridge)
         self.root.wait_window(d)
         m = self.bridge.get_model()
@@ -1983,22 +2126,56 @@ class HermesGUI:
         SkillsBrowser(self.root)
 
     def _open_permissions(self):
-        PermissionsPanel(self.root, on_save=self._on_permissions_saved)
+        if self._refuse_while_running():
+            return
+        PermissionsPanel(self.root, on_save=self._on_permissions_saved,
+                         can_save=lambda: not self.bridge.is_running)
 
     def _on_permissions_saved(self, perms):
-        self.bridge.agent = None  # Force agent recreation with new permissions
         self._add_msg(t("chat.permissions_updated", new_chat=t("sidebar.new_chat")), "system")
+        self._note_dropped_resume(self.bridge.rebuild_agent())
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
 
     def _open_lm_studio(self):
-        LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready)
+        panel = LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
+                              can_change_model=lambda: not self.bridge.is_running,
+                              track_model_work=self._track_model_work)
+        self._lm_panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed] + [panel]
+
+    # -- model loading is "busy" too -------------------------------------------
+    # A load or unload in LM Studio (sidebar auto-load, panel load/cancel) runs
+    # in a worker thread; while any such thread is alive, sending is refused
+    # (the load would unload the model the new turn uses). Tracking the
+    # threads themselves means "busy" ends on every exit path, also when the
+    # panel is closed mid-load.
+
+    def _track_model_work(self, thread):
+        self._model_work = [w for w in getattr(self, "_model_work", []) if w.is_alive()]
+        self._model_work.append(thread)
+
+    def _model_work_running(self) -> bool:
+        """Busy until the work AND its Tk-side completion are done: a worker
+        thread is alive, the sidebar's auto-load has not completed
+        (_loading_model, cleared by _on_auto_load_complete), or an open panel
+        still awaits its load/cancel completion (model_work_pending)."""
+        self._model_work = [w for w in getattr(self, "_model_work", []) if w.is_alive()]
+        sidebar = getattr(self, "sidebar", None)
+        panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed]
+        self._lm_panels = panels
+        return (bool(self._model_work)
+                or getattr(sidebar, "_loading_model", False) is True
+                or any(p.model_work_pending() for p in panels))
 
     def _on_lm_studio_ready(self, base_url, model_id):
-        """Switch Hermes to use LM Studio as the LLM provider."""
+        """Switch Hermes to use LM Studio as the LLM provider (refused during
+        a reply; the model stays loaded in LM Studio for later)."""
+        if self._refuse_while_running():
+            return
+        dropped = False
         if model_id:
-            self.bridge.set_local_mode(base_url, model_id)
+            dropped = self.bridge.set_local_mode(base_url, model_id)
             short = model_id.split("/")[-1] if "/" in model_id else model_id
             self.status_bar.set_model(f"LM Studio: {short}")
             self.sidebar.set_model(model_id)
@@ -2006,20 +2183,32 @@ class HermesGUI:
         self._add_msg(t("chat.local_model_ready",
                         model=model_id or t("chat.default_loaded_model"),
                         new_chat=t("sidebar.new_chat")), "system")
+        self._note_dropped_resume(dropped)
 
     def _show_api_setup(self):
+        # Also reached from the first-run timer: never during a reply.
+        if self._refuse_while_running():
+            return
+
         def on_done(saved_keys):
             if saved_keys:
                 names = ", ".join(saved_keys.keys())
                 self._add_msg(t("chat.api_keys_saved", names=names), "system")
                 # Force agent recreation to pick up new tools
-                self.bridge.agent = None
+                self._note_dropped_resume(self.bridge.rebuild_agent())
             m = self.bridge.get_model()
             self.status_bar.set_model(m)
             self.sidebar.set_model(m)
 
-        w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True)
+        w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True,
+                           can_save=lambda: not self.bridge.is_running)
         self.root.wait_window(w)
+
+    def _first_run_api_setup(self):
+        """First-run timer: skipped when another of our modal dialogs is open
+        (its grab would be replaced and not restored); the menu entry stays."""
+        if self.root.grab_current() is None:
+            self._show_api_setup()
 
     def _toggle_sidebar(self):
         if self.sidebar.winfo_viewable():

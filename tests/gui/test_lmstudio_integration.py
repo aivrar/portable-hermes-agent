@@ -22,11 +22,18 @@ def test_context_selection_obeys_core_floor():
     assert lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
 
 
+def _panel_with(**attributes):
+    """A real LMStudioPanel instance (its helper methods work) without Tk."""
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(attributes)
+    return panel
+
+
 def test_too_small_model_is_rejected_before_loading(monkeypatch):
     warning = Mock()
     monkeypatch.setattr(lm.messagebox, "showwarning", warning)
-    panel = SimpleNamespace(model_list=Mock(curselection=lambda: (0,)),
-                            models=[{"id": "small", "context_length": lm.MINIMUM_CONTEXT_LENGTH // 2}])
+    panel = _panel_with(model_list=Mock(curselection=lambda: (0,)),
+                        models=[{"id": "small", "context_length": lm.MINIMUM_CONTEXT_LENGTH // 2}])
     lm.LMStudioPanel._load_model(panel)
     warning.assert_called_once()
 
@@ -179,6 +186,82 @@ def test_panel_string_load_fallback_passes_no_identifier():
     assert "instance_identifier" not in call.kwargs
 
 
+def _model_with_max_context(max_ctx):
+    return Mock(model_key="gemma-4-e4b-it", path="lmstudio-community/gemma-4-e4b-it",
+                display_name="Gemma 4 E4B", info=SimpleNamespace(max_context_length=max_ctx))
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+@pytest.mark.parametrize("requested, model_max, used", [
+    (32768, 262144, lm.MINIMUM_CONTEXT_LENGTH),         # the old sidebar default
+    (131072, lm.MINIMUM_CONTEXT_LENGTH + 4096, lm.MINIMUM_CONTEXT_LENGTH + 4096),
+    (lm.DEFAULT_CONTEXT_LENGTH, 262144, lm.DEFAULT_CONTEXT_LENGTH),
+])
+def test_load_uses_a_window_hermes_can_chat_with(requested, model_max, used):
+    target = _model_with_max_context(model_max)
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+
+    assert client.load_model("gemma-4-e4b-it", context_length=requested)
+
+    assert target.load_new_instance.call_args.kwargs["config"].context_length == used
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_model_whose_window_is_too_small_is_refused_before_unloading():
+    target = _model_with_max_context(32768)
+    current = Mock()
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    client._sdk_client.llm.list_loaded.return_value = [current]
+
+    try:
+        client.load_model("gemma-4-e4b-it", context_length=lm.DEFAULT_CONTEXT_LENGTH)
+        raise AssertionError("loaded a model Hermes cannot chat with")
+    except RuntimeError as err:
+        message = str(err)
+
+    assert message == lm.t("lmstudio.context_too_small_msg", supported="32,768",
+                                  required=f"{lm.MINIMUM_CONTEXT_LENGTH:,}")
+    current.unload.assert_not_called()
+    target.load_new_instance.assert_not_called()
+
+
+def test_panel_and_sidebar_share_the_context_window():
+    import gui.app as app
+    assert app.MINIMUM_CONTEXT_LENGTH == lm.MINIMUM_CONTEXT_LENGTH
+    assert app.DEFAULT_CONTEXT_LENGTH == lm.DEFAULT_CONTEXT_LENGTH >= lm.MINIMUM_CONTEXT_LENGTH
+
+
+class _Var:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        if isinstance(self.value, str):
+            import tkinter
+            raise tkinter.TclError("expected integer")
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+
+@pytest.mark.parametrize("typed, used", [
+    (32768, lm.MINIMUM_CONTEXT_LENGTH),
+    (lm.MINIMUM_CONTEXT_LENGTH, lm.MINIMUM_CONTEXT_LENGTH),
+    (131072, 131072),
+    ("abc", lm.DEFAULT_CONTEXT_LENGTH),
+])
+def test_sidebar_raises_a_typed_context_to_the_minimum(typed, used):
+    import gui.app as app
+    sidebar = object.__new__(app.Sidebar)
+    sidebar._ctx_var = _Var(typed)
+
+    assert app.Sidebar._context_length(sidebar) == used
+    assert sidebar._ctx_var.value == used          # the box shows what is used
+
+
 def test_model_list_shows_a_loaded_model_once():
     rows = lm._one_row_per_model([
         {"id": "qwen", "state": "not-loaded"},
@@ -315,7 +398,7 @@ def test_load_and_restore_keep_the_button_order():
         load_btn, unload_btn, refresh_btn = (ttk.Button(row) for _ in range(3))
         for button in (load_btn, unload_btn, refresh_btn):
             button.pack(side="left")
-        panel = SimpleNamespace(
+        panel = _panel_with(
             model_list=Mock(curselection=lambda: (0,)),
             models=[{"id": "gemma-4-e4b-it"}],
             ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
@@ -362,3 +445,349 @@ def test_load_without_handle_identifier_uses_the_newly_listed_instance():
     assert client.load_model(VARIANT, context_length=65536)
 
     assert client.last_loaded_identifier == "deepseek-r1-0528-qwen3-8b"
+
+
+# --- GPU placement (shared helper: portable_hermes.lmstudio_gpu) -------------
+
+OWNER_NVIDIA = [  # nvidia-smi order on the owner's PC
+    lm.gpu_place.NvidiaGpu(0, "NVIDIA GeForce RTX 3060", 12288, "80c24f57"),
+    lm.gpu_place.NvidiaGpu(1, "NVIDIA GeForce RTX 3090", 24576, "36feccef"),
+]
+OWNER_SURVEY = [  # LM Studio's own order (CUDA, fastest first)
+    lm.gpu_place.LmStudioGpu(0, "NVIDIA GeForce RTX 3090", 24575, "36feccef"),
+    lm.gpu_place.LmStudioGpu(1, "NVIDIA GeForce RTX 3060", 12287, "80c24f57"),
+]
+
+
+@pytest.fixture
+def owner_gpus(monkeypatch):
+    monkeypatch.setattr(lm.gpu_place, "list_nvidia_gpus", lambda timeout=10: list(OWNER_NVIDIA))
+    monkeypatch.setattr(lm.gpu_place, "lmstudio_gpu_survey", lambda *a, **k: list(OWNER_SURVEY))
+
+
+def _loaded_gpu_setting(placement=None, gpu_index=None):
+    target = Mock(model_key="gemma-4-e4b-it", path="p/gemma", display_name="Gemma")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded(target)
+    client.load_model("gemma-4-e4b-it", gpu_index=gpu_index, gpu_placement=placement,
+                      context_length=65536)
+    return target.load_new_instance.call_args.kwargs["config"]
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_split_favours_the_largest_gpu_in_lm_studio_numbering(owner_gpus):
+    config = _loaded_gpu_setting("split")
+    assert config.gpu.split_strategy == "favorMainGpu"
+    assert config.gpu.main_gpu == 0          # LM Studio's 0 is the 3090
+    assert list(config.gpu.disabled_gpus) == []
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_single_gpu_maps_the_nvidia_smi_index(owner_gpus):
+    config = _loaded_gpu_setting(gpu_index=0)    # older callers: nvidia-smi 0 = 3060
+    assert config.gpu.main_gpu == 1 and list(config.gpu.disabled_gpus) == [0]
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_cpu_only_and_auto(owner_gpus):
+    cpu = _loaded_gpu_setting("cpu")
+    assert cpu.gpu.ratio == 0.0 and cpu.offload_kv_cache_to_gpu is False
+    assert list(cpu.gpu.disabled_gpus) == [0, 1]      # every GPU disabled
+    assert _loaded_gpu_setting("auto").gpu is None
+    assert _loaded_gpu_setting().gpu is None
+
+
+@pytest.mark.skipif(not lm.HAS_SDK, reason="lmstudio SDK not installed")
+def test_load_on_a_missing_gpu_fails_before_unloading_anything(owner_gpus):
+    loaded = Mock(identifier="current")
+    client = lm.LMStudioClient(api_key="")
+    client._sdk_client = _sdk_with_downloaded()
+    client._sdk_client.llm.list_loaded.return_value = [loaded]
+
+    with pytest.raises(RuntimeError, match="GPU 7 not found"):
+        client.load_model("gemma-4-e4b-it", gpu_placement="gpu:7", context_length=65536)
+
+    loaded.unload.assert_not_called()
+    client._sdk_client.llm.load_new_instance.assert_not_called()
+
+
+class _ComboVar:
+    """gpu_var + gpu_combo stand-in: current(i) selects values[i]."""
+
+    def __init__(self):
+        self.value, self.values = "", []
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+
+    def configure(self, values):
+        self.values = list(values)
+
+    def current(self, index):
+        self.value = self.values[index]
+
+
+def _gpu_panel():
+    combo = _ComboVar()
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(gpus=[], _gpu_label_to_placement={}, gpu_var=combo, gpu_combo=combo)
+    panel._show_gpu_choices(lm.gpu_place.default_placement([]))    # before detection
+    return panel, combo
+
+
+def _pick(panel, combo, placement):
+    combo.set({p: label for label, p in panel._gpu_label_to_placement.items()}[placement])
+    panel._on_gpu_chosen()
+
+
+@pytest.mark.parametrize("choice", ["cpu", "auto"])
+def test_panel_keeps_a_choice_made_while_gpus_were_detected(choice):
+    panel, combo = _gpu_panel()
+    assert panel._selected_gpu_placement() == "auto"
+    _pick(panel, combo, choice)
+
+    panel._set_gpus(OWNER_NVIDIA)                    # detection finishes late
+
+    assert panel._selected_gpu_placement() == choice   # not reset to GPU 0
+    assert len(combo.values) == 5
+
+
+def test_panel_without_a_choice_defaults_to_the_first_gpu_after_detection():
+    panel, combo = _gpu_panel()
+    panel._set_gpus(OWNER_NVIDIA)
+    assert panel._selected_gpu_placement() == "gpu:0"
+    _pick(panel, combo, "split")
+    panel._set_gpus(OWNER_NVIDIA[:1])               # chosen entry no longer offered
+    assert panel._selected_gpu_placement() == "gpu:0"
+
+
+def test_load_success_with_an_estimated_gpu_warns(monkeypatch):
+    rows = [{"id": VARIANT, "state": "loaded"}]
+    panel = _panel_refreshing_to(rows, VARIANT)
+    order = []
+    refresh = panel._refresh_models
+    panel._refresh_models = lambda **kw: (order.append("refresh"), refresh(**kw))
+    warn = Mock(side_effect=lambda *a, **k: order.append("dialog"))
+    monkeypatch.setattr(lm.messagebox, "showwarning", warn)
+    plan = lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, None)
+    note = lm.gpu_unconfirmed_note(plan, "GPU 1: RTX 3090")
+    assert "GPU 1: RTX 3090" in note and "nvidia-smi" in note
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None, note)
+
+    panel._set_status.assert_called_with("lmstudio.loaded_model_gpu_unconfirmed", model=VARIANT)
+    assert warn.call_args.args[1] == note
+    assert order == ["refresh", "dialog"]           # list refreshed before the modal dialog
+    assert lm.gpu_unconfirmed_note(lm.gpu_place.plan("gpu:1", OWNER_NVIDIA, OWNER_SURVEY),
+                                   "x") is None
+
+
+def test_cpu_load_says_lm_studio_may_still_use_some_gpu_memory(monkeypatch):
+    panel = _panel_refreshing_to([{"id": VARIANT, "state": "loaded"}], VARIANT)
+    warn = Mock()
+    monkeypatch.setattr(lm.messagebox, "showwarning", warn)
+
+    lm.LMStudioPanel._on_load_success(panel, VARIANT, None, None, True)
+
+    panel._set_status.assert_called_with("lmstudio.loaded_model_cpu", model=VARIANT)
+    warn.assert_not_called()                         # a status line, no dialog
+    assert lm.gpu_place.plan("cpu", OWNER_NVIDIA, OWNER_SURVEY).confirmed
+
+
+def test_cpu_only_without_a_gpu_list_gets_its_own_warning():
+    blind = lm.gpu_place.plan("cpu", [], None)
+    assert lm.gpu_unconfirmed_note(blind, "x") == lm.t("lmstudio.gpu_cpu_unconfirmed")
+
+
+def test_failed_load_refreshes_the_list_keeping_the_selection(monkeypatch):
+    rows = [{"id": "previous", "state": "not-loaded"},     # unloaded after the failure
+            {"id": "lfm3-1.7b", "state": "not-loaded"}]
+    panel = _listed_panel(["previous", "lfm3-1.7b"], "lfm3-1.7b")
+    lm.LMStudioPanel._display_models(panel, [{"id": "previous", "state": "loaded"},
+                                             {"id": "lfm3-1.7b"}])
+    assert lm.t("lmstudio.loaded_tag") in panel.model_list.rows[0]    # before: stale tag
+    panel._restore_load_btn, panel.status_dot, panel._set_status = Mock(), Mock(), Mock()
+    panel.client = SimpleNamespace(_sdk_client=None)
+    refreshed = []
+
+    def refresh(**kw):
+        refreshed.append(kw)
+        lm.LMStudioPanel._display_models(panel, rows, **kw)
+
+    panel._refresh_models = refresh
+    monkeypatch.setattr(lm.messagebox, "showerror", Mock())
+
+    lm.LMStudioPanel._on_load_error(panel, "unknown model architecture", "lfm3-1.7b")
+
+    assert refreshed == [{"select_ids": ("lfm3-1.7b",)}]
+    assert _selected_id(panel) == "lfm3-1.7b"
+    assert not any(lm.t("lmstudio.loaded_tag") in row for row in panel.model_list.rows)
+
+
+def test_gpu_unconfirmed_strings_exist_in_every_language():
+    from gui import i18n
+    for code in i18n.LANGUAGE_CODES:
+        table = i18n.TRANSLATIONS[code]
+        for key in ("lmstudio.gpu_unconfirmed", "lmstudio.gpu_unconfirmed_title",
+                    "lmstudio.loaded_model_gpu_unconfirmed",
+                    "sidebar.model_loaded_gpu_unconfirmed", "lmstudio.gpu_cpu_unconfirmed",
+                    "lmstudio.loaded_model_cpu", "sidebar.model_loaded_cpu"):
+            assert table[key], (code, key)
+        assert "RAM" in table["lmstudio.gpu_cpu"] or "記憶體" in table["lmstudio.gpu_cpu"] \
+            or "内存" in table["lmstudio.gpu_cpu"]
+        assert "{model}" in table["lmstudio.loaded_model_cpu"]
+        assert "{choice}" in table["lmstudio.gpu_unconfirmed"]
+        assert "nvidia-smi" in table["lmstudio.gpu_unconfirmed"]
+        assert "{model}" in table["lmstudio.loaded_model_gpu_unconfirmed"]
+
+
+def test_gpu_choices_are_labelled_in_every_language():
+    from gui import i18n
+    old = i18n.get_language()
+    try:
+        for code in i18n.LANGUAGE_CODES:
+            i18n.set_language(code, persist=False)
+            choices = dict(lm.gpu_choices(OWNER_NVIDIA))
+            assert list(choices) == ["auto", "cpu", "split", "gpu:0", "gpu:1"]
+            for key in ("auto", "cpu", "split"):
+                assert choices[key] == i18n.TRANSLATIONS[code][f"lmstudio.gpu_{key}"]
+            assert choices["gpu:1"] == "GPU 1: NVIDIA GeForce RTX 3090 (24576 MiB)"
+    finally:
+        i18n.set_language(old, persist=False)
+
+
+def test_panel_loads_with_the_placement_behind_the_chosen_label(monkeypatch):
+    class InlineThread:
+        def __init__(self, target, daemon=None):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(lm.threading, "Thread", InlineThread)
+    choices = lm.gpu_choices(OWNER_NVIDIA)
+    split_label = dict(choices)["split"]
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(
+        model_list=Mock(curselection=lambda: (0,)),
+        models=[{"id": "gemma-4-e4b-it"}],
+        ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH),
+        gpu_var=Mock(get=lambda: split_label),
+        _gpu_label_to_placement={label: p for p, label in choices},
+        _set_status=Mock(), status_dot=Mock(), _cancel_load=Mock(),
+        client=Mock(last_loaded_identifier="gemma-4-e4b-it"), _post_ui=Mock(),
+        load_btn=Mock(), unload_btn=Mock())
+    monkeypatch.setattr(lm.ttk, "Button", Mock())
+
+    lm.LMStudioPanel._load_model(panel)
+
+    assert panel.client.load_model.call_args.kwargs["gpu_placement"] == "split"
+
+
+def _working_panel(monkeypatch, client, reply_running=False):
+    """A panel whose load/cancel workers really run in threads; *tracked*
+    collects the threads the app would treat as "a model is loading"."""
+    tracked, posted = [], []
+    panel = object.__new__(lm.LMStudioPanel)
+    panel.__dict__.update(
+        model_list=Mock(curselection=lambda: (0,)), models=[{"id": "gemma-4-e4b-it"}],
+        ctx_var=Mock(get=lambda: lm.DEFAULT_CONTEXT_LENGTH), gpu_var=Mock(get=lambda: ""),
+        _gpu_label_to_placement={}, _set_status=Mock(), status_dot=Mock(),
+        load_btn=Mock(), unload_btn=Mock(), client=client, _closed=False,
+        _post_ui=lambda name, *a: posted.append(name),
+        can_change_model=lambda: not reply_running, track_model_work=tracked.append)
+    monkeypatch.setattr(lm.ttk, "Button", Mock())
+    return panel, tracked, posted
+
+
+def _all_done(tracked):
+    for worker in tracked:
+        worker.join(10)
+    return tracked and not any(w.is_alive() for w in tracked)
+
+
+def test_panel_load_and_unload_are_refused_during_a_reply(monkeypatch):
+    info = Mock()
+    monkeypatch.setattr(lm.messagebox, "showinfo", info)
+    client = Mock()
+    panel, tracked, _posted = _working_panel(monkeypatch, client, reply_running=True)
+
+    lm.LMStudioPanel._load_model(panel)
+    lm.LMStudioPanel._unload_model(panel)
+
+    client.load_model.assert_not_called()
+    client.unload_model.assert_not_called()
+    assert tracked == [] and info.call_count == 2
+    assert info.call_args.args[1] == lm.t("chat.busy_stop_first", stop=lm.t("chat.stop"))
+
+
+def test_panel_cancel_is_refused_during_a_reply(monkeypatch):
+    info = Mock()
+    monkeypatch.setattr(lm.messagebox, "showinfo", info)
+    client = Mock()
+    panel, tracked, _posted = _working_panel(monkeypatch, client, reply_running=True)
+    panel._loading = True
+
+    lm.LMStudioPanel._cancel_load(panel)               # would unload every model
+
+    assert tracked == [] and panel._loading is True
+    client._sdk_client.llm.list_loaded.assert_not_called()
+    assert info.call_args.args[1] == lm.t("chat.busy_stop_first", stop=lm.t("chat.stop"))
+
+
+def test_panel_work_is_pending_until_the_buttons_are_restored(monkeypatch):
+    import threading
+    gate = threading.Event()
+    client = Mock(last_loaded_identifier="m", last_gpu_plan=None)
+    client.load_model.side_effect = lambda *a, **k: gate.wait(10)
+    panel, tracked, _posted = _working_panel(monkeypatch, client)
+
+    lm.LMStudioPanel._load_model(panel)
+    gate.set()
+    assert _all_done(tracked)                           # the worker has exited ...
+    assert panel.model_work_pending() is True           # ... but the Tk side has not run
+    lm.LMStudioPanel._restore_load_btn(panel)           # what every completion does
+    assert panel.model_work_pending() is False
+
+    lm.LMStudioPanel._load_model(panel)
+    panel._closed = True                                # closed mid-load
+    assert panel.model_work_pending() is False
+    for worker in tracked:
+        worker.join(10)
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "closed"])
+def test_panel_model_work_ends_on_every_path(monkeypatch, outcome):
+    import threading
+    gate = threading.Event()
+    loaded = Mock()
+    client = Mock(last_loaded_identifier="gemma-4-e4b-it", last_gpu_plan=None)
+    client._sdk_client.llm.list_loaded.return_value = [loaded]
+
+    def load_model(*a, **k):
+        gate.wait(10)
+        if outcome == "failure":
+            raise RuntimeError("unknown model architecture")
+
+    client.load_model.side_effect = load_model
+    panel, tracked, posted = _working_panel(monkeypatch, client)
+
+    lm.LMStudioPanel._load_model(panel)
+    assert len(tracked) == 1 and tracked[0].is_alive()        # sending waits now
+    if outcome == "cancel":
+        lm.LMStudioPanel._cancel_load(panel)                   # second worker
+    if outcome == "closed":
+        panel._closed = True                                   # window closed mid-load
+    gate.set()
+
+    assert _all_done(tracked)                                  # busy over on every path
+    if outcome == "failure":                                   # unloaded inside the worker
+        loaded.unload.assert_called_once_with()
+        assert posted == ["_on_load_error"]
+    if outcome == "cancel":
+        assert len(tracked) == 2 and posted == ["_on_cancel_done"]
+    if outcome == "success":
+        assert posted == ["_on_load_success"]
