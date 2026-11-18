@@ -283,3 +283,51 @@ def test_gui_api_key_wizard_persists_to_active_hermes_home(monkeypatch, tmp_path
     assert (tmp_path / ".env").read_text(encoding="utf-8") == (
         "\nPORTABLE_TEST_API_KEY=secret-value\n"
     )
+
+
+def _sidebar_shell(app):
+    sidebar = object.__new__(app.Sidebar)
+    sidebar._render_sessions = lambda: None
+    return sidebar
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_hides_sessions_without_messages():
+    """Empty sessions (failed first turn, gateway resets) cannot be resumed."""
+    from gui import app
+    from hermes_state import SessionDB
+
+    with SessionDB() as db:
+        db.create_session(session_id="empty_session", source="gui", model="m")
+        db.create_session(session_id="chat_session", source="gui", model="m")
+        db.append_message("chat_session", "user", "hello")
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert [s["id"] for s in sidebar._sessions_data] == ["chat_session"]
+
+
+@pytest.mark.needs_core
+def test_gui_sidebar_hides_empty_sessions_with_core_lacking_filter(monkeypatch):
+    import sys
+    from gui import app
+
+    class OldSessionDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def list_sessions_rich(self, source=None, limit=20):
+            return [{"id": "empty", "message_count": 0},
+                    {"id": "chat", "message_count": 3}]
+
+    monkeypatch.setitem(sys.modules, "hermes_state",
+                        SimpleNamespace(SessionDB=OldSessionDB))
+
+    sidebar = _sidebar_shell(app)
+    sidebar._load_sessions()
+
+    assert [s["id"] for s in sidebar._sessions_data] == ["chat"]

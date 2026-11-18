@@ -787,7 +787,14 @@ class Sidebar(tk.Frame):
         try:
             from hermes_state import SessionDB
             with SessionDB() as db:
-                sessions = db.list_sessions_rich(source=None, limit=20)
+                # Sessions without messages (a first turn that failed, gateway
+                # resets, compression parents) have nothing to resume: hide them.
+                try:
+                    sessions = db.list_sessions_rich(source=None, limit=20,
+                                                     min_message_count=1)
+                except TypeError:  # a core without the filter
+                    sessions = [s for s in db.list_sessions_rich(source=None, limit=20)
+                                if s.get("message_count", 1)]
             self._sessions_data = sessions
             self._render_sessions()
         except Exception:
