@@ -557,10 +557,26 @@ class StreamingBubble(tk.Frame):
         self._body.delete("1.0", "end")
         _insert_styled(self._body, spans(self.get_text()))
         self._tall = False
-        self._fit_height()
+        self._fit_height()                # an estimate until the body is laid out
         if self._leading is not None:
             self._body.pack_forget()      # thinking only: no empty answer line
         self._body.configure(state="disabled")
+        self._body.bind("<Configure>", self._fit_display_lines)
+        self._fit_display_lines()
+
+    def _fit_display_lines(self, _event=None):
+        """Finalized: exactly as tall as the lines the text shows at the
+        body's width, measured again whenever that width changes."""
+        body = self._body
+        try:
+            if body.winfo_width() <= 1:   # not laid out yet: <Configure> follows
+                return
+            lines = body.count("1.0", "end", "update", "displaylines")
+            lines = lines[0] if isinstance(lines, tuple) else lines
+            if lines and lines != int(body.cget("height")):
+                body.configure(height=lines)
+        except tk.TclError:
+            pass
 
     def _blink(self):
         self._blink_id = None

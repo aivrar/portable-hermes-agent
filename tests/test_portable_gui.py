@@ -666,6 +666,51 @@ def test_gui_long_streams_cost_about_linear_time():
 
 
 @pytest.mark.needs_core
+def test_gui_finalized_reply_is_exactly_as_tall_as_its_text():
+    import tkinter as tk
+    from gui import app
+    from gui.reply_activity import ReplyActivity
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("requires a Tk display")
+    root.geometry("1100x700+-3000+-3000")        # mapped off-screen, a real width
+    root.update()
+    paragraph = ("The answer streams in long paragraphs that wrap over several "
+                 "display lines in a wide window, like the one in the report. ") * 3
+    long_reply = "\n\n".join([paragraph] * 6)    # about 2,300 characters
+    stopped = long_reply[:1700]                  # Stop mid-answer: the same finalize
+
+    def shown_lines(body):
+        lines = body.count("1.0", "end", "update", "displaylines")
+        return lines[0] if isinstance(lines, tuple) else lines
+
+    try:
+        for text in ("Short answer.", long_reply, stopped):
+            bubble = app.StreamingBubble(root, ReplyActivity(), True)
+            bubble.pack(fill="x")
+            root.update()
+            for i in range(0, len(text), 7):
+                bubble.append_text(text[i:i + 7])
+            bubble.finalize()
+            root.update()
+            body = bubble._body
+            assert int(body.cget("height")) == shown_lines(body), text[:20]
+            if text is not long_reply:
+                bubble.destroy()
+                continue
+            assert shown_lines(body) > 6                       # it wraps
+            for size in ("600x700", "1400x700"):               # the user resizes
+                root.geometry(size + "+-3000+-3000")
+                root.update()
+                assert int(body.cget("height")) == shown_lines(body), size
+            bubble.destroy()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.needs_core
 @pytest.mark.parametrize("keep_thinking", [True, False])
 def test_gui_destroying_a_bubble_cancels_its_pending_redraws(keep_thinking):
     import time
