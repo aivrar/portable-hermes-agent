@@ -410,8 +410,28 @@ You are running on **{os_name} {os_release}**.
             except Exception:
                 pass
 
-    def _on_tool_progress(self, tool_name, args_preview, *extra):
-        self._post(self.on_tool_call, tool_name, args_preview)
+    # Current cores call tool_progress_callback(event_type, tool_name, preview,
+    # args, **extra), e.g. ("tool.started", "gpu_info", None, {}); older ones
+    # called it (tool_name, preview). Only a tool start makes a tool bubble:
+    # completions, progress, risk notes, reasoning (already delivered through
+    # reasoning_callback) and MoA events are not shown.
+    _TOOL_PROGRESS_EVENT_PREFIXES = ("tool.", "reasoning.", "moa.", "subagent.", "_")
+
+    def _on_tool_progress(self, *args, **_extra):
+        if not args or not isinstance(args[0], str):
+            return
+        first = args[0]
+        is_event = (first.startswith(self._TOOL_PROGRESS_EVENT_PREFIXES)
+                    or len(args) >= 4 or len(args) == 1)
+        if not is_event:  # legacy (tool_name, preview)
+            self._post(self.on_tool_call, first, args[1] if len(args) > 1 else None)
+            return
+        if first != "tool.started" or len(args) < 2:
+            return
+        preview = args[2] if len(args) > 2 else None
+        if preview is None and len(args) > 3 and args[3]:
+            preview = args[3]
+        self._post(self.on_tool_call, args[1], preview)
 
     def _on_thinking(self, text):
         self._post(self.on_thinking, text)

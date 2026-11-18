@@ -373,3 +373,50 @@ def test_gui_sidebar_does_not_retry_when_supporting_core_raises_type_error(monke
 
     assert calls == [{"limit": 20, "min_message_count": 1}]
     assert sidebar._sessions_data == []
+
+
+def _tool_progress_bridge():
+    from gui.agent_bridge import AgentBridge
+
+    bridge = object.__new__(AgentBridge)
+    bridge.on_tool_call = object()
+    posted = []
+    bridge._post = lambda callback, *args: posted.append((callback, args))
+    return bridge, posted
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_uses_tool_name_from_current_core_events():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("tool.started", "gpu_info", None, {})
+    bridge._on_tool_progress("tool.started", "terminal", "nvidia-smi", {"command": "nvidia-smi"})
+    bridge._on_tool_progress("tool.started", "read_file", None, {"path": "a.txt"})
+
+    assert [args for _, args in posted] == [
+        ("gpu_info", None), ("terminal", "nvidia-smi"), ("read_file", {"path": "a.txt"})]
+    assert all(callback is bridge.on_tool_call for callback, _ in posted)
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_ignores_non_start_progress_events():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("tool.completed", "gpu_info", None, None,
+                             duration=0.1, is_error=False, result="{}")
+    bridge._on_tool_progress("tool.progress", "terminal", "50%", None, tool_call_id="c1")
+    bridge._on_tool_progress("tool.output_risk", "web", None, None, risk_metadata={})
+    bridge._on_tool_progress("reasoning.available", "_thinking", "hmm", None)
+    bridge._on_tool_progress("_thinking", "first line")
+    bridge._on_tool_progress("moa.progress", refs_done=1, refs_total=2, label="x")
+
+    assert posted == []
+
+
+@pytest.mark.needs_core
+def test_gui_tool_bubble_still_accepts_legacy_name_preview_calls():
+    bridge, posted = _tool_progress_bridge()
+
+    bridge._on_tool_progress("gpu_info", "query GPUs")
+
+    assert [args for _, args in posted] == [("gpu_info", "query GPUs")]
