@@ -1447,6 +1447,45 @@ def test_gui_use_for_chat_says_the_next_message_uses_the_model(lang):
 
 
 @pytest.mark.needs_core
+def test_gui_seeds_the_bundled_skills_into_a_home_that_has_none(monkeypatch, tmp_path):
+    """A home not made by install.bat: the core's own sync runs, once."""
+    import tools.skills_sync as skills_sync
+    from gui import agent_bridge, app
+
+    skill = tmp_path / "bundled" / "demo" / "hello-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: hello-skill\ndescription: Says hello.\n---\nSay hello.\n", encoding="utf-8")
+    home = tmp_path / "fresh-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(tmp_path / "bundled"))
+
+    assert agent_bridge.ensure_bundled_skills() is True
+    assert [p.parent.name for p in (home / "skills").rglob("SKILL.md")] == ["hello-skill"]
+    names = [n for skills in app._discover_installed_skills(home / "skills").values()
+             for n, _d in skills]
+    assert "hello-skill" in names                       # the Skills browser lists it
+
+    def must_not_run(**_kw):
+        raise AssertionError("synced a home that already has skills")
+    monkeypatch.setattr(skills_sync, "sync_skills", must_not_run)
+    assert agent_bridge.ensure_bundled_skills() is False
+
+
+@pytest.mark.needs_core
+def test_gui_skills_seeding_never_raises(monkeypatch, tmp_path):
+    import tools.skills_sync as skills_sync
+    from gui import agent_bridge
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "fresh-home"))
+
+    def broken(**_kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(skills_sync, "sync_skills", broken)
+    assert agent_bridge.ensure_bundled_skills() is False
+
+
+@pytest.mark.needs_core
 def test_gui_header_shows_the_session_title_once_it_has_one():
     from unittest.mock import Mock
     from gui.i18n import t

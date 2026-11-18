@@ -27,7 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
-from gui.agent_bridge import AgentBridge
+from gui.agent_bridge import AgentBridge, ensure_bundled_skills
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
 from gui.lm_studio import LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH
@@ -1325,6 +1325,7 @@ class SkillsBrowser(tk.Toplevel):
 
     def _load(self):
         try:
+            ensure_bundled_skills()   # a home not made by install.bat has none yet
             skills_dir = get_hermes_home() / "skills"
             if not skills_dir.exists():
                 self.after(0, lambda: self._set(t("skills.no_dir"), key="skills.no_dir"))

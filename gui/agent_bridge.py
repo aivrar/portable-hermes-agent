@@ -48,6 +48,31 @@ def _load_cli_config() -> dict:
         }
 
 
+_skills_seed_lock = threading.Lock()
+
+
+def ensure_bundled_skills() -> bool:
+    """Copy the bundled skills into a Hermes home that has none, as the
+    `hermes` CLI does when it starts (the core's tools.skills_sync).
+
+    install.bat syncs the home it installs into; a home made any other way
+    (a second profile, HERMES_HOME set by hand) would otherwise have no
+    skills in the GUI, for the agent or the Skills browser. Call it from a
+    worker thread (it copies files). True if it synced; never raises."""
+    with _skills_seed_lock:   # the agent build and the browser may both ask
+        try:
+            skills_dir = get_hermes_home() / "skills"
+            if skills_dir.is_dir() and next(skills_dir.rglob("SKILL.md"), None) is not None:
+                return False
+            from tools.skills_sync import sync_skills
+            sync_skills(quiet=True)
+            return True
+        except Exception:
+            import logging
+            logging.getLogger("hermes.bridge").warning("bundled skills sync failed", exc_info=True)
+            return False
+
+
 class TurnInProgress(RuntimeError):
     """A model/provider switch was requested while a reply is running."""
 
@@ -257,6 +282,7 @@ class AgentBridge:
 
     def _create_agent(self):
         from run_agent import AIAgent
+        ensure_bundled_skills()   # before the agent indexes the skills
         model = self.get_model()
         agent_config = self.config.get("agent", {})
 
