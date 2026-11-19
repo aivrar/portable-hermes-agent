@@ -294,3 +294,44 @@ def test_closing_the_app_during_a_switch_ignores_its_result(monkeypatch):
     gui._add_msg.assert_not_called()                         # ...but the GUI is not touched
     gui.status_bar.set_model.assert_not_called()
     gui.sidebar.set_model.assert_not_called()
+
+
+@pytest.mark.parametrize("file_text", [None, "model: [unclosed\n  provider: xai-oauth\n",
+                                       "model: grok-4.6\n"])
+def test_leaving_an_account_whose_config_cannot_be_read_writes_nothing(monkeypatch, tmp_path, file_text):
+    """config.yaml missing, unreadable, or `model` a plain string while an
+    account was active: no provider is known, so nothing is written, the
+    account is forgotten and the switch goes on as on main."""
+    written = []
+    monkeypatch.setattr(accounts_core, "use_openrouter", written.append)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    if file_text is not None:
+        (tmp_path / "config.yaml").write_text(file_text, encoding="utf-8")
+    bridge = _bridge(_account_provider="xai-oauth", _selected_model="grok-4.6",
+                     config={"model": {"provider": "xai-oauth", "default": "grok-4.6"}})
+    bridge.set_cloud_mode("google/gemini-2.5-pro")
+    assert written == []
+    assert (bridge.get_model(), bridge._account_provider) == ("google/gemini-2.5-pro", None)
+    assert accounts_core.account_in_config(bridge.config) is None     # the stale copy is gone
+    if file_text is not None:
+        assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == file_text
+
+    gui = _gui(bridge)                     # the UI no longer claims the account
+    assert gui._active_account() is None and gui._model_label("m") == "m"
+
+
+def test_a_config_loader_that_raises_is_not_a_successful_leave(monkeypatch):
+    from gui import agent_bridge
+    import hermes_cli.config
+
+    def broken():
+        raise OSError("config.yaml: permission denied")
+    written = []
+    monkeypatch.setattr(accounts_core, "use_openrouter", written.append)
+    monkeypatch.setattr(hermes_cli.config, "load_config", broken)
+    bridge = _bridge(_account_provider="openai-codex", _selected_model="gpt-6-sol",
+                     config={"model": {"provider": "openai-codex"}})
+    bridge.set_cloud_mode("google/gemini-2.5-pro")
+    assert written == [] and bridge._account_provider is None
+    assert bridge.config == agent_bridge._load_cli_config()            # GUI's own fallback
+    assert bridge.get_model() == "google/gemini-2.5-pro"

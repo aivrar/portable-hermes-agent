@@ -217,9 +217,18 @@ class AgentBridge:
         """Only when config.yaml chats through a signed-in account (ChatGPT,
         Grok) is provider: openrouter written, so the OpenRouter id is not
         sent to the account. Any other provider (auto, unset, or one set up
-        outside the GUI such as deepseek) is left alone, as before."""
+        outside the GUI such as deepseek) is left alone, as before.
+
+        When the provider cannot be read (config.yaml missing, unreadable, or
+        `model` a plain string) nothing is written either, but an account the
+        GUI thought active no longer is: it is forgotten and the config that
+        can be loaded is taken, so the switch goes on as on main."""
         from gui import accounts_core
-        if accounts_core.account_in_config(_load_cli_config()) is None:
+        config = _load_cli_config()
+        if accounts_core.account_in_config(config) is None:
+            if self._account_provider is not None:
+                self.config = config
+                self._account_provider = None
             return
         try:
             accounts_core.use_openrouter(model)
