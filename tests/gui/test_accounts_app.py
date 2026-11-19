@@ -335,3 +335,23 @@ def test_a_config_loader_that_raises_is_not_a_successful_leave(monkeypatch):
     assert written == [] and bridge._account_provider is None
     assert bridge.config == agent_bridge._load_cli_config()            # GUI's own fallback
     assert bridge.get_model() == "google/gemini-2.5-pro"
+
+
+def test_a_switch_whose_thread_cannot_start_is_not_busy_for_ever(monkeypatch):
+    used = []
+    monkeypatch.setattr(accounts_core, "use", lambda p, m: used.append(m))
+    gui = _gui(_account_bridge([]))
+
+    def cannot_start(self):
+        raise RuntimeError("can't start new thread")
+    real_start = threading.Thread.start
+    threading.Thread.start = cannot_start
+    try:
+        gui._use_account("xai-oauth", "grok-4.6")
+    finally:
+        threading.Thread.start = real_start
+    text, kind = gui._add_msg.call_args[0]
+    assert kind == "error" and "can't start new thread" in text
+    assert not gui._model_work_running() and gui._refuse_model_change() is False
+    gui.sidebar.set_model.assert_called_with("google/gemini-2.5-flash")
+    assert used == [] and gui.root.pending == []

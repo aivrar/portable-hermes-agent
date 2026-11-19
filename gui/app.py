@@ -3,6 +3,7 @@ Hermes Agent - Windows Desktop GUI
 Styled to match ImageBuddy/ImageDownloader visual design.
 Pure tkinter + ttk, dark theme, flat design.
 """
+import logging
 import os
 import sys
 import re
@@ -2661,16 +2662,37 @@ class HermesGUI:
         if self._refuse_model_change():
             self.sidebar.set_model(self.bridge.get_model())
             return
+
+        def finish(kind, value):
+            name = accounts_core.short_name(provider)
+            if kind != "ok":
+                self._add_msg(t("chat.account_rejected", name=name, model=model, error=value), "error")
+                self.sidebar.set_model(self.bridge.get_model())
+                return
+            dropped = self.bridge.set_account_mode(provider, value)
+            self.status_bar.set_model(self._model_label(value))
+            self.sidebar.set_model(value)
+            self._load_account_models(provider)
+            self._add_msg(t("chat.account_in_use", name=name, model=value), "system")
+            self._note_dropped_resume(dropped)
+        self._account_work(lambda: accounts_core.use(provider, model), finish)
+
+    def _account_work(self, fn, finish):
+        """Run fn (a core call that may block) on a worker thread under the
+        account busy state (_account_switching: the model box, Settings,
+        session load, Use and Disconnect are refused and Send waits). The
+        Tk thread then clears the state and calls finish("ok", result) or
+        finish("failed", message); every path ends that way, also when the
+        thread cannot start."""
         results = queue.SimpleQueue()
 
         def work():
             try:
-                results.put(("ok", accounts_core.use(provider, model)))
+                results.put(("ok", fn()))
             except accounts_core.Rejected as exc:   # the core's reason
                 results.put(("failed", str(exc)))
             except Exception as exc:
-                import logging
-                logging.getLogger("hermes.bridge").warning("account switch failed", exc_info=True)
+                logging.getLogger("hermes.bridge").warning("account step failed", exc_info=True)
                 results.put(("failed", str(exc) or type(exc).__name__))
 
         def check():
@@ -2686,22 +2708,18 @@ class HermesGUI:
                 self.root.after(100, check)
                 return
             self._account_switching = False
-            name = accounts_core.short_name(provider)
-            if kind != "ok":
-                self._add_msg(t("chat.account_rejected", name=name, model=model, error=value), "error")
-                self.sidebar.set_model(self.bridge.get_model())
-                return
-            dropped = self.bridge.set_account_mode(provider, value)
-            self.status_bar.set_model(self._model_label(value))
-            self.sidebar.set_model(value)
-            self._load_account_models(provider)
-            self._add_msg(t("chat.account_in_use", name=name, model=value), "system")
-            self._note_dropped_resume(dropped)
+            finish(kind, value)
 
         thread = threading.Thread(target=work, daemon=True)
         self._account_switching = True
+        try:
+            thread.start()
+        except Exception as exc:     # e.g. "can't start new thread": not busy for ever
+            self._account_switching = False
+            logging.getLogger("hermes.bridge").warning("could not start an account step", exc_info=True)
+            finish("failed", str(exc) or type(exc).__name__)
+            return
         self._track_model_work(thread)
-        thread.start()
         self.root.after(100, check)
 
     def _load_account_models(self, provider):
