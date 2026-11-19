@@ -2641,8 +2641,17 @@ class HermesGUI:
 
     # -- signed-in accounts (View > Accounts) ----------------------------------
     def _open_accounts(self):
-        AccountsWindow(self.root, on_use=self._use_account, active_account=self._active_account,
-                       can_change=lambda: not self._refuse_model_change())
+        """One Accounts window: opening it again brings the open one forward."""
+        window = getattr(self, "_accounts_window", None)
+        if window is not None and window.winfo_exists():
+            window.deiconify()
+            window.lift()
+            window.focus_force()
+            return
+        self._accounts_window = AccountsWindow(
+            self.root, on_use=self._use_account, active_account=self._active_account,
+            can_change=lambda: not self._refuse_model_change(),
+            run_account_work=self._account_work)    # Disconnect is busy like a switch
 
     def _active_account(self):
         """The signed-in account the chat goes through now (not while on LM Studio)."""

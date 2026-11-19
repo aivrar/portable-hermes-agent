@@ -314,3 +314,90 @@ def test_a_failing_disconnect_says_so(tk_root, monkeypatch):
     assert window.note.cget("text") == "Something went wrong: core changed its mind"
     assert not window._worker.busy
     window.destroy()
+
+
+def _app(root):
+    """The app's account parts on a real Tk root (bridge and widgets faked)."""
+    from unittest.mock import Mock
+    from gui import app
+    gui = object.__new__(app.HermesGUI)
+    bridge = Mock(is_running=False, _account_provider=None, _active_provider="cloud")
+    bridge.get_model.return_value = "google/gemini-2.5-flash"
+    gui.__dict__.update(bridge=bridge, root=root, _add_msg=Mock(), msg_frame=Mock(),
+                        sidebar=Mock(_loading_model=False), status_bar=Mock(), _model_work=[],
+                        _lm_panels=[])
+    gui.msg_frame.winfo_children.return_value = []
+    return gui
+
+
+def _accounts_windows(root):
+    from gui.accounts_window import AccountsWindow
+    return [w for w in root.winfo_children() if isinstance(w, AccountsWindow)]
+
+
+def test_view_accounts_opens_one_window_and_brings_it_forward(tk_root, monkeypatch):
+    FakeCore(monkeypatch)
+    gui = _app(tk_root)
+    gui._open_accounts()
+    first = gui._accounts_window
+    raised = []
+    for name in ("deiconify", "lift", "focus_force"):
+        setattr(first, name, lambda n=name: raised.append(n))
+    gui._open_accounts()
+    assert gui._accounts_window is first and _accounts_windows(tk_root) == [first]
+    assert raised == ["deiconify", "lift", "focus_force"]    # brought forward
+    first.destroy()
+    gui._open_accounts()                                # closed: a new one opens
+    assert gui._accounts_window is not first and len(_accounts_windows(tk_root)) == 1
+    gui._accounts_window.destroy()
+
+
+def test_disconnect_holds_the_busy_state_until_it_ends(tk_root, monkeypatch):
+    import threading
+    from gui.i18n import t
+    fake_core = FakeCore(monkeypatch)
+    gate, used = threading.Event(), []
+
+    def slow_disconnect(p):
+        gate.wait(5)
+        fake_core.calls.append(("disconnect", p))
+        return True
+    monkeypatch.setattr(core, "disconnect", slow_disconnect)
+    monkeypatch.setattr(core, "use", lambda p, m: used.append(m))
+    gui = _app(tk_root)
+    gui._open_accounts()
+    window = gui._accounts_window
+    pump(tk_root, lambda: window.connected)
+
+    window._disconnect("openai-codex")
+    assert gui._model_work_running() and gui._refuse_model_change() is True    # Send waits too
+    gui._use_account("xai-oauth", "grok-4.6")            # a switch cannot start mid-disconnect
+    window._disconnect("openai-codex")                   # nor a second disconnect (also a notice)
+    assert window.note.cget("text") == t("accounts.busy")
+    assert [c[0][0] for c in gui._add_msg.call_args_list] == [t("chat.model_loading_wait")] * 3
+    gate.set()
+    pump(tk_root, lambda: "disconnected" in window.note.cget("text"))
+    assert fake_core.calls.count(("disconnect", "openai-codex")) == 1 and used == []
+    assert not gui._model_work_running() and gui._refuse_model_change() is False
+    window.destroy()
+
+
+def test_a_failing_or_orphaned_disconnect_still_ends_the_busy_state(tk_root, monkeypatch):
+    import threading
+    FakeCore(monkeypatch)
+    monkeypatch.setattr(core, "disconnect", _boom)
+    gui = _app(tk_root)
+    gui._open_accounts()
+    window = gui._accounts_window
+    pump(tk_root, lambda: window.connected)
+    window._disconnect("openai-codex")
+    pump(tk_root, lambda: not gui._model_work_running())
+    assert window.note.cget("text") == "Something went wrong: core changed its mind"
+
+    gate = threading.Event()                             # closed while it runs
+    monkeypatch.setattr(core, "disconnect", lambda p: gate.wait(5))
+    window._disconnect("openai-codex")
+    window.destroy()
+    assert gui._model_work_running()
+    gate.set()
+    pump(tk_root, lambda: not gui._model_work_running())   # no error from the closed window

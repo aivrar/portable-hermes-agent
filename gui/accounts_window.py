@@ -79,11 +79,16 @@ class AccountsWindow(tk.Toplevel):
     *on_use(provider, model)*: the app switches the chat to the account.
     *active_account()*: the account the chat uses now, or None.
     *can_change()*: False while a reply runs or model work (a load, an
-    account switch) is in progress; Disconnect is refused then."""
+    account switch or disconnect) is in progress; Disconnect is refused then.
+    *run_account_work(fn, finish)*: the app runs Disconnect's core call under
+    the same busy state as an account switch and calls finish("ok"|"failed",
+    value) on the Tk thread; without it the window's own worker runs it."""
 
-    def __init__(self, parent, on_use, active_account=lambda: None, can_change=lambda: True):
+    def __init__(self, parent, on_use, active_account=lambda: None, can_change=lambda: True,
+                 run_account_work=None):
         super().__init__(parent)
         self.on_use, self.active_account, self.can_change = on_use, active_account, can_change
+        self.run_account_work = run_account_work or self._run_here
         _toplevel(self, parent, t("accounts.title"), 560, 300)
         tk.Label(self, text=t("accounts.title"), font=FONTS["title"], fg=C["accent"],
                  bg=C["bg_main"]).pack(pady=(16, 2))
@@ -160,10 +165,18 @@ class AccountsWindow(tk.Toplevel):
         if self.active_account() == provider:
             self.note.configure(text=t("accounts.disconnect_in_use", name=name))
             return
-        def done(_cleared):
+        def finish(kind, value):
+            if not self.winfo_exists():     # the window was closed meanwhile
+                return
+            if kind != "ok":
+                return self._failed(value)
             self.note.configure(text=t("accounts.disconnected", name=name))
             self.refresh()
-        self._worker.run(lambda: core.disconnect(provider), done, self._failed)
+        self.run_account_work(lambda: core.disconnect(provider), finish)
+
+    def _run_here(self, fn, finish):
+        self._worker.run(fn, lambda value: finish("ok", value),
+                         lambda message: finish("failed", message))
 
 
 class _Start:
