@@ -226,7 +226,7 @@ class AgentBridge:
         from gui import accounts_core
         config = _load_cli_config()
         if accounts_core.account_in_config(config) is None:
-            if self._account_provider is not None:
+            if getattr(self, "_account_provider", None) is not None:
                 self.config = config
                 self._account_provider = None
             return
