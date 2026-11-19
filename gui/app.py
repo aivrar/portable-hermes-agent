@@ -3,6 +3,7 @@ Hermes Agent - Windows Desktop GUI
 Styled to match ImageBuddy/ImageDownloader visual design.
 Pure tkinter + ttk, dark theme, flat design.
 """
+import logging
 import os
 import sys
 import re
@@ -29,10 +30,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from gui.theme import C, FONTS, apply_theme, set_dark_title_bar, Tooltip, center_window, init_dpi_scaling, S, SF
-from gui.agent_bridge import AgentBridge, sync_bundled_skills_once
+from gui.agent_bridge import AgentBridge, ModelSaveFailed, sync_bundled_skills_once
 from portable_hermes.session_store import open_store
 from gui.api_setup_wizard import APISetupWizard, get_missing_keys
 from gui.extensions import ExtensionsManager
+from gui import accounts_core
+from gui.accounts_window import AccountsWindow
 from gui.lm_studio import (LMStudioPanel, DEFAULT_CONTEXT_LENGTH, MINIMUM_CONTEXT_LENGTH,
                            gpu_fit_note)
 from gui.permissions_panel import PermissionsPanel
@@ -664,6 +667,7 @@ class Sidebar(tk.Frame):
         # Unified model list: cloud + local
         self._lm_studio_models: List[tuple] = []  # [(id, name, note), ...]
         self._model_sizes: Dict[str, int] = {}    # LM Studio model id -> file size
+        self._account_models: List[tuple] = []  # [(id, "[ChatGPT] id", "account:<provider>")]
         self._all_models: List[tuple] = list(self.MODELS)
         self._model_states: Dict[str, str] = {}  # model_id -> "loaded"/"not-loaded"
 
@@ -753,6 +757,8 @@ class Sidebar(tk.Frame):
     def _display_name(entry):
         """Build display string for a model tuple (id, name, note)."""
         _, name, note = entry
+        if note.startswith("account:"):
+            return name
         if note == "LM Studio":
             name = f"{t('sidebar.local_prefix')} {name}"
         elif note.startswith("sidebar.note."):
@@ -1001,6 +1007,19 @@ class Sidebar(tk.Frame):
             self._load_status_var.set("")
             self._load_status_lbl.pack_forget()
 
+    def set_account_models(self, provider: str, short: str, model_ids):
+        """List a signed-in account's models at the top of the box."""
+        self._account_models = [(m, f"[{short}] {m}", f"account:{provider}") for m in model_ids]
+        self._all_models = self._account_models + list(self.MODELS) + list(self._lm_studio_models)
+        self._update_combobox_values()
+
+    def account_for(self, model_id: str):
+        """The account a listed account model belongs to, else None."""
+        for mid, _, note in self._account_models:
+            if mid == model_id:
+                return note.split(":", 1)[1]
+        return None
+
     def _is_local_entry(self, model_id: str) -> bool:
         """Check if a model_id belongs to the local LM Studio models."""
         return any(mid == model_id for mid, _, _ in self._lm_studio_models)
@@ -1030,7 +1049,7 @@ class Sidebar(tk.Frame):
             self._lm_studio_models = local_models
             self._model_states = states
             self._model_sizes = sizes
-            self._all_models = list(self.MODELS) + local_models
+            self._all_models = self._account_models + list(self.MODELS) + local_models
             # Register local model IDs with the bridge for routing
             if self.on_local_models and local_models:
                 local_ids = [mid for mid, _, _ in local_models]
@@ -1446,6 +1465,7 @@ class SettingsDialog(tk.Toplevel):
         self.model_var = tk.StringVar(value="google/gemini-2.5-flash")
         self.model_combo = ttk.Combobox(parent, textvariable=self.model_var,
                                         values=models, font=FONTS["mono_small"])
+        self._shown_model = self.model_var.get()   # saved only when changed
         self.model_combo.pack(fill="x", pady=(4, 12))
         tk.Label(parent, text=t("settings.model_hint", "You can type any OpenRouter model ID"),
                 font=SF("Segoe UI", 8), fg=C["text_disabled"], bg=C["bg_main"]).pack(anchor="w")
@@ -1483,8 +1503,14 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     content += f"\n{key}={val}\n"
         model = self.model_var.get().strip()
-        if model:  # never during a reply: the dialog is not opened then (modal)
-            self.bridge.set_model(model)
+        # Never during a reply (the dialog is modal). Only a changed model is
+        # applied: saving other settings keeps the model (or account) in use.
+        if model and model != getattr(self, "_shown_model", None):
+            try:
+                self.bridge.set_model(model)
+            except ModelSaveFailed as exc:     # nothing switched: say why
+                messagebox.showerror(t("settings.title"),
+                                     t("chat.model_save_failed", model=model, error=exc), parent=self)
         env_path.write_text(content, encoding="utf-8")
 
         # Save language preference
@@ -1804,8 +1830,10 @@ class HermesGUI:
             self.root.after(500, self._first_run_api_setup)
 
         model = self.bridge.get_model()
-        self.status_bar.set_model(model)
+        self.status_bar.set_model(self._model_label(model))
         self.sidebar.set_model(model)
+        if self._active_account():     # config names a signed-in account
+            self._load_account_models(self._active_account())
 
         # Show local settings if current model is local
         if self.bridge._is_local_model(model):
@@ -1858,6 +1886,7 @@ class HermesGUI:
             ]),
             (t("menu.view"), [
                 (t("menu.lm_studio"), self._open_lm_studio),
+                (t("menu.accounts"), self._open_accounts),
                 (t("menu.skills"), self._open_skills),
                 (t("menu.extensions"), self._open_extensions),
                 None,
@@ -1964,7 +1993,7 @@ class HermesGUI:
                                on_local_models=self._on_local_models_discovered,
                                on_auto_load=self._on_auto_load_status,
                                can_delete_session=self._can_delete_session,
-                               can_change_model=lambda: not self._refuse_while_running(),
+                               can_change_model=lambda: not self._refuse_model_change(),
                                track_model_work=self._track_model_work)
         self.sidebar.pack(side="left", fill="y")
 
@@ -2418,6 +2447,17 @@ class HermesGUI:
 
     # ---- Commands ----
 
+    def _refuse_model_change(self) -> bool:
+        """The one rule for anything that changes the model, provider or
+        session: refused while a reply runs, and while model work (an LM
+        Studio load, an account switch) is in progress; True when refused."""
+        if self._refuse_while_running():
+            return True
+        if self._model_work_running():
+            self._add_notice(t("chat.model_loading_wait"))
+            return True
+        return False
+
     def _refuse_while_running(self) -> bool:
         """While a reply is running, session changes are refused (the running
         turn would write into the new session); True when refused."""
@@ -2487,15 +2527,24 @@ class HermesGUI:
         if self._refuse_while_running():
             self.sidebar.set_model(self.bridge.get_model())
             return
+        account = self.sidebar.account_for(model_id)
+        if isinstance(account, str):
+            self._use_account(account, model_id)
+            return
         # Detect if this is a local model (known from LM Studio discovery)
-        if model_id in self.bridge._known_local_models:
-            url = self.bridge._resolve_lm_studio_url()
-            if url:
-                dropped = self.bridge.set_local_mode(url, model_id)
+        try:
+            if model_id in self.bridge._known_local_models:
+                url = self.bridge._resolve_lm_studio_url()
+                if url:
+                    dropped = self.bridge.set_local_mode(url, model_id)
+                else:
+                    dropped = self.bridge.set_model(model_id)
             else:
                 dropped = self.bridge.set_model(model_id)
-        else:
-            dropped = self.bridge.set_model(model_id)
+        except ModelSaveFailed as exc:   # leaving an account failed: nothing switched
+            self._add_msg(t("chat.model_save_failed", model=model_id, error=exc), "error")
+            self.sidebar.set_model(self.bridge.get_model())
+            return
         # Show friendly name in status bar
         display = model_id
         for mid, name, note in self.sidebar._all_models:
@@ -2509,7 +2558,7 @@ class HermesGUI:
 
     def _on_session_select(self, session_id):
         """Load a past session into the chat view."""
-        if self._refuse_while_running():
+        if self._refuse_model_change():
             return
         try:
             with open_store() as store:
@@ -2566,12 +2615,12 @@ class HermesGUI:
     # files and env vars while it builds the agent).
 
     def _open_settings(self):
-        if self._refuse_while_running():
+        if self._refuse_model_change():     # Settings can change the model
             return
         d = SettingsDialog(self.root, self.bridge)
         self.root.wait_window(d)
         m = self.bridge.get_model()
-        self.status_bar.set_model(m)
+        self.status_bar.set_model(self._model_label(m))
         self.sidebar.set_model(m)
 
     def _open_skills(self):
@@ -2589,6 +2638,117 @@ class HermesGUI:
 
     def _open_extensions(self):
         ExtensionsManager(self.root)
+
+    # -- signed-in accounts (View > Accounts) ----------------------------------
+    def _open_accounts(self):
+        """One Accounts window: opening it again brings the open one forward."""
+        window = getattr(self, "_accounts_window", None)
+        if window is not None and window.winfo_exists():
+            window.deiconify()
+            window.lift()
+            window.focus_force()
+            return
+        self._accounts_window = AccountsWindow(
+            self.root, on_use=self._use_account, active_account=self._active_account,
+            can_change=lambda: not self._refuse_model_change(),
+            run_account_work=self._account_work)    # Disconnect is busy like a switch
+
+    def _active_account(self):
+        """The signed-in account the chat goes through now (not while on LM Studio)."""
+        account = getattr(self.bridge, "_account_provider", None)
+        local = getattr(self.bridge, "_active_provider", "cloud") == "local"
+        return account if isinstance(account, str) and not local else None
+
+    def _model_label(self, model):
+        """The status bar's model text: the account in front when one is used."""
+        account = self._active_account()
+        return f"{accounts_core.short_name(account)}: {model}" if account else model
+
+    def _use_account(self, provider, model):
+        """Chat through a signed-in account. The core validates and writes the
+        choice on a worker thread; sending waits meanwhile, as for a model load.
+        Refused while a reply runs or a model loads."""
+        if self._refuse_model_change():
+            self.sidebar.set_model(self.bridge.get_model())
+            return
+
+        def finish(kind, value):
+            name = accounts_core.short_name(provider)
+            if kind != "ok":
+                self._add_msg(t("chat.account_rejected", name=name, model=model, error=value), "error")
+                self.sidebar.set_model(self.bridge.get_model())
+                return
+            dropped = self.bridge.set_account_mode(provider, value)
+            self.status_bar.set_model(self._model_label(value))
+            self.sidebar.set_model(value)
+            self._load_account_models(provider)
+            self._add_msg(t("chat.account_in_use", name=name, model=value), "system")
+            self._note_dropped_resume(dropped)
+        self._account_work(lambda: accounts_core.use(provider, model), finish)
+
+    def _account_work(self, fn, finish):
+        """Run fn (a core call that may block) on a worker thread under the
+        account busy state (_account_switching: the model box, Settings,
+        session load, Use and Disconnect are refused and Send waits). The
+        Tk thread then clears the state and calls finish("ok", result) or
+        finish("failed", message); every path ends that way, also when the
+        thread cannot start."""
+        results = queue.SimpleQueue()
+
+        def work():
+            try:
+                results.put(("ok", fn()))
+            except accounts_core.Rejected as exc:   # the core's reason
+                results.put(("failed", str(exc)))
+            except Exception as exc:
+                logging.getLogger("hermes.bridge").warning("account step failed", exc_info=True)
+                results.put(("failed", str(exc) or type(exc).__name__))
+
+        def check():
+            # App closed meanwhile: the result is ignored and nothing in the
+            # GUI is touched (Tk runs no timers after the root is destroyed;
+            # this guard covers the rest). The core's config write itself may
+            # still complete; that is acceptable: it is what the user chose.
+            if getattr(self, "_closed", False):
+                return
+            try:
+                kind, value = results.get_nowait()
+            except queue.Empty:
+                self.root.after(100, check)
+                return
+            self._account_switching = False
+            finish(kind, value)
+
+        thread = threading.Thread(target=work, daemon=True)
+        self._account_switching = True
+        try:
+            thread.start()
+        except Exception as exc:     # e.g. "can't start new thread": not busy for ever
+            self._account_switching = False
+            logging.getLogger("hermes.bridge").warning("could not start an account step", exc_info=True)
+            finish("failed", str(exc) or type(exc).__name__)
+            return
+        self._track_model_work(thread)
+        self.root.after(100, check)
+
+    def _load_account_models(self, provider):
+        """Fill the model box with the account's models (worker thread)."""
+        results = queue.SimpleQueue()
+        threading.Thread(target=lambda: results.put(accounts_core.models(provider)),
+                         daemon=True).start()
+
+        def check():
+            if getattr(self, "_closed", False):
+                return
+            try:
+                ids = results.get_nowait()
+            except queue.Empty:
+                self.root.after(200, check)
+                return
+            if ids:
+                self.sidebar.set_account_models(provider, accounts_core.short_name(provider), ids)
+                self.sidebar.set_model(self.bridge.get_model())
+        self.root.after(200, check)
 
     def _open_lm_studio(self):
         panel = LMStudioPanel(self.root, on_model_ready=self._on_lm_studio_ready,
@@ -2617,13 +2777,17 @@ class HermesGUI:
         panels = [p for p in getattr(self, "_lm_panels", []) if not p._closed]
         self._lm_panels = panels
         return (bool(self._model_work)
+                or getattr(self, "_account_switching", False) is True
                 or getattr(sidebar, "_loading_model", False) is True
                 or any(p.model_work_pending() for p in panels))
 
     def _on_lm_studio_ready(self, base_url, model_id):
         """Switch Hermes to use LM Studio as the LLM provider (refused during
-        a reply; the model stays loaded in LM Studio for later)."""
+        a reply or an account switch; the model stays loaded in LM Studio)."""
         if self._refuse_while_running():
+            return
+        if getattr(self, "_account_switching", False) is True:
+            self._add_notice(t("chat.model_loading_wait"))
             return
         dropped = False
         if model_id:
@@ -2649,7 +2813,7 @@ class HermesGUI:
                 # Force agent recreation to pick up new tools
                 self._note_dropped_resume(self.bridge.rebuild_agent())
             m = self.bridge.get_model()
-            self.status_bar.set_model(m)
+            self.status_bar.set_model(self._model_label(m))
             self.sidebar.set_model(m)
 
         w = APISetupWizard(self.root, on_complete=on_done, auto_mode=True,
@@ -2687,6 +2851,7 @@ class HermesGUI:
                                        t("app.exit_confirm"),
                                        parent=self.root):
                 return
+        self._closed = True    # pending account-switch results are ignored
         unregister_listener(self._on_language_changed)
         self._stop_turn_clock()
         self.bridge.close()

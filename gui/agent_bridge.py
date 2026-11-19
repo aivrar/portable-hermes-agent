@@ -82,6 +82,11 @@ class TurnInProgress(RuntimeError):
     """A model/provider switch was requested while a reply is running."""
 
 
+class ModelSaveFailed(RuntimeError):
+    """Leaving a signed-in account: provider: openrouter could not be
+    written, so nothing was switched. The message says why."""
+
+
 class AgentBridge:
     """Bridge between AIAgent and the GUI. Full CLI feature parity."""
 
@@ -140,6 +145,9 @@ class AgentBridge:
 
         # Load config (same as CLI)
         self.config = _load_cli_config()
+        # The signed-in account (ChatGPT/Codex, Grok) the config chats through, or None.
+        from gui import accounts_core
+        self._account_provider = accounts_core.account_in_config(self.config)
 
         # The session store (portable_hermes.session_store: the core's storage
         # interface, or SessionDB on older cores); agents borrow it.
@@ -194,11 +202,54 @@ class AgentBridge:
         return self.rebuild_agent()  # Force recreation
 
     def set_cloud_mode(self, model: str):
-        """Switch to OpenRouter as the active provider."""
+        """Switch to OpenRouter as the active provider (an OpenRouter-list
+        model). Raises ModelSaveFailed, with nothing switched, when leaving
+        a signed-in account fails."""
         self._require_idle()
+        if model not in getattr(self, "_known_local_models", ()):
+            self._leave_account(model)
         self._active_provider = "cloud"
         self._lm_studio_base_url = None
         self._selected_model = model
+        return self.rebuild_agent()
+
+    def _leave_account(self, model: str):
+        """Only when config.yaml chats through a signed-in account (ChatGPT,
+        Grok) is provider: openrouter written, so the OpenRouter id is not
+        sent to the account. Any other provider (auto, unset, or one set up
+        outside the GUI such as deepseek) is left alone, as before.
+
+        When the provider cannot be read (config.yaml missing, unreadable, or
+        `model` a plain string) nothing is written either, but an account the
+        GUI thought active no longer is: it is forgotten and the config that
+        can be loaded is taken, so the switch goes on as on main."""
+        from gui import accounts_core
+        config = _load_cli_config()
+        if accounts_core.account_in_config(config) is None:
+            if getattr(self, "_account_provider", None) is not None:
+                self.config = config
+                self._account_provider = None
+            return
+        try:
+            accounts_core.use_openrouter(model)
+        except Exception as exc:
+            import logging
+            logging.getLogger("hermes.bridge").warning("could not save the OpenRouter model", exc_info=True)
+            raise ModelSaveFailed(str(exc) or type(exc).__name__) from exc
+        self.config = _load_cli_config()
+        self._account_provider = None
+
+    def set_account_mode(self, provider: str, model: str):
+        """Chat through a signed-in account. accounts_core.use has already
+        validated and written provider and model (on a worker thread); this
+        reloads the config and drops the agent: a new agent and session, as
+        for any model change."""
+        self._require_idle()
+        self.config = _load_cli_config()
+        self._active_provider = "cloud"
+        self._lm_studio_base_url = None
+        self._selected_model = model
+        self._account_provider = provider
         return self.rebuild_agent()
 
     # -- dropping agents ------------------------------------------------------
